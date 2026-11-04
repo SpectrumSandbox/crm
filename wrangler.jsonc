@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "spectrum-crm",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-06-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  // Production hostname. Wrangler creates the DNS record + certificate on deploy
+  // (the spectrumgroup.id zone must be on this Cloudflare account).
+  "routes": [{ "pattern": "crm.spectrumgroup.id", "custom_domain": true }],
+  "workers_dev": true,
+  "preview_urls": true,
+  "observability": { "enabled": true },
+  "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "spectrum-crm" }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "spectrum-crm",
+      "database_id": "3e0b5192-7ade-44d3-b9d6-2ae0b9a383df",
+      "migrations_dir": "drizzle/migrations"
+    }
+  ],
+  "vars": {
+    "APP_ENV": "production",
+    "APP_URL": "https://crm.spectrumgroup.id"
+  }
+}
