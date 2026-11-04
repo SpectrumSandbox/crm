@@ -1,0 +1,193 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { ArrowDown, ArrowUp, Search } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Kbd } from "@/components/ui/misc";
+
+export interface Column<T> {
+  id: string;
+  header: string;
+  cell: (row: T) => React.ReactNode;
+  sortValue?: (row: T) => string | number;
+  align?: "left" | "right";
+  className?: string;
+}
+
+/**
+ * Dense, keyboard-first record table:
+ *  j / k (or ↑ ↓) move the cursor, Enter opens, x toggles selection, / focuses the filter.
+ */
+export function SmartTable<T extends { id: string }>({
+  rows,
+  columns,
+  hrefFor,
+  searchText,
+  initialSort,
+  toolbar,
+  bulkActions,
+  emptyText = "No records match these filters.",
+}: {
+  rows: T[];
+  columns: Column<T>[];
+  hrefFor: (row: T) => string;
+  searchText: (row: T) => string;
+  initialSort?: { id: string; dir: 1 | -1 };
+  toolbar?: React.ReactNode;
+  bulkActions?: (selected: string[], clear: () => void) => React.ReactNode;
+  emptyText?: string;
+}) {
+  const router = useRouter();
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState(initialSort ?? { id: columns[0].id, dir: 1 as 1 | -1 });
+  const [cursor, setCursor] = useState(0);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const bodyRef = useRef<HTMLTableSectionElement>(null);
+
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const filtered = needle ? rows.filter((r) => searchText(r).toLowerCase().includes(needle)) : rows;
+    const col = columns.find((c) => c.id === sort.id);
+    if (!col?.sortValue) return filtered;
+    const sv = col.sortValue;
+    return [...filtered].sort((a, b) => {
+      const x = sv(a);
+      const y = sv(b);
+      return x > y ? sort.dir : x < y ? -sort.dir : 0;
+    });
+  }, [rows, q, sort, columns, searchText]);
+
+  useEffect(() => {
+    setCursor((c) => Math.min(c, Math.max(0, visible.length - 1)));
+  }, [visible.length]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable) {
+        if (e.key === "Escape") el.blur();
+        if (e.key === "ArrowDown" && el.dataset.pageFilter !== undefined) {
+          e.preventDefault();
+          el.blur();
+        }
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey || document.querySelector("[role=dialog]")) return;
+      if (e.key === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        setCursor((c) => Math.min(visible.length - 1, c + 1));
+      } else if (e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setCursor((c) => Math.max(0, c - 1));
+      } else if (e.key === "Enter" && visible[cursor]) {
+        e.preventDefault();
+        router.push(hrefFor(visible[cursor]));
+      } else if (e.key === "x" && visible[cursor]) {
+        e.preventDefault();
+        toggle(visible[cursor].id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  useEffect(() => {
+    bodyRef.current?.querySelector<HTMLElement>(`[data-row="${cursor}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [cursor]);
+
+  const toggle = (id: string) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const allSelected = visible.length > 0 && visible.every((r) => selected.has(r.id));
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex flex-wrap items-center gap-2 border-b border-sg-line px-5 py-2">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-sg-dim" />
+          <input data-page-filter value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search this view" className="h-8 w-60 rounded border border-sg-line bg-sg-bg/60 pl-7 pr-8 text-sm text-sg-text placeholder:text-sg-dim focus:border-sg-white/60 focus:outline-none" />
+          <Kbd className="absolute right-1.5 top-1/2 -translate-y-1/2">/</Kbd>
+        </div>
+        {toolbar}
+        <div className="ml-auto flex items-center gap-2 text-2xs text-sg-dim">
+          <span className="hidden items-center gap-1 lg:flex">
+            <Kbd>J</Kbd>
+            <Kbd>K</Kbd> move · <Kbd>↵</Kbd> open · <Kbd>X</Kbd> select
+          </span>
+          <span className="sg-num font-semibold text-sg-muted">
+            {visible.length} of {rows.length}
+          </span>
+        </div>
+      </div>
+
+      {selected.size > 0 && bulkActions && (
+        <div className="flex items-center gap-3 border-b border-sg-line bg-sg-card-2 px-5 py-2 text-sm">
+          <span className="font-semibold text-sg-white">{selected.size} selected</span>
+          {bulkActions(Array.from(selected), () => setSelected(new Set()))}
+          <button type="button" onClick={() => setSelected(new Set())} className="ml-auto text-xs text-sg-dim hover:text-sg-white">
+            Clear
+          </button>
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        <table className="w-full min-w-[980px] border-separate border-spacing-0 text-sm">
+          <thead className="sticky top-0 z-10 bg-sg-bg">
+            <tr className="text-left text-2xs uppercase tracking-[0.1em] text-sg-dim">
+              <th className="w-10 border-b border-sg-line py-2 pl-5">
+                <input
+                  type="checkbox"
+                  aria-label="Select all"
+                  checked={allSelected}
+                  onChange={() => setSelected(allSelected ? new Set() : new Set(visible.map((r) => r.id)))}
+                  className="size-3.5 cursor-pointer accent-white"
+                />
+              </th>
+              {columns.map((c) => (
+                <th key={c.id} className={cn("whitespace-nowrap border-b border-sg-line px-3 py-2 font-semibold", c.align === "right" && "text-right", c.className)}>
+                  {c.sortValue ? (
+                    <button type="button" className={cn("inline-flex items-center gap-1 hover:text-sg-white", sort.id === c.id && "text-sg-white")} onClick={() => setSort((s) => ({ id: c.id, dir: s.id === c.id ? ((-s.dir) as 1 | -1) : 1 }))}>
+                      {c.header}
+                      {sort.id === c.id ? sort.dir === 1 ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" /> : null}
+                    </button>
+                  ) : (
+                    c.header
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody ref={bodyRef}>
+            {visible.map((row, i) => (
+              <tr
+                key={row.id}
+                data-row={i}
+                onMouseEnter={() => setCursor(i)}
+                onClick={(e) => {
+                  if ((e.target as HTMLElement).closest("a,button,input,select")) return;
+                  router.push(hrefFor(row));
+                }}
+                className={cn("cursor-pointer", i === cursor ? "bg-sg-card-2" : "hover:bg-sg-card", selected.has(row.id) && "bg-soft-blue/10")}
+              >
+                <td className={cn("border-b border-sg-line py-2 pl-5", i === cursor && "shadow-[inset_2px_0_0_rgb(var(--sg-white))]")}>
+                  <input type="checkbox" aria-label="Select row" checked={selected.has(row.id)} onChange={() => toggle(row.id)} className="size-3.5 cursor-pointer accent-white" />
+                </td>
+                {columns.map((c) => (
+                  <td key={c.id} className={cn("border-b border-sg-line px-3 py-2 align-middle", c.align === "right" && "text-right", c.className)}>
+                    {c.cell(row)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!visible.length && <p className="px-5 py-12 text-center text-sm text-sg-muted">{emptyText}</p>}
+      </div>
+    </div>
+  );
+}
