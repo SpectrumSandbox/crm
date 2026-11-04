@@ -194,7 +194,7 @@ function Register({ reg }: { reg: ProjectRegister }) {
                           <td className="sg-num px-2 py-2.5 text-right text-sg-muted">{ini.type === "C" ? formatIDR(r.monthlyMinimum ?? 0, "full") : r.expectedBonus != null ? formatIDR(r.expectedBonus) : "—"}</td>
                           <td className="max-w-[220px] px-2 py-2.5 text-xs text-sg-muted">
                             {r.member.weightNote || <span className="text-sg-dim">Standard</span>}
-                            {r.member.authority ? <div className="text-2xs text-sg-dim">{r.member.authority}</div> : null}
+                            {r.member.authority && !r.member.authority.startsWith("Role and Weight Agreement") ? <div className="text-2xs text-sg-dim">{r.member.authority}</div> : null}
                           </td>
                           <td className="whitespace-nowrap px-3 py-2.5 text-right">
                             <Button size="icon-sm" variant="ghost" aria-label={`Edit ${r.user?.name}`} onClick={() => setEditing(r.member)}>
