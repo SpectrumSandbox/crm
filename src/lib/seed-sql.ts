@@ -21,6 +21,9 @@ export function buildSeedStatements(): string[] {
     for (const r of rows) out.push(`INSERT INTO ${table} (${cols.map((c) => `\`${c}\``).join(",")}) VALUES (${cols.map((c) => q(r[c])).join(",")});`);
   };
 
+  // Project Initiative & Compensation tables reference users/companies/deals/epics → children first, before the core wipe
+  const wipeInitiatives = ["audit_log", "share_adjustments", "clawbacks", "probation_outcomes", "deferred_bonuses", "bonus_lines", "bonus_runs", "revenue_entries", "initiative_members", "initiatives", "employee_profiles"];
+  wipeInitiatives.forEach((t) => out.push(`DELETE FROM ${t};`));
   const wipe = ["cross_links", "issue_comments", "issues", "epics", "sprints", "projects", "activity_links", "activities", "quote_line_items", "quotes", "line_items", "products", "tickets", "deal_contacts", "deals", "pipeline_stages", "pipelines", "sequence_enrollments", "sequence_steps", "sequences", "email_templates", "workflows", "contacts", "companies", "users"];
   wipe.forEach((t) => out.push(`DELETE FROM ${t};`));
 
@@ -58,5 +61,28 @@ export function buildSeedStatements(): string[] {
   insert("sequence_steps", seed.sequences.flatMap((s) => s.steps.map((st) => ({ id: st.id, sequence_id: s.id, position: st.order, kind: st.kind, delay_days: st.delayDays, template_id: st.templateId, task_note: st.taskNote }))));
   insert("sequence_enrollments", seed.sequenceEnrollments.map((e) => ({ id: e.id, sequence_id: e.sequenceId, contact_id: e.contactId, current_step: e.currentStep, status: e.status, enrolled_at: e.enrolledAt })));
   insert("workflows", seed.workflows.map((w) => ({ id: w.id, name: w.name, enabled: w.enabled, trigger: JSON.stringify(w.trigger), actions: JSON.stringify(w.actions), runs: w.runs, last_run_at: w.lastRunAt })));
+
+  /* ── Project Initiative & Compensation Policy v3.0 ── */
+  const json = (v: unknown) => (v === null || v === undefined ? null : JSON.stringify(v));
+  insert("employee_profiles", seed.employeeProfiles.map((p) => ({ user_id: p.userId, employment_type: p.employmentType, hire_date: p.hireDate, probation_end_date: p.probationEndDate, annual_base_salary: p.annualBaseSalary, direct_manager_id: p.directManagerId, good_standing: p.goodStanding, active_written_warning: p.activeWrittenWarning, on_pip: p.onPIP, pip_approved_by_prc: p.pipApprovedByPRC, under_investigation: p.underInvestigation, suspended: p.suspended, unpaid_leave_days: p.unpaidLeaveDays, resignation_notice_at: p.resignationNoticeAt, termination_notice_at: p.terminationNoticeAt, separation: json(p.separation), acknowledgment_signed_at: p.acknowledgmentSignedAt, governance_roles: JSON.stringify(p.governanceRoles) })));
+  insert(
+    "initiatives",
+    seed.initiatives.map((i) => ({
+      id: i.id, tracking_no: i.trackingNo, code: i.code, title: i.title, type: i.type, status: i.status, initiator_id: i.initiatorId,
+      summary: i.summary, value_proposition: i.valueProposition, scope: i.scope, deliverables: i.deliverables, exclusions: i.exclusions, success_criteria: i.successCriteria,
+      start_date: i.startDate, end_date: i.endDate, milestones: JSON.stringify(i.milestones), company_id: i.companyId, deal_id: i.dealId, contract_status: i.contractStatus, new_client: i.newClient, payment_terms_days: i.paymentTermsDays,
+      revenue: JSON.stringify(i.revenue), costs: JSON.stringify(i.costs), risks: JSON.stringify(i.risks), high_risk: i.highRisk, warranty: i.warranty, deferral_months: i.deferralMonths, locked_share_pct: i.lockedSharePct, cap_exception: i.capException,
+      submitted_at: i.submittedAt, acknowledged_at: i.acknowledgedAt, primary_reviewer_id: i.primaryReviewerId, scores: json(i.scores), decision: json(i.decision), appeal: json(i.appeal), approved_at: i.approvedAt, completed_at: i.completedAt, epic_id: i.epicId, created_at: i.createdAt, updated_at: i.updatedAt,
+    })),
+  );
+  insert("initiative_members", seed.initiativeMembers.map((m) => ({ id: m.id, initiative_id: m.initiativeId, user_id: m.userId, roles: JSON.stringify(m.roles), specialist_weight: m.specialistWeight, weight_override: m.weightOverride, consent: m.consent, manager_approved: m.managerApproved, prc_approved: m.prcApproved, application: m.application, allocation_pct: m.allocationPct, joined_at: m.joinedAt, left_at: m.leftAt, removal: JSON.stringify(m.removal) })));
+  insert("revenue_entries", seed.revenueEntries.map((e) => ({ id: e.id, initiative_id: e.initiativeId, month: e.month, revenue: e.revenue, direct_costs: e.directCosts, basis: e.basis, received: e.received, note: e.note })));
+  insert("bonus_runs", seed.bonusRuns.map((r) => ({ id: r.id, month: r.month, status: r.status, overheads: r.overheads, ebitda: r.ebitda, share_overrides: JSON.stringify(r.shareOverrides), partial_deferral_pct: r.partialDeferralPct, operating_result: r.operatingResult, totals: JSON.stringify(r.totals), certified_by_id: r.certifiedById, certified_at: r.certifiedAt, released_by_id: r.releasedById, released_at: r.releasedAt })));
+  insert("bonus_lines", seed.bonusRuns.flatMap((r) => r.lines.map((l) => ({ run_id: r.id, initiative_id: l.initiativeId, user_id: l.userId, weight: l.weight, total_weight: l.totalWeight, share_pct: l.sharePct, net_revenue: l.netRevenue, pool: l.pool, gross: l.gross, payable: l.payable, deferred: l.deferred, carried_over: l.carriedOver, withheld: l.withheld, forfeited: l.forfeited, held: l.held, status: l.status, notes: JSON.stringify(l.notes) }))));
+  insert("deferred_bonuses", seed.deferredBonuses.map((d) => ({ id: d.id, month: d.month, initiative_id: d.initiativeId, user_id: d.userId, amount: d.amount, vest_at: d.vestAt, status: d.status, released_amount: d.releasedAmount, note: d.note })));
+  insert("probation_outcomes", seed.probationOutcomes.map((o) => ({ user_id: o.userId, outcome: o.outcome, amount: o.amount, decided_at: o.decidedAt })));
+  insert("clawbacks", seed.clawbacks.map((c) => ({ id: c.id, user_id: c.userId, initiative_id: c.initiativeId, trigger: c.trigger, paid_at: c.paidAt, original_paid: c.originalPaid, recalculated: c.recalculated, personally_at_fault: c.personallyAtFault, status: c.status, notified_at: c.notifiedAt, months: c.months, monthly_deduction: c.monthlyDeduction, recovered: c.recovered, notes: c.notes, created_at: c.createdAt })));
+  insert("share_adjustments", seed.shareAdjustments.map((a) => ({ id: a.id, type: a.type, from_pct: a.fromPct, to_pct: a.toPct, proposed_at: a.proposedAt, effective_from: a.effectiveFrom, rationale: a.rationale, approved_by_id: a.approvedById })));
+  insert("audit_log", seed.auditLog.map((a) => ({ id: a.id, at: a.at, actor_id: a.actorId, entity: a.entity, entity_id: a.entityId, action: a.action, detail: a.detail })));
   return out;
 }

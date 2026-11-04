@@ -3,8 +3,9 @@
  * Project Initiative & Compensation Policy v3.0, §10 — plus eligibility, cap, deferral and clawback rules.
  *   npm run test:policy
  */
-import { capacityCheck, clawbackExempt, clawbackSchedule, computeRun, leadershipLoad, memberWeight, netRevenue, paymentOutcome, participationEligibility, splitBonus } from "../src/lib/initiatives/engine";
+import { capacityCheck, clawbackExempt, clawbackSchedule, computeRun, deferralTriggers, leadershipLoad, memberWeight, netRevenue, paymentOutcome, participationEligibility, splitBonus } from "../src/lib/initiatives/engine";
 import { POLICY, usd } from "../src/lib/initiatives/policy";
+import { initiativeSeed } from "../src/lib/initiatives/seed";
 import type { EmployeeProfile, Initiative, InitiativeMember, ProjectRole, ProjectType } from "../src/lib/initiatives/types";
 
 let failures = 0;
@@ -157,6 +158,43 @@ ok("4.5 suspension forfeits", paymentOutcome({ ...base, suspended: true }, "2026
   ok("6.4 schedule within 20% of salary", s.monthly <= 4_000_000 + 1 && s.months >= 6 && s.months <= 12);
   ok("6.4 de minimis data error exempt", clawbackExempt({ trigger: "data_error", personallyAtFault: false, originalPaid: usd(5_000), recalculated: 0, paidAt: NOW }, NOW) !== null);
   ok("6.4 misconduct not exempt", clawbackExempt({ trigger: "misconduct", personallyAtFault: true, originalPaid: usd(5_000), recalculated: 0, paidAt: NOW }, NOW) === null);
+}
+
+/* ── demo seed consistency (src/lib/initiatives/seed.ts) ── */
+{
+  const S = initiativeSeed;
+  const iniIds = new Set(S.initiatives.map((i) => i.id));
+  const userIds = new Set(S.employeeProfiles.map((p) => p.userId));
+  ok("seed: every member references an initiative", S.initiativeMembers.every((m) => iniIds.has(m.initiativeId)));
+  ok("seed: every member has an HR record", S.initiativeMembers.every((m) => userIds.has(m.userId)));
+  ok("seed: every revenue entry references an initiative", S.revenueEntries.every((e) => iniIds.has(e.initiativeId)));
+  ok("seed: every run line references an initiative", S.bonusRuns.every((r) => r.lines.every((l) => iniIds.has(l.initiativeId))));
+  ok("seed: deferred / clawbacks reference initiatives", [...S.deferredBonuses, ...S.clawbacks].every((x) => iniIds.has(x.initiativeId)));
+  ok("seed: 17 employee profiles", S.employeeProfiles.length === 17);
+  const dimas = leadershipLoad("u-dimas", S.initiatives, S.initiativeMembers, { includePending: true });
+  ok("seed: Dimas leadership load ≤ 2.0", dimas.used <= POLICY.leadershipCapacity + 1e-9);
+  eq("seed: Dimas at exactly 2.0", dimas.used, 2.0, 1e-9);
+  const oct = S.bonusRuns.find((r) => r.month === "2026-10");
+  ok("seed: October run stored", !!oct);
+  const line = (u: string) => oct?.lines.filter((l) => l.userId === u) ?? [];
+  ok("seed: Bima Oct lines forfeited (resignation §4.5)", line("u-bima").length > 0 && line("u-bima").every((l) => l.status === "forfeited"));
+  ok("seed: Rafi Oct line withheld (probation §6.8)", line("u-rafi").length > 0 && line("u-rafi").every((l) => l.status === "withheld_probation"));
+  ok("seed: October passes break-even", (oct?.operatingResult ?? -1) >= 0);
+  ok("seed: released runs Aug & Sep", ["2026-08", "2026-09"].every((m) => S.bonusRuns.find((r) => r.month === m)?.status === "released"));
+  ok("seed: deferral on SBS (net revenue > US$200k)", S.initiatives.some((i) => i.id === "ini-sbs-pdm" && deferralTriggers(i).length > 0));
+  ok("seed: no deferral on SPL", S.initiatives.some((i) => i.id === "ini-spl-crane" && deferralTriggers(i).length === 0));
+  ok("seed: stored runs match the engine", S.bonusRuns.every((r) => {
+    const live = computeRun({ month: r.month, initiatives: S.initiatives, members: S.initiativeMembers, entries: S.revenueEntries, profiles: S.employeeProfiles, adjustments: [], overheads: r.overheads, ebitda: r.ebitda });
+    return Math.abs(live.operatingResult - r.operatingResult) < 1 && Math.abs(live.totals.pool - r.totals.pool) < 1;
+  }));
+  const ytd = new Map<string, number>();
+  for (const r of S.bonusRuns) for (const l of r.lines) ytd.set(l.userId, (ytd.get(l.userId) ?? 0) + l.payable);
+  const nov = computeRun({ month: "2026-11", initiatives: S.initiatives, members: S.initiativeMembers, entries: S.revenueEntries, profiles: S.employeeProfiles, adjustments: S.shareAdjustments, overheads: 750_000_000, ebitda: 4_000_000_000, paidYtd: ytd });
+  ok("seed: November live run fails break-even", !nov.passed);
+  ok("seed: November live run suggests a correction", nov.suggestion !== null);
+  ok("seed: no stored November run", !S.bonusRuns.some((r) => r.month === "2026-11"));
+  const cb = S.clawbacks[0];
+  ok("seed: clawback amount positive and within 20 % of salary", !!cb && cb.originalPaid > cb.recalculated && cb.monthlyDeduction <= (600_000_000 / 12) * POLICY.clawback.maxSalaryDeductionPct + 1);
 }
 
 console.log(`${passes} checks passed, ${failures} failed`);
