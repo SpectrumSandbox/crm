@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Spectrum Group tokens — mirrored from spectrumgroup.id :root
+ *   --bg #202020  --card #262626  --card-2 #2b2b2b  --text #f2f2f2
+ *   --muted #b4b4b4  --dim #7a7a7a  --white #ffffff
+ *   --line rgba(255,255,255,.10)  --line-2 rgba(255,255,255,.22)
+ *   spectrum: magenta #D926D8 blue #2626D9 cyan #26D8D9 green #26D92A
+ *             yellow #D8D926 orange #D97D26 red #D92626
+ *   soft:     magenta #C05EBF blue #8384E2 cyan #5EBFC0 green #5EC060
+ *             yellow #BFC05E orange #C08D5E red #C05E5E
+ *   ease cubic-bezier(.2,.7,.2,1) · font 'Gotham','Montserrat'
+ */
+@layer base {
+  :root {
+    --sg-bg: 32 32 32;
+    --sg-card: 38 38 38;
+    --sg-card-2: 43 43 43;
+    --sg-card-3: 51 51 51; /* hover / selected surface (one step above card-2) */
+    --sg-text: 242 242 242;
+    --sg-muted: 180 180 180;
+    --sg-dim: 122 122 122;
+    --sg-white: 255 255 255;
+    --sg-line: rgba(255, 255, 255, 0.1);
+    --sg-line-2: rgba(255, 255, 255, 0.22);
+
+    --sg-magenta: 217 38 216;
+    --sg-blue: 38 38 217;
+    --sg-cyan: 38 216 217;
+    --sg-green: 38 217 42;
+    --sg-yellow: 216 217 38;
+    --sg-orange: 217 125 38;
+    --sg-red: 217 38 38;
+
+    --sg-s-magenta: 192 94 191;
+    --sg-s-blue: 131 132 226;
+    --sg-s-cyan: 94 191 192;
+    --sg-s-green: 94 192 96;
+    --sg-s-yellow: 191 192 94;
+    --sg-s-orange: 192 141 94;
+    --sg-s-red: 192 94 94;
+
+    --sg-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+    --radius: 3px;
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans text-base antialiased;
+    font-feature-settings: "tnum" 1, "cv11" 1;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-display text-sg-white;
+  }
+  h1 {
+    @apply font-extrabold;
+  }
+  h2,
+  h3 {
+    @apply font-bold;
+  }
+
+  ::selection {
+    background: rgb(var(--sg-s-blue) / 0.45);
+    color: #fff;
+  }
+
+  :focus-visible {
+    outline: 1px solid rgb(var(--sg-white) / 0.7);
+    outline-offset: 1px;
+  }
+
+  /* quiet scrollbars to match the site's flat surfaces */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.14);
+    border-radius: 100px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* the signature 7-bar spectrum rule used as an accent */
+  .sg-spectrum-rule {
+    background: linear-gradient(
+      90deg,
+      rgb(var(--sg-magenta)) 0 14.28%,
+      rgb(var(--sg-blue)) 14.28% 28.56%,
+      rgb(var(--sg-cyan)) 28.56% 42.84%,
+      rgb(var(--sg-green)) 42.84% 57.12%,
+      rgb(var(--sg-yellow)) 57.12% 71.4%,
+      rgb(var(--sg-orange)) 71.4% 85.68%,
+      rgb(var(--sg-red)) 85.68% 100%
+    );
+  }
+  .sg-eyebrow {
+    @apply text-2xs font-semibold uppercase tracking-[0.14em] text-sg-dim;
+  }
+  .sg-num {
+    font-variant-numeric: tabular-nums;
+  }
+}
