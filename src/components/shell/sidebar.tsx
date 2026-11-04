@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useMemo } from "react";
-import { Building2, ChevronsLeft, ChevronsRight, Handshake, Kanban, Keyboard, RotateCcw, Search, Users, type LucideIcon } from "lucide-react";
+import { Briefcase, Building2, ChevronsLeft, ChevronsRight, Handshake, Kanban, Keyboard, RotateCcw, Search, UserCheck, Users, Wallet, type LucideIcon } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { SMART_LISTS } from "@/lib/smart-lists";
 import { cn } from "@/lib/utils";
@@ -33,6 +33,7 @@ export function Sidebar() {
   const users = useCrm((s) => s.users);
   const currentUserId = useCrm((s) => s.currentUserId);
   const pipelines = useCrm((s) => s.pipelines);
+  const initiatives = useCrm((s) => s.initiatives);
   const resetDemo = useCrm((s) => s.resetDemo);
   const me = users.find((u) => u.id === currentUserId);
 
@@ -44,13 +45,19 @@ export function Sidebar() {
       contacts: contacts.length,
       companies: companies.length,
       sprintIssues: issues.filter((i) => i.sprintId && active.has(i.sprintId) && i.status !== "done").length,
+      awaitingPrc: initiatives.filter((i) => i.status === "submitted" || i.status === "screening" || i.status === "evaluation").length,
     };
-  }, [deals, contacts, companies, issues, sprints, pipelines]);
+  }, [deals, contacts, companies, issues, sprints, pipelines, initiatives]);
 
   const revenue: NavItem[] = [
     { href: "/deals", label: "Deals", icon: Handshake, shortcut: "G D", count: counts.openDeals },
     { href: "/contacts", label: "Contacts", icon: Users, shortcut: "G C", count: counts.contacts },
     { href: "/companies", label: "Companies", icon: Building2, shortcut: "G O", count: counts.companies },
+  ];
+  const programme: NavItem[] = [
+    { href: "/initiatives", label: "Initiatives", icon: Briefcase, shortcut: "G I", count: counts.awaitingPrc },
+    { href: "/compensation", label: "Compensation", icon: Wallet, shortcut: "G M" },
+    { href: "/people", label: "People", icon: UserCheck, shortcut: "G P" },
   ];
   const delivery: NavItem[] = [{ href: "/board", label: "Agile Board", icon: Kanban, shortcut: "G B", count: counts.sprintIssues }];
 
@@ -106,6 +113,11 @@ export function Sidebar() {
               ))}
             </div>
           )}
+        </Section>
+        <Section title="Initiatives" collapsed={collapsed}>
+          {programme.map((item) => (
+            <NavLink key={item.href} item={item} active={isActive(item.href)} collapsed={collapsed} />
+          ))}
         </Section>
         <Section title="Delivery" collapsed={collapsed}>
           {delivery.map((item) => (

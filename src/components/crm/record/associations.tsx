@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Building2, ChevronDown, ChevronRight, FileText, Handshake, Kanban, Minus, Package, Plus, Ticket, Unlink, User, X } from "lucide-react";
+import { Briefcase, Building2, ChevronDown, ChevronRight, FileText, Handshake, Kanban, Minus, Package, Plus, Ticket, Unlink, User, X } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useAssociations, useStageMap, useUserMap } from "@/lib/selectors";
 import type { CrmObjectType, QuoteStatus } from "@/lib/types";
@@ -12,6 +12,8 @@ import { Avatar, Chip, RecordAvatar } from "@/components/ui/misc";
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger, Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
 import { Button } from "@/components/ui/button";
 import { RecordPicker } from "@/components/shell/dialogs";
+import { initiativeStatusMeta } from "@/components/initiatives/shared";
+import { PROJECT_TYPE_META } from "@/lib/initiatives/policy";
 
 export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string }) {
   const a = useAssociations(type, id);
@@ -89,6 +91,8 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
       </Card>
 
       {type === "deal" && deal && <LineItemsCard dealId={deal.id} />}
+
+      {(type === "deal" || type === "company") && <InitiativesCard type={type} id={id} />}
 
       {(type === "deal" || type === "company") && (
         <Card
@@ -263,6 +267,46 @@ function Card({
       </header>
       {open && <div className="space-y-1.5 px-3 pb-3">{count ? children : <p className="px-1 py-1 text-2xs text-sg-dim">None yet.</p>}</div>}
     </section>
+  );
+}
+
+/** Project initiatives (PRC proposals) raised against this deal or company. */
+function InitiativesCard({ type, id }: { type: "deal" | "company"; id: string }) {
+  const all = useCrm((s) => s.initiatives);
+  const items = useMemo(() => all.filter((i) => (type === "deal" ? i.dealId === id : i.companyId === id)), [all, type, id]);
+  return (
+    <Card
+      title="Initiatives"
+      icon={Briefcase}
+      count={items.length}
+      action={
+        type === "deal" ? (
+          <Link href="/initiatives/new" className="inline-flex h-6 items-center gap-1 rounded px-2 text-2xs font-semibold text-sg-muted hover:bg-sg-card-2 hover:text-sg-white">
+            <Plus className="size-3" /> Propose initiative
+          </Link>
+        ) : undefined
+      }
+    >
+      {items.map((i) => {
+        const st = initiativeStatusMeta[i.status];
+        return (
+          <Link key={i.id} href={`/initiatives/${i.id}`} className="block rounded-md border border-sg-line bg-sg-bg/40 p-2.5 hover:border-sg-line-2">
+            <div className="flex items-baseline gap-1.5">
+              {(i.code ?? i.trackingNo) && <span className="shrink-0 text-2xs font-semibold text-sg-muted">{i.code ?? i.trackingNo}</span>}
+              <span className="truncate text-sm font-semibold text-sg-white">{i.title}</span>
+            </div>
+            <div className="mt-1 flex items-center gap-2 text-2xs">
+              <Chip color={st.color} dot>
+                {st.label}
+              </Chip>
+              <span className={softText[PROJECT_TYPE_META[i.type].color]}>
+                Type {i.type} · {PROJECT_TYPE_META[i.type].short}
+              </span>
+            </div>
+          </Link>
+        );
+      })}
+    </Card>
   );
 }
 

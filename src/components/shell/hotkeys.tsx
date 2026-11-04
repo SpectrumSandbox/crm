@@ -13,7 +13,10 @@ export const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
   { keys: ["G", "C"], label: "Go to Contacts", group: "Navigation" },
   { keys: ["G", "O"], label: "Go to Companies", group: "Navigation" },
   { keys: ["G", "B"], label: "Go to Agile Board", group: "Navigation" },
-  { keys: ["C"], label: "Create (deal / contact / company / issue — by page)", group: "Create" },
+  { keys: ["G", "I"], label: "Go to Initiatives", group: "Navigation" },
+  { keys: ["G", "M"], label: "Go to Compensation", group: "Navigation" },
+  { keys: ["G", "P"], label: "Go to People", group: "Navigation" },
+  { keys: ["C"], label: "Create (deal / contact / company / issue / initiative — by page)", group: "Create" },
   { keys: ["L"], label: "Log a call", group: "Create" },
   { keys: ["/"], label: "Focus the page filter", group: "Create" },
 ];
@@ -44,7 +47,7 @@ export function useGlobalHotkeys() {
       if (pendingG.current) {
         window.clearTimeout(pendingG.current);
         pendingG.current = null;
-        const dest: Record<string, string> = { d: "/deals", c: "/contacts", o: "/companies", b: "/board" };
+        const dest: Record<string, string> = { d: "/deals", c: "/contacts", o: "/companies", b: "/board", i: "/initiatives", m: "/compensation", p: "/people" };
         const to = dest[e.key.toLowerCase()];
         if (to) {
           e.preventDefault();
@@ -84,7 +87,9 @@ export function useGlobalHotkeys() {
         case "C": {
           if (ui.issueId) return;
           e.preventDefault();
-          if (pathname.startsWith("/board")) ui.openDialog({ kind: "createIssue" });
+          if (pathname.startsWith("/initiatives")) {
+            if (pathname !== "/initiatives/new") router.push("/initiatives/new");
+          } else if (pathname.startsWith("/board")) ui.openDialog({ kind: "createIssue" });
           else if (pathname.startsWith("/contacts")) ui.openDialog({ kind: "createContact" });
           else if (pathname.startsWith("/companies")) ui.openDialog({ kind: "createCompany" });
           else ui.openDialog({ kind: "createDeal" });

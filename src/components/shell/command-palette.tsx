@@ -4,11 +4,13 @@ import { useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
-import { ArrowRight, Building2, FileText, Handshake, Kanban, Keyboard, Phone, Plus, Ticket, User, Users } from "lucide-react";
+import { ArrowRight, Briefcase, Building2, FileText, Handshake, Kanban, Keyboard, Phone, Plus, Ticket, User, UserCheck, Users, Wallet } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { issueTypeMeta, lifecycleMeta } from "@/lib/meta";
 import { cn, formatIDR, softText } from "@/lib/utils";
 import { Kbd } from "@/components/ui/misc";
+import { initiativeStatusMeta } from "@/components/initiatives/shared";
+import { PROJECT_TYPE_META } from "@/lib/initiatives/policy";
 import { recordFromPath } from "./hotkeys";
 
 const itemCls =
@@ -45,6 +47,7 @@ export function CommandPalette() {
   const tickets = useCrm((s) => s.tickets);
   const issues = useCrm((s) => s.issues);
   const pipelines = useCrm((s) => s.pipelines);
+  const initiatives = useCrm((s) => s.initiatives);
 
   const stageName = useMemo(() => new Map(pipelines.flatMap((p) => p.stages.map((s) => [s.id, s.name] as const))), [pipelines]);
   const companyName = useMemo(() => new Map(companies.map((c) => [c.id, c.name] as const)), [companies]);
@@ -76,7 +79,7 @@ export function CommandPalette() {
                 value={query}
                 onValueChange={setQuery}
                 autoFocus
-                placeholder="Search contacts, companies, deals, tickets, issues — or type a command"
+                placeholder="Search contacts, companies, deals, tickets, issues, initiatives — or type a command"
                 className="h-12 flex-1 bg-transparent text-base text-sg-white placeholder:text-sg-dim focus:outline-none"
               />
               <Kbd>esc</Kbd>
@@ -115,6 +118,9 @@ export function CommandPalette() {
                 <Command.Item value="action create company" keywords={["account", "organisation"]} onSelect={() => openDialog({ kind: "createCompany" })} className={itemCls}>
                   <Plus className="size-4 text-soft-orange" /> Create company
                 </Command.Item>
+                <Command.Item value="action propose project initiative" keywords={["prc", "proposal", "new project", "submit"]} onSelect={() => go("/initiatives/new")} className={itemCls}>
+                  <Briefcase className="size-4 text-soft-green" /> Propose project initiative
+                </Command.Item>
               </Command.Group>
 
               <Command.Group heading="Navigate" className={groupCls}>
@@ -123,8 +129,11 @@ export function CommandPalette() {
                   { href: "/contacts", label: "Contacts", icon: Users, keys: "G C" },
                   { href: "/companies", label: "Companies", icon: Building2, keys: "G O" },
                   { href: "/board", label: "Agile board", icon: Kanban, keys: "G B" },
+                  { href: "/initiatives", label: "Initiatives", icon: Briefcase, keys: "G I", keywords: ["prc", "proposals", "projects"] },
+                  { href: "/compensation", label: "Compensation", icon: Wallet, keys: "G M", keywords: ["bonus", "run", "payroll", "deferred", "clawback"] },
+                  { href: "/people", label: "People", icon: UserCheck, keys: "G P", keywords: ["hr", "eligibility", "employees", "probation"] },
                 ].map((n) => (
-                  <Command.Item key={n.href} value={`nav ${n.label}`} onSelect={() => go(n.href)} className={itemCls}>
+                  <Command.Item key={n.href} value={`nav ${n.label}`} keywords={n.keywords} onSelect={() => go(n.href)} className={itemCls}>
                     <n.icon className="size-4 text-sg-muted" /> {n.label}
                     <span className="ml-auto flex gap-1">
                       {n.keys.split(" ").map((k) => (
@@ -181,6 +190,19 @@ export function CommandPalette() {
                       </Command.Item>
                     ))}
                   </Command.Group>
+                  <Command.Group heading="Initiatives" className={groupCls}>
+                    {initiatives.map((i) => {
+                      const ref = i.code ?? i.trackingNo;
+                      return (
+                        <Command.Item key={i.id} value={`initiative ${i.id} ${ref} ${i.title}`} keywords={[companyName.get(i.companyId ?? "") ?? "", PROJECT_TYPE_META[i.type].short, initiativeStatusMeta[i.status].label]} onSelect={() => go(`/initiatives/${i.id}`)} className={itemCls}>
+                          <Briefcase className="size-4 shrink-0 text-soft-green" />
+                          {ref ? <span className="shrink-0 font-semibold text-sg-muted">{ref}</span> : null}
+                          <span className="truncate">{i.title}</span>
+                          <span className={cn("ml-auto shrink-0 text-xs", softText[initiativeStatusMeta[i.status].color])}>{initiativeStatusMeta[i.status].label}</span>
+                        </Command.Item>
+                      );
+                    })}
+                  </Command.Group>
                   <Command.Group heading="Issues" className={groupCls}>
                     {issues.map((i) => {
                       const Icon = issueTypeMeta[i.type].icon;
@@ -214,7 +236,7 @@ export function CommandPalette() {
               <span className="flex items-center gap-1">
                 <Kbd>↵</Kbd> open
               </span>
-              <span className="ml-auto">Searches contacts · companies · deals · tickets · issues</span>
+              <span className="ml-auto">Searches contacts · companies · deals · tickets · issues · initiatives</span>
             </div>
           </Command>
         </DialogPrimitive.Content>
