@@ -60,12 +60,13 @@ curl https://crm.spectrumgroup.id/api/health  # D1 connectivity + row counts
 ## Deploy (Cloudflare)
 
 `wrangler.jsonc` targets the Worker **`crm`** — the one that owns `crm.spectrumgroup.id` — with the D1
-binding `DB` and the custom-domain route. `npx wrangler deploy` builds the OpenNext bundle automatically
-if it is missing (`scripts/ensure-open-next-build.mjs`), so any of these work:
+binding `DB` and the custom-domain route. The OpenNext bundle is built automatically when it's missing:
+inside Workers Builds by the `postinstall` hook (`WORKERS_CI=1`), elsewhere by wrangler's custom build
+(`scripts/ensure-open-next-build.mjs`). Node 22 is pinned via `.node-version`. Any of these work:
 
 - **Workers Builds (Git-connected):** Cloudflare → Workers & Pages → `crm` → Settings → Builds → connect
-  `SpectrumSandbox/crm`, branch `main`. Build command `npx opennextjs-cloudflare build`
-  (or leave empty), deploy command `npx wrangler deploy`. Every push to `main` deploys.
+  `SpectrumSandbox/crm`, branch `main`. Build command can stay empty, deploy
+  command `npx wrangler deploy` (the defaults). Every push to `main` deploys.
 - **GitHub Actions:** add repo secrets `CLOUDFLARE_API_TOKEN` (template "Edit Cloudflare Workers" + D1 edit)
   and `CLOUDFLARE_ACCOUNT_ID`; the `deploy` job in `.github/workflows/ci.yml` then deploys every push to
   `main` and smoke-tests the live domain.
