@@ -7,7 +7,8 @@ import { Plus, SlidersHorizontal, X } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useCompanyMap, useStageMap, useUserMap } from "@/lib/selectors";
 import { SMART_LISTS } from "@/lib/smart-lists";
-import { LIFECYCLE_STAGES, type Contact, type LifecycleStage } from "@/lib/types";
+import { LEAD_STATUSES, LIFECYCLE_STAGES, type Contact, type LifecycleStage } from "@/lib/types";
+import { csvDate, csvDateTime, csvFilename, type CsvColumn } from "@/lib/csv";
 import { leadStatusMeta, lifecycleMeta } from "@/lib/meta";
 import { cn, formatIDR, relativeTime, scoreColor, softText } from "@/lib/utils";
 import { PageHeader } from "@/components/shell/page-header";
@@ -122,7 +123,37 @@ export default function ContactsPage() {
         </div>
       ),
     },
-    { id: "status", header: "Lead status", sortValue: (c) => c.leadStatus, cell: (c) => <span className="text-sg-muted">{leadStatusMeta[c.leadStatus]}</span> },
+    {
+      id: "status",
+      header: "Lead status",
+      sortValue: (c) => LEAD_STATUSES.indexOf(c.leadStatus),
+      cell: (c) => (
+        <Menu>
+          <MenuTrigger asChild>
+            <button type="button" title="Change lead status" className="whitespace-nowrap rounded-sm px-1 py-0.5 text-sg-muted hover:bg-sg-card-3 hover:text-sg-white focus:outline-none focus-visible:ring-1 focus-visible:ring-sg-white">
+              {leadStatusMeta[c.leadStatus]}
+            </button>
+          </MenuTrigger>
+          <MenuContent>
+            <MenuLabel>Lead status</MenuLabel>
+            {LEAD_STATUSES.map((s) => (
+              <MenuItem
+                key={s}
+                active={s === c.leadStatus}
+                onSelect={() => {
+                  if (s === c.leadStatus) return;
+                  const prev = c.leadStatus;
+                  updateContact(c.id, { leadStatus: s });
+                  notify(`${c.firstName} ${c.lastName} → ${leadStatusMeta[s]}`, { label: "Undo", run: () => updateContact(c.id, { leadStatus: prev }) });
+                }}
+              >
+                {leadStatusMeta[s]}
+              </MenuItem>
+            ))}
+          </MenuContent>
+        </Menu>
+      ),
+    },
     {
       id: "pipeline",
       header: "Open pipeline",
@@ -147,12 +178,52 @@ export default function ContactsPage() {
       header: "Owner",
       sortValue: (c) => userMap.get(c.ownerId)?.name ?? "",
       cell: (c) => (
-        <span className="flex items-center gap-1.5 whitespace-nowrap text-sg-muted">
-          <Avatar user={userMap.get(c.ownerId)} size="xs" />
-          {userMap.get(c.ownerId)?.name.split(" ")[0]}
-        </span>
+        <Menu>
+          <MenuTrigger asChild>
+            <button type="button" title="Change owner" className="flex items-center gap-1.5 whitespace-nowrap rounded-sm px-1 py-0.5 text-sg-muted hover:bg-sg-card-3 hover:text-sg-white focus:outline-none focus-visible:ring-1 focus-visible:ring-sg-white">
+              <Avatar user={userMap.get(c.ownerId)} size="xs" />
+              {userMap.get(c.ownerId)?.name.split(" ")[0] ?? "Unassigned"}
+            </button>
+          </MenuTrigger>
+          <MenuContent align="end">
+            <MenuLabel>Contact owner</MenuLabel>
+            {users.map((u) => (
+              <MenuItem
+                key={u.id}
+                active={u.id === c.ownerId}
+                onSelect={() => {
+                  if (u.id === c.ownerId) return;
+                  const prev = c.ownerId;
+                  updateContact(c.id, { ownerId: u.id });
+                  notify(`${c.firstName} ${c.lastName} assigned to ${u.name}`, { label: "Undo", run: () => updateContact(c.id, { ownerId: prev }) });
+                }}
+              >
+                <Avatar user={u} size="xs" /> {u.name}
+              </MenuItem>
+            ))}
+          </MenuContent>
+        </Menu>
       ),
     },
+  ];
+
+  const csvColumns: CsvColumn<Contact>[] = [
+    { header: "Contact ID", value: (c) => c.id },
+    { header: "First name", value: (c) => c.firstName },
+    { header: "Last name", value: (c) => c.lastName },
+    { header: "Email", value: (c) => c.email },
+    { header: "Phone", value: (c) => c.phone },
+    { header: "Job title", value: (c) => c.jobTitle },
+    { header: "Company", value: (c) => companyMap.get(c.companyId ?? "")?.name ?? "" },
+    { header: "Lifecycle stage", value: (c) => lifecycleMeta[c.lifecycleStage].label },
+    { header: "Lead status", value: (c) => leadStatusMeta[c.leadStatus] },
+    { header: "Lead score", value: (c) => c.leadScore },
+    { header: "Open pipeline (IDR)", value: (c) => openPipelineByContact.get(c.id) ?? 0 },
+    { header: "Owner", value: (c) => userMap.get(c.ownerId)?.name ?? "" },
+    { header: "City", value: (c) => c.city },
+    { header: "Source", value: (c) => c.source },
+    { header: "Last contacted (WIB)", value: (c) => csvDateTime(c.lastContactedAt) },
+    { header: "Created", value: (c) => csvDate(c.createdAt) },
   ];
 
   const activeFilters = stages.length + (ownerId ? 1 : 0) + (minScore ? 1 : 0);
@@ -191,6 +262,8 @@ export default function ContactsPage() {
         hrefFor={(c) => `/contacts/${c.id}`}
         searchText={(c) => `${c.firstName} ${c.lastName} ${c.email} ${c.jobTitle} ${companyMap.get(c.companyId ?? "")?.name ?? ""} ${c.city}`}
         initialSort={{ id: "score", dir: -1 }}
+        tableId="contacts"
+        exportCsv={{ filename: () => csvFilename(view.id === "all" ? "contacts" : `contacts-${view.id}`), columns: csvColumns }}
         toolbar={
           <>
             <Popover>

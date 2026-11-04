@@ -330,6 +330,11 @@ export const projects: Project[] = [
   { id: "pr-uav", key: "UAV", name: "Unmanned Systems Programmes", leadId: "u-ayu", description: "Airframes, vessels, autonomy and payload integration.", color: "green" },
   { id: "pr-iot", key: "IOT", name: "Industrial IoT & Control", leadId: "u-dimas", description: "Sensing, edge gateways, SCADA and control-system delivery.", color: "cyan" },
   { id: "pr-swd", key: "SWD", name: "Software & AI Delivery", leadId: "u-fajar", description: "Platforms, dashboards, AI models and customer-facing software.", color: "blue" },
+  // ongoing projects (policy register: /projects)
+  { id: "pr-elang", key: "ELG", name: "Elang", leadId: "u-ben", description: "Ongoing project · Type B engineering services.", color: "yellow" },
+  { id: "pr-navora", key: "NAV", name: "Navora", leadId: "u-ben", description: "Ongoing project · Type C product development.", color: "magenta" },
+  { id: "pr-dms", key: "DMS", name: "DMS", leadId: "u-ben", description: "Ongoing project · Type C product development.", color: "cyan" },
+  { id: "pr-tennis", key: "TNS", name: "Tennis", leadId: "u-ben", description: "Ongoing project · Type C product development.", color: "green" },
 ];
 
 export const sprints: Sprint[] = [

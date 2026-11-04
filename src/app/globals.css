@@ -123,4 +123,39 @@
   .sg-num {
     font-variant-numeric: tabular-nums;
   }
+
+  /* loading placeholder: card surface with a soft highlight sweeping across */
+  .sg-skeleton {
+    background-color: rgb(var(--sg-card-2));
+    background-image: linear-gradient(90deg, transparent 0%, rgb(var(--sg-white) / 0.055) 50%, transparent 100%);
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    animation: sg-shimmer 1.4s var(--sg-ease) infinite;
+  }
+}
+
+@keyframes sg-shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+
+/* Respect the OS "reduce motion" setting: no animated transitions, slides, zooms, pulses or shimmer. */
+@media (prefers-reduced-motion: reduce) {
+  html:focus-within {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
 }

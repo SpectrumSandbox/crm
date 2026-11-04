@@ -30,6 +30,9 @@ jobs:
       - name: Compensation policy checks (§10 worked examples + seed consistency)
         run: npm run test:policy
 
+      - name: Utility checks (formatting, smart lists, palette search)
+        run: npm run test:utils
+
       - name: Seed SQL is in sync with src/lib/seed.ts
         run: |
           npm run db:seed-sql
@@ -67,18 +70,20 @@ jobs:
           (npx next start -p 3000 > next.log 2>&1 &)
           npx --yes wait-on@8 -t 60000 http://localhost:3000/deals
 
-      - name: Capture views
+      - name: Capture views (fails on page errors / console errors)
         run: BASE_URL=http://localhost:3000 OUT=shots node scripts/ci-screenshots.mjs
 
       - name: Publish to ci-artifacts branch
+        if: success() || failure()
         run: |
+          mkdir -p shots
           cp next.log shots/next.log || true
           cd shots
           git init -q -b ci-artifacts
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
           git add -A
-          git commit -qm "Screenshots for ${GITHUB_SHA}"
+          git commit -q --allow-empty -m "Screenshots for ${GITHUB_SHA}"
           git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" ci-artifacts
 
   deploy:

@@ -10,10 +10,12 @@ import { COMPANY_LISTS } from "@/lib/smart-lists";
 import type { Company } from "@/lib/types";
 import { lifecycleMeta } from "@/lib/meta";
 import { cn, formatIDR, formatNumber } from "@/lib/utils";
+import { csvDate, csvFilename, type CsvColumn } from "@/lib/csv";
 import { PageHeader } from "@/components/shell/page-header";
 import { SmartTable, type Column } from "@/components/crm/smart-table";
 import { Button } from "@/components/ui/button";
 import { Avatar, Chip, Kbd, RecordAvatar } from "@/components/ui/misc";
+import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger } from "@/components/ui/overlays";
 
 const tierColor = { Strategic: "magenta", Enterprise: "blue", "Mid-Market": "cyan", Emerging: "green" } as const;
 
@@ -24,7 +26,9 @@ export default function CompaniesPage() {
   const companies = useCrm((s) => s.companies);
   const contacts = useCrm((s) => s.contacts);
   const deals = useCrm((s) => s.deals);
+  const users = useCrm((s) => s.users);
   const enrichCompany = useCrm((s) => s.enrichCompany);
+  const updateCompany = useCrm((s) => s.updateCompany);
   const openDialog = useUi((s) => s.openDialog);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
@@ -110,12 +114,53 @@ export default function CompaniesPage() {
       header: "Owner",
       sortValue: (c) => userMap.get(c.ownerId)?.name ?? "",
       cell: (c) => (
-        <span className="flex items-center gap-1.5 whitespace-nowrap text-sg-muted">
-          <Avatar user={userMap.get(c.ownerId)} size="xs" />
-          {userMap.get(c.ownerId)?.name.split(" ")[0]}
-        </span>
+        <Menu>
+          <MenuTrigger asChild>
+            <button type="button" title="Change owner" className="flex items-center gap-1.5 whitespace-nowrap rounded-sm px-1 py-0.5 text-sg-muted hover:bg-sg-card-3 hover:text-sg-white focus:outline-none focus-visible:ring-1 focus-visible:ring-sg-white">
+              <Avatar user={userMap.get(c.ownerId)} size="xs" />
+              {userMap.get(c.ownerId)?.name.split(" ")[0] ?? "Unassigned"}
+            </button>
+          </MenuTrigger>
+          <MenuContent align="end">
+            <MenuLabel>Company owner</MenuLabel>
+            {users.map((u) => (
+              <MenuItem
+                key={u.id}
+                active={u.id === c.ownerId}
+                onSelect={() => {
+                  if (u.id === c.ownerId) return;
+                  const prev = c.ownerId;
+                  updateCompany(c.id, { ownerId: u.id });
+                  notify(`${c.name} assigned to ${u.name}`, { label: "Undo", run: () => updateCompany(c.id, { ownerId: prev }) });
+                }}
+              >
+                <Avatar user={u} size="xs" /> {u.name}
+              </MenuItem>
+            ))}
+          </MenuContent>
+        </Menu>
       ),
     },
+  ];
+
+  const csvColumns: CsvColumn<Company>[] = [
+    { header: "Company ID", value: (c) => c.id },
+    { header: "Name", value: (c) => c.name },
+    { header: "Domain", value: (c) => c.domain },
+    { header: "Parent company", value: (c) => parentName(c) ?? "" },
+    { header: "Industry", value: (c) => c.industry },
+    { header: "Tier", value: (c) => c.tier },
+    { header: "Lifecycle stage", value: (c) => lifecycleMeta[c.lifecycleStage].label },
+    { header: "City", value: (c) => c.city },
+    { header: "Country", value: (c) => c.country },
+    { header: "Employees", value: (c) => c.employees },
+    { header: "Annual revenue (IDR)", value: (c) => c.annualRevenue },
+    { header: "Open pipeline (IDR)", value: (c) => ctx.openPipelineByCompany.get(c.id) ?? 0 },
+    { header: "Contacts", value: (c) => contactCount.get(c.id) ?? 0 },
+    { header: "Phone", value: (c) => c.phone },
+    { header: "Owner", value: (c) => userMap.get(c.ownerId)?.name ?? "" },
+    { header: "Enriched", value: (c) => c.enriched },
+    { header: "Created", value: (c) => csvDate(c.createdAt) },
   ];
 
   return (
@@ -145,6 +190,8 @@ export default function CompaniesPage() {
         hrefFor={(c) => `/companies/${c.id}`}
         searchText={(c) => `${c.name} ${c.domain} ${c.industry} ${c.city}`}
         initialSort={{ id: "name", dir: 1 }}
+        tableId="companies"
+        exportCsv={{ filename: () => csvFilename(view.id === "all" ? "companies" : `companies-${view.id}`), columns: csvColumns }}
         bulkActions={(ids, clear) => (
           <Button
             size="sm"

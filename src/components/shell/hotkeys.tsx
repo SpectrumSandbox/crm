@@ -2,30 +2,139 @@
 
 import { useEffect, useRef } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { create } from "zustand";
 import { useUi } from "@/lib/store";
 
-export const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
+export interface Shortcut {
+  keys: string[];
+  label: string;
+  group: string;
+  /**
+   * Pages the shortcut applies to. Omitted = global. "/board" matches that page exactly;
+   * "/deals/*" matches any page below /deals (record pages).
+   */
+  routes?: string[];
+}
+
+const RECORD_ROUTES = ["/contacts/*", "/companies/*", "/deals/*", "/tickets/*"];
+const TABLE_ROUTES = ["/contacts", "/companies", "/tickets", "/issues"];
+const ISSUE_ROUTES = ["/board", "/backlog", "/issues"];
+
+/** Labels are unique (the help dialog keys rows by label). */
+export const SHORTCUTS: Shortcut[] = [
   { keys: ["⌘", "K"], label: "Command palette / global search", group: "General" },
   { keys: ["?"], label: "Keyboard shortcuts", group: "General" },
   { keys: ["["], label: "Collapse / expand sidebar", group: "General" },
   { keys: ["Esc"], label: "Close drawer or dialog", group: "General" },
+  { keys: ["/"], label: "Focus the page filter", group: "General" },
+  { keys: ["G", "H"], label: "Go to Home", group: "Navigation" },
   { keys: ["G", "D"], label: "Go to Deals", group: "Navigation" },
   { keys: ["G", "C"], label: "Go to Contacts", group: "Navigation" },
   { keys: ["G", "O"], label: "Go to Companies", group: "Navigation" },
+  { keys: ["G", "T"], label: "Go to Tickets", group: "Navigation" },
   { keys: ["G", "B"], label: "Go to Agile Board", group: "Navigation" },
+  { keys: ["G", "L"], label: "Go to Backlog & Sprints", group: "Navigation" },
+  { keys: ["G", "U"], label: "Go to Issues", group: "Navigation" },
   { keys: ["G", "I"], label: "Go to Initiatives", group: "Navigation" },
   { keys: ["G", "M"], label: "Go to Compensation", group: "Navigation" },
   { keys: ["G", "P"], label: "Go to People", group: "Navigation" },
-  { keys: ["G", "H"], label: "Go to Home", group: "Navigation" },
-  { keys: ["G", "T"], label: "Go to Tickets", group: "Navigation" },
-  { keys: ["G", "L"], label: "Go to Backlog & Sprints", group: "Navigation" },
-  { keys: ["G", "U"], label: "Go to Issues", group: "Navigation" },
   { keys: ["G", "Y"], label: "Go to My compensation", group: "Navigation" },
   { keys: ["G", "K"], label: "Go to Policy", group: "Navigation" },
   { keys: ["C"], label: "Create (deal / contact / company / issue / initiative — by page)", group: "Create" },
   { keys: ["L"], label: "Log a call", group: "Create" },
-  { keys: ["/"], label: "Focus the page filter", group: "Create" },
+
+  // Agile board
+  { keys: ["J", "K"], label: "Next / previous card", group: "Board", routes: ["/board"] },
+  { keys: ["H", "L"], label: "Previous / next column", group: "Board", routes: ["/board"] },
+  { keys: ["Enter"], label: "Open the focused card", group: "Board", routes: ["/board"] },
+  { keys: ["Shift", "←", "→"], label: "Move the focused card to the previous / next column", group: "Board", routes: ["/board"] },
+
+  // List / table views
+  { keys: ["J", "K"], label: "Next / previous row", group: "Table", routes: TABLE_ROUTES },
+  { keys: ["X"], label: "Select / deselect the current row", group: "Table", routes: TABLE_ROUTES },
+  { keys: ["Enter"], label: "Open the current row", group: "Table", routes: TABLE_ROUTES },
+
+  // Record pages
+  { keys: ["Alt", "←"], label: "Previous record in the list", group: "Record", routes: RECORD_ROUTES },
+  { keys: ["Alt", "→"], label: "Next record in the list", group: "Record", routes: RECORD_ROUTES },
+
+  // Issue drawer
+  { keys: ["1", "–", "5"], label: "Set issue status (in the issue drawer)", group: "Issue drawer", routes: ISSUE_ROUTES },
 ];
+
+function routeMatches(route: string, pathname: string) {
+  if (route.endsWith("/*")) return pathname.startsWith(route.slice(0, -1)) && pathname.length > route.length - 1;
+  return pathname === route;
+}
+
+/** Shortcuts that apply on `pathname`: every global one plus the page-specific ones whose routes match. */
+export function shortcutsFor(pathname: string): Shortcut[] {
+  return SHORTCUTS.filter((s) => !s.routes || s.routes.some((r) => routeMatches(r, pathname)));
+}
+
+/* ───────────── Mobile navigation drawer (< lg) ───────────── */
+
+export const COMPACT_QUERY = "(max-width: 1023.98px)";
+
+export function isCompactViewport() {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(COMPACT_QUERY).matches;
+}
+
+export const useMobileNav = create<{ open: boolean; setOpen: (open: boolean) => void }>()((set) => ({
+  open: false,
+  setOpen: (open) => set({ open }),
+}));
+
+/** "[" / palette "Toggle sidebar": collapses the rail on desktop, opens/closes the drawer below lg. */
+export function toggleNavigation() {
+  if (isCompactViewport()) {
+    const nav = useMobileNav.getState();
+    nav.setOpen(!nav.open);
+  } else {
+    useUi.getState().toggleSidebar();
+  }
+}
+
+/* ───────────── Recently visited pages (command palette "Recent") ───────────── */
+
+export const RECENT_KEY = "sg-crm-recent";
+export const RECENT_LIMIT = 8;
+export interface RecentVisit {
+  path: string;
+  at: string;
+}
+
+export function readRecent(): RecentVisit[] {
+  try {
+    const raw = window.localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((v): v is RecentVisit => !!v && typeof v === "object" && typeof (v as RecentVisit).path === "string" && typeof (v as RecentVisit).at === "string").slice(0, RECENT_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+export function recordVisit(path: string) {
+  if (!path || path === "/") return;
+  try {
+    const next = [{ path, at: new Date().toISOString() }, ...readRecent().filter((v) => v.path !== path)].slice(0, RECENT_LIMIT);
+    window.localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+  } catch {
+    // storage unavailable (private mode / quota) — recents are a convenience only
+  }
+}
+
+/** Tracks pathname changes into localStorage so the palette can offer them while it is still lazy-loading. */
+export function useRecentTracker() {
+  const pathname = usePathname();
+  useEffect(() => {
+    if (pathname) recordVisit(pathname);
+  }, [pathname]);
+}
+
+/* ───────────── Global key handling ───────────── */
 
 function isTyping(target: EventTarget | null) {
   const el = target as HTMLElement | null;
@@ -44,6 +153,7 @@ export function useGlobalHotkeys() {
       const ui = useUi.getState();
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
+        if (!ui.paletteOpen) useMobileNav.getState().setOpen(false);
         ui.setPaletteOpen(!ui.paletteOpen);
         return;
       }
@@ -73,7 +183,7 @@ export function useGlobalHotkeys() {
           return;
         case "[":
           e.preventDefault();
-          ui.toggleSidebar();
+          toggleNavigation();
           return;
         case "/": {
           const filter = document.querySelector<HTMLInputElement>("[data-page-filter]");
@@ -85,7 +195,8 @@ export function useGlobalHotkeys() {
         }
         case "l":
         case "L":
-          if (ui.issueId) return;
+          // on the board, H / L move between columns
+          if (ui.issueId || pathname === "/board") return;
           e.preventDefault();
           ui.openDialog({ kind: "logActivity", activityType: "call", target: recordFromPath(pathname) });
           return;

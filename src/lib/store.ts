@@ -319,8 +319,8 @@ export const useCrm = create<CrmState>()(
     },
     {
       name: "sg-crm-v1",
-      version: 2,
-      // v2 added the initiative & compensation module and new staff — start from the fresh seed
+      version: 3,
+      // v3: Policy v4.0 data model (curve, ledger, cycles, amendments) and the ongoing-projects register — start from the fresh seed
       migrate: () => collections(),
       storage: createJSONStorage(() => localStorage),
       skipHydration: true,
