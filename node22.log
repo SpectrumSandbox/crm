@@ -1,0 +1,105 @@
+### node v22.23.4 npm 10.9.9
+
+Route (app)                                 Size  First Load JS
+┌ ○ /                                      144 B         103 kB
+├ ○ /_not-found                            144 B         103 kB
+├ ƒ /api/admin/seed                        144 B         103 kB
+├ ƒ /api/health                            144 B         103 kB
+├ ƒ /api/me                                144 B         103 kB
+├ ƒ /api/workspace                         144 B         103 kB
+├ ƒ /backlog                             8.62 kB         252 kB
+├ ƒ /board                               10.5 kB         260 kB
+├ ƒ /companies                           2.99 kB         219 kB
+├ ƒ /companies/[id]                        344 B         244 kB
+├ ƒ /compensation                        34.3 kB         254 kB
+├ ƒ /contacts                            4.57 kB         221 kB
+├ ƒ /contacts/[id]                         345 B         244 kB
+├ ƒ /deals                               8.23 kB         249 kB
+├ ƒ /deals/[id]                            342 B         244 kB
+├ ƒ /home                                 8.1 kB         184 kB
+├ ƒ /initiatives                         13.3 kB         225 kB
+├ ƒ /initiatives/[id]                    30.1 kB         264 kB
+├ ƒ /initiatives/[id]/print              9.33 kB         185 kB
+├ ƒ /initiatives/new                     14.3 kB         249 kB
+├ ƒ /issues                               5.3 kB         225 kB
+├ ƒ /me                                  16.7 kB         263 kB
+├ ƒ /people                              22.3 kB         242 kB
+├ ƒ /policy                              15.2 kB         226 kB
+├ ƒ /projects                            10.1 kB         224 kB
+├ ƒ /projects/[id]                         14 kB         234 kB
+├ ƒ /settings                            9.33 kB         225 kB
+├ ƒ /tickets                             12.5 kB         261 kB
+└ ƒ /tickets/[id]                          342 B         244 kB
++ First Load JS shared by all             103 kB
+  ├ chunks/1255-d8a1861c775d9bcc.js      46.3 kB
+  ├ chunks/4bd1b696-100b9d70ed4e49c1.js  54.2 kB
+  └ other shared chunks (total)          2.11 kB
+
+
+ƒ Middleware                             34.2 kB
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+
+┌──────────────────────────────┐
+│ OpenNext — Generating bundle │
+└──────────────────────────────┘
+
+Bundling middleware function...
+Bundling static assets...
+Bundling cache assets...
+Building server function: default...
+Applying code patches: 3.332s
+# copyPackageTemplateFiles
+[35m⚙️ Bundling the OpenNext server...
+[0m
+[35mWorker saved in `.open-next/worker.js` 🚀
+[0m
+OpenNext build complete.
+
+added 476 packages in 1m
+### npx wrangler deploy --dry-run
+
+ ⛅️ wrangler 4.157.0
+────────────────────
+[custom build] Running: node scripts/ensure-open-next-build.mjs
+[custom build] [ensure-open-next-build] .open-next/worker.js present — skipping build
+[custom build] 
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mDuplicate key "id" in object literal[0m [duplicate-object-key]
+
+    .open-next/server-functions/default/handler.mjs:1662:42731:
+[37m      1662 │ ...eatedAt:l3,updatedAt:l3,...k2,[32mid[37m:m3};if(a3(a4=>({initiatives:...
+           ╵                                  [32m~~[0m
+
+  The original key "id" is here:
+
+    .open-next/server-functions/default/handler.mjs:1662:41849:
+[37m      1662 │ ...2),k2.id;let m3=c3("ini"),n3={[32mid[37m:m3,trackingNo:"",code:null,t...
+           ╵                                  [32m~~[0m
+
+
+✨ Read 127 files from the assets directory /home/runner/work/crm/crm/.open-next/assets
+Total Upload: 7675.81 KiB / gzip: 1618.19 KiB
+Your Worker has access to the following bindings:
+Binding                                                         Resource                  
+env.DB (spectrum-crm)                                           D1 Database               
+env.WORKER_SELF_REFERENCE (crm)                                 Worker                    
+env.ASSETS                                                      Assets                    
+env.APP_ENV ("production")                                      Environment Variable      
+env.APP_URL ("https://crm.spectrumgroup.id")                    Environment Variable      
+
+--dry-run: exiting now.
+
+Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
+total 44
+drwxr-xr-x 10 runner runner 4096 Nov  4 17:00 .
+drwxr-xr-x 14 runner runner 4096 Nov  4 17:00 ..
+drwxr-xr-x  3 runner runner 4096 Nov  4 17:00 .build
+drwxr-xr-x  4 runner runner 4096 Nov  4 17:00 assets
+drwxr-xr-x  3 runner runner 4096 Nov  4 17:00 cache
+drwxr-xr-x  2 runner runner 4096 Nov  4 17:00 cloudflare
+drwxr-xr-x  3 runner runner 4096 Nov  4 17:00 cloudflare-templates
+drwxr-xr-x  2 runner runner 4096 Nov  4 17:00 dynamodb-provider
+drwxr-xr-x  4 runner runner 4096 Nov  4 17:00 middleware
+### exit: 0
