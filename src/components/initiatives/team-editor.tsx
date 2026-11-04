@@ -1292,15 +1292,17 @@ function LedgerCard({ initiative, rows, defaultOpen }: { initiative: Initiative;
   if (!sorted.length) return null;
   return (
     <section className="rounded-xl border border-sg-line bg-sg-card">
-      <button type="button" onClick={() => setOpen((v) => !v)} className="flex w-full flex-wrap items-center gap-2 border-b border-sg-line px-4 py-2.5 text-left">
-        {open ? <ChevronDown className="size-3.5 text-sg-dim" /> : <ChevronRight className="size-3.5 text-sg-dim" />}
-        <History className="size-4 text-sg-muted" />
-        <span className="font-display text-sm font-extrabold text-sg-white">Team Allocation Ledger</span>
+      <div className="flex flex-wrap items-center gap-2 border-b border-sg-line px-4 py-2.5">
+        <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex items-center gap-2 text-left">
+          {open ? <ChevronDown className="size-3.5 text-sg-dim" /> : <ChevronRight className="size-3.5 text-sg-dim" />}
+          <History className="size-4 text-sg-muted" />
+          <span className="font-display text-sm font-extrabold text-sg-white">Team Allocation Ledger</span>
+        </button>
         <Cite s="Annex D" />
         <span className="text-2xs text-sg-dim">
           {sorted.length} row{sorted.length === 1 ? "" : "s"} · {closed} closed — one row per member per period of unchanged role, weight and allocation; each amendment closes rows and opens new ones (§6.5)
         </span>
-      </button>
+      </div>
       {open ? (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[900px] text-xs">

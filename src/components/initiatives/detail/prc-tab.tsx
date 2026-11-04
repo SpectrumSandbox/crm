@@ -11,7 +11,7 @@ import { cn, formatDate, formatIDR, fromDateInput, toDateInput } from "@/lib/uti
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Avatar, Chip } from "@/components/ui/misc";
-import { Cite, Money, Pct, Rate, TierChip, rateSourceLabel } from "@/components/initiatives/shared";
+import { Cite, Money, Rate, TierChip, rateSourceLabel } from "@/components/initiatives/shared";
 import { Card, CheckRow, KV, SlaTimer, onCmdEnter } from "./ui";
 
 const CRITERIA: { key: keyof Omit<PrcScores, "notes">; label: string; hint: string }[] = [

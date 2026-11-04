@@ -92,7 +92,7 @@ export function WorkflowStepper({ ini }: { ini: Initiative }) {
 
       <div className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-1.5">
         {ackDue ? <SlaTimer label="Acknowledgment" dueIso={ackDue} doneIso={ini.acknowledgedAt} cite="4.5" /> : null}
-        {completenessDue ? <SlaTimer label="Completeness" dueIso={completenessDue} doneIso={current >= 3 ? ini.acknowledgedAt ?? ini.decision?.decidedAt ?? null : null} /> : null}
+        {completenessDue ? <SlaTimer label="Completeness" dueIso={completenessDue} doneIso={current >= 2 ? ini.acknowledgedAt ?? ini.decision?.decidedAt ?? null : null} /> : null}
         {decisionDue ? <SlaTimer label={`Decision (Tier ${tier})`} dueIso={decisionDue} doneIso={ini.decision?.decidedAt ?? (current >= 5 ? ini.approvedAt : null)} cite="4.2" /> : null}
         {!ini.submittedAt && ini.status === "draft" ? <span className="text-xs text-sg-dim">Timers start at submission: acknowledgment in 1 business day, completeness in 2, decision in {decisionDays} ({TIER_META[tier].label}).</span> : null}
         {!ini.submittedAt && ini.status !== "draft" ? <span className="text-xs text-sg-dim">{ini.registeredRetroactively ? "Registered after it started — brought under the policy for PRC ratification (§15.1)." : "No submission on record."}</span> : null}

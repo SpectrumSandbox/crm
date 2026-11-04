@@ -12,7 +12,7 @@ import { Avatar, Chip, RecordAvatar } from "@/components/ui/misc";
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger, Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
 import { Button } from "@/components/ui/button";
 import { RecordPicker } from "@/components/shell/dialogs";
-import { initiativeStatusMeta } from "@/components/initiatives/shared";
+import { SampleChip, initiativeStatusMeta } from "@/components/initiatives/shared";
 import { PROJECT_TYPE_META } from "@/lib/initiatives/policy";
 
 export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string }) {
@@ -281,7 +281,11 @@ function InitiativesCard({ type, id }: { type: "deal" | "company"; id: string })
       count={items.length}
       action={
         type === "deal" ? (
-          <Link href="/initiatives/new" className="inline-flex h-6 items-center gap-1 rounded px-2 text-2xs font-semibold text-sg-muted hover:bg-sg-card-2 hover:text-sg-white">
+          <Link
+            href={`/initiatives/new?fromDeal=${encodeURIComponent(id)}`}
+            title="Start a PRC proposal prefilled from this deal — client, revenue cases, type, contract status, first CRM contact and milestones from its quote or line items"
+            className="inline-flex h-6 items-center gap-1 rounded px-2 text-2xs font-semibold text-sg-muted hover:bg-sg-card-2 hover:text-sg-white"
+          >
             <Plus className="size-3" /> Propose initiative
           </Link>
         ) : undefined
@@ -294,6 +298,7 @@ function InitiativesCard({ type, id }: { type: "deal" | "company"; id: string })
             <div className="flex items-baseline gap-1.5">
               {(i.code ?? i.trackingNo) && <span className="shrink-0 text-2xs font-semibold text-sg-muted">{i.code ?? i.trackingNo}</span>}
               <span className="truncate text-sm font-semibold text-sg-white">{i.title}</span>
+              {i.demo ? <SampleChip className="shrink-0" /> : null}
             </div>
             <div className="mt-1 flex items-center gap-2 text-2xs">
               <Chip color={st.color} dot>

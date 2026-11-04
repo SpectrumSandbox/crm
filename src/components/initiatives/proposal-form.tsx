@@ -50,35 +50,6 @@ type FormState = Pick<
   | "deferralMonths"
 > & { origination: Origination; firstContactAt: string | null; unusualTerms: boolean; deferralPct: number; standardBonus: number };
 
-const FORM_KEYS: (keyof FormState)[] = [
-  "title",
-  "type",
-  "origination",
-  "firstContactAt",
-  "summary",
-  "valueProposition",
-  "scope",
-  "deliverables",
-  "exclusions",
-  "successCriteria",
-  "startDate",
-  "endDate",
-  "milestones",
-  "companyId",
-  "dealId",
-  "contractStatus",
-  "newClient",
-  "paymentTermsDays",
-  "revenue",
-  "costs",
-  "risks",
-  "warranty",
-  "unusualTerms",
-  "deferralPct",
-  "deferralMonths",
-  "standardBonus",
-];
-
 const today = () => fromDateInput(toDateInput(new Date().toISOString()));
 
 function blankForm(): FormState {

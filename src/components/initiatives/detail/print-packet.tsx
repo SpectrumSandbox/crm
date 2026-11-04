@@ -2,11 +2,11 @@
 
 /*
  * Printable PRC packet: Annex A (Part 1 summary, Part 2 delivery plan, Part 3 financials and risk, declaration,
- * For PRC use) and Annex D Part 1 (Role and Weight Agreement). Rendered in a light, paper-like layout through a
- * portal on <body>, so the dark app theme and the app shell are overridden on this page only, on screen and in print.
+ * For PRC use) and Annex D Part 1 (Role and Weight Agreement). Rendered in a light, paper-like layout that covers the
+ * app shell on screen (fixed overlay) and, in print, hides everything but the packet and flattens its ancestors —
+ * so the dark theme is overridden on this page only.
  */
 import { useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCrm } from "@/lib/store";
@@ -45,7 +45,8 @@ const CSS = `
 @media print {
   @page { size: A4; margin: 14mm; }
   html, body { background: #fff !important; }
-  body > *:not(#prc-print-root) { display: none !important; }
+  body *:not(:has(#prc-print-root)):not(#prc-print-root):not(#prc-print-root *) { display: none !important; }
+  body *:has(#prc-print-root) { display: block !important; position: static !important; overflow: visible !important; height: auto !important; min-height: 0 !important; max-height: none !important; margin: 0 !important; padding: 0 !important; border: 0 !important; transform: none !important; background: #fff !important; }
   #prc-print-root { position: static; overflow: visible; background: #fff; }
   #prc-print-root .toolbar { display: none; }
   #prc-print-root .paper { box-shadow: none; margin: 0; padding: 0; max-width: none; }
@@ -89,7 +90,7 @@ export function PrintPacket({ id }: { id: string }) {
     <Packet ini={ini} d={data} />
   );
 
-  return createPortal(
+  return (
     <div id="prc-print-root">
       <style>{CSS}</style>
       <div className="toolbar">
@@ -104,8 +105,7 @@ export function PrintPacket({ id }: { id: string }) {
         </button>
       </div>
       {body}
-    </div>,
-    document.body,
+    </div>
   );
 }
 
