@@ -168,7 +168,7 @@ export function Sidebar() {
                 </Link>
               );
             })}
-          <div className={cn("mt-1 flex gap-px", collapsed ? "flex-col" : "ml-4 border-l border-sg-line pl-1")}>
+          <div className={cn("mt-1 gap-px", collapsed ? "flex flex-col" : "ml-4 grid grid-cols-3 border-l border-sg-line pl-1")}>
             {agile.map((item) => {
               const Icon = item.icon;
               const on = isActive(item.href);
@@ -177,11 +177,10 @@ export function Sidebar() {
                   key={item.href}
                   href={item.href}
                   title={`${item.label} (${item.shortcut})`}
-                  className={cn("flex h-7 items-center gap-1.5 rounded text-xs font-medium transition-colors", collapsed ? "justify-center" : "flex-1 justify-center px-1.5", on ? "bg-sg-card-2 text-sg-white" : "text-sg-dim hover:bg-sg-card hover:text-sg-white")}
+                  className={cn("flex h-7 min-w-0 items-center gap-1 rounded text-2xs font-medium transition-colors", collapsed ? "justify-center" : "justify-center px-1", on ? "bg-sg-card-2 text-sg-white" : "text-sg-dim hover:bg-sg-card hover:text-sg-white")}
                 >
                   <Icon className="size-3.5 shrink-0" />
                   {!collapsed && <span className="truncate">{item.label}</span>}
-                  {!collapsed && typeof item.count === "number" && item.count > 0 ? <span className="sg-num text-2xs text-sg-dim">{item.count}</span> : null}
                 </Link>
               );
             })}

@@ -63,7 +63,6 @@ export default function ProjectsRegisterPage() {
     <div className="flex h-full flex-col overflow-hidden">
       <PageHeader
         title="Ongoing projects"
-        crumbs={[{ href: "/projects", label: "Ongoing projects" }]}
         meta={
           <span className="text-xs text-sg-dim">
             Policy v{POLICY_VERSION} · {POLICY_STATUS} · who works on each project, in what role, at what weight, and what share of revenue is their compensation
