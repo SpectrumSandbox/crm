@@ -16,6 +16,20 @@ const itemCls =
 const groupCls =
   "[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.14em] [&_[cmdk-group-heading]]:text-sg-dim";
 
+/** Every typed word must appear somewhere in the item's value or keywords; whole-word/prefix hits rank higher. */
+function tokenFilter(value: string, search: string, keywords?: string[]) {
+  const hay = `${value} ${(keywords ?? []).join(" ")}`.toLowerCase();
+  const tokens = search.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return 1;
+  let score = 0;
+  for (const t of tokens) {
+    const at = hay.indexOf(t);
+    if (at < 0) return 0;
+    score += at === 0 || /[\s\-—·(/]/.test(hay[at - 1] ?? "") ? 1 : 0.5;
+  }
+  return score / tokens.length;
+}
+
 export function CommandPalette() {
   const open = useUi((s) => s.paletteOpen);
   const setOpen = useUi((s) => s.setPaletteOpen);
@@ -56,7 +70,7 @@ export function CommandPalette() {
           <DialogPrimitive.Title className="sr-only">Command palette</DialogPrimitive.Title>
           <DialogPrimitive.Description className="sr-only">Search records or run an action</DialogPrimitive.Description>
           <div className="sg-spectrum-rule h-[2px]" />
-          <Command label="Command palette" loop className="flex flex-col">
+          <Command label="Command palette" loop filter={tokenFilter} className="flex flex-col">
             <div className="flex items-center gap-2 border-b border-sg-line px-4">
               <Command.Input
                 value={query}

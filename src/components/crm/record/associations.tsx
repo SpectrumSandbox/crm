@@ -32,7 +32,7 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
     <div className="space-y-3 p-4">
       {/* Jira first — the bridge is the point of this platform */}
       <Card
-        title="Linked Jira work"
+        title="Jira work"
         icon={Kanban}
         count={a.links.length}
         tone={openLinks.some((l) => l.linkType === "blocks") ? "red" : undefined}

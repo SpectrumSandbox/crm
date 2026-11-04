@@ -152,12 +152,11 @@ function IssueDetail({ issue }: { issue: Issue }) {
                 onClick={() => updateIssue(issue.id, { status: s })}
                 title={`Press ${i + 1}`}
                 className={cn(
-                  "flex h-7 items-center gap-1.5 rounded border px-2.5 text-xs font-semibold transition-colors",
+                  "flex h-7 items-center rounded border px-2.5 text-xs font-semibold transition-colors",
                   issue.status === s ? cn("ring-1 ring-inset", softChip[issueStatusMeta[s].color], "border-transparent") : "border-sg-line text-sg-muted hover:text-sg-white",
                 )}
               >
                 {issueStatusMeta[s].label}
-                <Kbd className="h-4 min-w-4 text-[9px]">{i + 1}</Kbd>
               </button>
             ))}
           </div>
