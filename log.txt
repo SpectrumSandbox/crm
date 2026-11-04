@@ -1,0 +1,138 @@
+[error] desktop http://localhost:3000/deals :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 01-deals-board http://localhost:3000/deals
+[shot] 02-deals-table http://localhost:3000/deals?view=table
+[error] desktop http://localhost:3000/deals/d-nhs-asv :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 03-deal-record http://localhost:3000/deals/d-nhs-asv
+[error] desktop http://localhost:3000/contacts :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 04-contacts http://localhost:3000/contacts
+[error] desktop http://localhost:3000/contacts?view=hot-leads :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 05-contacts-hot-leads http://localhost:3000/contacts?view=hot-leads
+[error] desktop http://localhost:3000/contacts/k-rina :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 06-contact-record http://localhost:3000/contacts/k-rina
+[error] desktop http://localhost:3000/companies :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 07-companies http://localhost:3000/companies
+[error] desktop http://localhost:3000/companies/c-bap :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 08-company-record http://localhost:3000/companies/c-bap
+[error] desktop http://localhost:3000/tickets/t-1002 :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 09-ticket-record http://localhost:3000/tickets/t-1002
+[error] desktop http://localhost:3000/board :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 10-board-status http://localhost:3000/board
+[shot] 11-board-swimlanes-epic http://localhost:3000/board
+[shot] 12-board-deal-stage http://localhost:3000/board
+[error] desktop http://localhost:3000/board?issue=UAV-102 :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 13-issue-drawer http://localhost:3000/board?issue=UAV-102
+[error] desktop http://localhost:3000/deals :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 14-pre-palette http://localhost:3000/deals
+[shot] 15-command-palette http://localhost:3000/deals
+[error] desktop http://localhost:3000/contacts/k-hendra :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 16-log-call-dialog http://localhost:3000/contacts/k-hendra
+[error] desktop http://localhost:3000/board :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[dnd] issue i-swd-305 now in all::in_progress (expected all::in_progress)
+[error] desktop http://localhost:3000/board :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 17-board-after-keyboard-drag http://localhost:3000/board
+[error] desktop http://localhost:3000/initiatives :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 19-initiatives http://localhost:3000/initiatives
+[error] desktop http://localhost:3000/initiatives/new :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 20-proposal-form http://localhost:3000/initiatives/new
+[error] desktop http://localhost:3000/initiatives/ini-sbs-pdm :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 21-initiative-overview http://localhost:3000/initiatives/ini-sbs-pdm
+[shot] 22-initiative-team http://localhost:3000/initiatives/ini-sbs-pdm
+[error] desktop http://localhost:3000/initiatives/ini-sbs-pdm :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[warn] no Financials tab
+[shot] 23-initiative-financials http://localhost:3000/initiatives/ini-sbs-pdm
+[error] desktop http://localhost:3000/initiatives/ini-nhs-asv :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 24-initiative-in-review http://localhost:3000/initiatives/ini-nhs-asv
+[shot] 25-prc-review http://localhost:3000/initiatives/ini-nhs-asv
+[error] desktop http://localhost:3000/compensation :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 26-compensation-run http://localhost:3000/compensation
+[error] desktop http://localhost:3000/compensation?tab=deferred :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 27-compensation-deferred http://localhost:3000/compensation?tab=deferred
+[error] desktop http://localhost:3000/compensation?tab=probation :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 28-compensation-probation http://localhost:3000/compensation?tab=probation
+[error] desktop http://localhost:3000/compensation?tab=clawbacks :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 29-compensation-clawbacks http://localhost:3000/compensation?tab=clawbacks
+[error] desktop http://localhost:3000/compensation?tab=policy :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 30-compensation-policy http://localhost:3000/compensation?tab=policy
+[error] desktop http://localhost:3000/people :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 31-people http://localhost:3000/people
+[shot] 32-people-sheet http://localhost:3000/people
+[error] desktop http://localhost:3000/deals :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 18-shortcuts http://localhost:3000/deals
+[error] desktop http://localhost:3000/home :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 33-home http://localhost:3000/home
+[error] desktop http://localhost:3000/tickets :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 34-tickets http://localhost:3000/tickets
+[error] desktop http://localhost:3000/backlog :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 35-backlog http://localhost:3000/backlog
+[error] desktop http://localhost:3000/issues :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 36-issues http://localhost:3000/issues
+[error] desktop http://localhost:3000/me :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 37-my-compensation http://localhost:3000/me
+[error] desktop http://localhost:3000/policy :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 38-policy http://localhost:3000/policy
+[error] desktop http://localhost:3000/settings :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 39-settings http://localhost:3000/settings
+[error] desktop http://localhost:3000/projects :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 41-projects-register http://localhost:3000/projects
+[shot] 42-projects-people http://localhost:3000/projects
+[error] desktop http://localhost:3000/projects/prj-elang :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 43-project-elang http://localhost:3000/projects/prj-elang
+[error] desktop http://localhost:3000/projects/prj-navora :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 44-project-navora http://localhost:3000/projects/prj-navora
+[error] desktop http://localhost:3000/projects/ini-sbs-pdm :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 45-project-sample-sbs http://localhost:3000/projects/ini-sbs-pdm
+[error] desktop http://localhost:3000/this-page-does-not-exist :: Failed to load resource: the server responded with a status of 404 (Not Found) (http://localhost:3000/this-page-does-not-exist)
+[error] desktop http://localhost:3000/this-page-does-not-exist :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 40-not-found http://localhost:3000/this-page-does-not-exist
+[error] mobile http://localhost:3000/home :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 41-mobile-home http://localhost:3000/home
+[shot] 41-mobile-home-drawer http://localhost:3000/home
+[error] mobile http://localhost:3000/deals :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 42-mobile-deals http://localhost:3000/deals
+[shot] 42-mobile-deals-drawer http://localhost:3000/deals
+[error] mobile http://localhost:3000/initiatives :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+[shot] 43-mobile-initiatives http://localhost:3000/initiatives
+[shot] 43-mobile-initiatives-drawer http://localhost:3000/initiatives
+
+== 41 failure(s), 0 warning(s) ==
+FAIL [error] desktop http://localhost:3000/deals :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/deals/d-nhs-asv :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/contacts :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/contacts?view=hot-leads :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/contacts/k-rina :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/companies :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/companies/c-bap :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/tickets/t-1002 :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/board :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/board?issue=UAV-102 :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/deals :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/contacts/k-hendra :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/board :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/board :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/initiatives :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/initiatives/new :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/initiatives/ini-sbs-pdm :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/initiatives/ini-sbs-pdm :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/initiatives/ini-nhs-asv :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/compensation :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/compensation?tab=deferred :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/compensation?tab=probation :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/compensation?tab=clawbacks :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/compensation?tab=policy :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/people :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/deals :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/home :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/tickets :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/backlog :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/issues :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/me :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/policy :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/settings :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/projects :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/projects/prj-elang :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/projects/prj-navora :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/projects/ini-sbs-pdm :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] desktop http://localhost:3000/this-page-does-not-exist :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] mobile http://localhost:3000/home :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] mobile http://localhost:3000/deals :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
+FAIL [error] mobile http://localhost:3000/initiatives :: Failed to load resource: the server responded with a status of 503 (Service Unavailable) (http://localhost:3000/api/workspace)
