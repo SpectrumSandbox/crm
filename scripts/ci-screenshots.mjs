@@ -79,7 +79,30 @@ try {
   log.push(`[dnd] issue ${movedId} now in ${nowIn} (expected all::in_progress)`);
   await shot("17-board-after-keyboard-drag");
 
+  // initiatives & compensation module
+  await go("/initiatives", "19-initiatives");
+  await go("/initiatives/new", "20-proposal-form");
+  await go("/initiatives/ini-sbs-pdm", "21-initiative-overview");
+  await page.getByRole("tab", { name: /Team/ }).first().click().catch(() => log.push("[warn] no Team tab"));
+  await shot("22-initiative-team");
+  await page.getByRole("tab", { name: /Financials/ }).first().click().catch(() => log.push("[warn] no Financials tab"));
+  await shot("23-initiative-financials");
+  await go("/initiatives/ini-nhs-asv", "24-initiative-in-review");
+  await page.getByRole("tab", { name: /PRC/ }).first().click().catch(() => log.push("[warn] no PRC tab"));
+  await shot("25-prc-review");
+  await go("/compensation", "26-compensation-run");
+  await go("/compensation?tab=deferred", "27-compensation-deferred");
+  await go("/compensation?tab=probation", "28-compensation-probation");
+  await go("/compensation?tab=clawbacks", "29-compensation-clawbacks");
+  await go("/compensation?tab=policy", "30-compensation-policy");
+  await go("/people", "31-people");
+  await page.getByText("Bima Siregar").first().click().catch(() => log.push("[warn] could not open Bima"));
+  await shot("32-people-sheet");
+  await page.keyboard.press("Escape");
+
   // shortcuts dialog
+  await page.goto(BASE + "/deals");
+  await settle();
   await page.keyboard.press("?");
   await shot("18-shortcuts");
 } catch (e) {

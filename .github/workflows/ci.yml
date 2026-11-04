@@ -27,6 +27,9 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Compensation policy checks (§10 worked examples + seed consistency)
+        run: npm run test:policy
+
       - name: Seed SQL is in sync with src/lib/seed.ts
         run: |
           npm run db:seed-sql
