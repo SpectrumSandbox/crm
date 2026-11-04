@@ -1,7 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "spectrum-crm",
+  // Must match the Worker that owns crm.spectrumgroup.id in the Cloudflare dashboard.
+  "name": "crm",
   "main": ".open-next/worker.js",
+  // Lets a plain `npx wrangler deploy` (Cloudflare Workers Builds' default deploy command) work even
+  // when no build command is configured: builds the OpenNext bundle only if it is missing.
+  "build": { "command": "node scripts/ensure-open-next-build.mjs" },
   "compatibility_date": "2025-06-01",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": {
@@ -14,7 +18,7 @@
   "workers_dev": true,
   "preview_urls": true,
   "observability": { "enabled": true },
-  "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "spectrum-crm" }],
+  "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "crm" }],
   "d1_databases": [
     {
       "binding": "DB",

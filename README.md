@@ -59,11 +59,14 @@ curl https://crm.spectrumgroup.id/api/health  # D1 connectivity + row counts
 
 ## Deploy (Cloudflare)
 
-`wrangler.jsonc` defines the Worker `spectrum-crm`, the D1 binding `DB`, and the custom domain
-route `crm.spectrumgroup.id` (wrangler creates the DNS record and certificate on deploy — the
-`spectrumgroup.id` zone must be in the same Cloudflare account).
+`wrangler.jsonc` targets the Worker **`crm`** — the one that owns `crm.spectrumgroup.id` — with the D1
+binding `DB` and the custom-domain route. `npx wrangler deploy` builds the OpenNext bundle automatically
+if it is missing (`scripts/ensure-open-next-build.mjs`), so any of these work:
 
-- Manual: `npm run deploy`
-- Git-connected: in Cloudflare → Workers & Pages → `spectrum-crm` → Settings → Builds, connect
-  `SpectrumSandbox/crm`, branch `main`, build command `npx opennextjs-cloudflare build`, deploy command
-  `npx wrangler deploy`.
+- **Workers Builds (Git-connected):** Cloudflare → Workers & Pages → `crm` → Settings → Builds → connect
+  `SpectrumSandbox/crm`, branch `main`. Build command `npx opennextjs-cloudflare build`
+  (or leave empty), deploy command `npx wrangler deploy`. Every push to `main` deploys.
+- **GitHub Actions:** add repo secrets `CLOUDFLARE_API_TOKEN` (template "Edit Cloudflare Workers" + D1 edit)
+  and `CLOUDFLARE_ACCOUNT_ID`; the `deploy` job in `.github/workflows/ci.yml` then deploys every push to
+  `main` and smoke-tests the live domain.
+- **Manual:** `npx wrangler login && npm run deploy`.
