@@ -2,9 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowUp, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, Columns3, Download, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { downloadCsv, type CsvColumn } from "@/lib/csv";
 import { Kbd } from "@/components/ui/misc";
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
 
 export interface Column<T> {
   id: string;
@@ -13,11 +16,38 @@ export interface Column<T> {
   sortValue?: (row: T) => string | number;
   align?: "left" | "right";
   className?: string;
+  /** set false to keep a column always visible (the first column is always kept) */
+  hideable?: boolean;
+}
+
+const colsKey = (tableId: string) => `sg-table-cols:${tableId}`;
+
+function readHidden(tableId: string | undefined): string[] {
+  if (!tableId || typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(colsKey(tableId));
+    const v: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeHidden(tableId: string | undefined, hidden: string[]) {
+  if (!tableId) return;
+  try {
+    if (hidden.length) window.localStorage.setItem(colsKey(tableId), JSON.stringify(hidden));
+    else window.localStorage.removeItem(colsKey(tableId));
+  } catch {
+    /* storage unavailable (private mode) — visibility still works for this session */
+  }
 }
 
 /**
  * Dense, keyboard-first record table:
  *  j / k (or ↑ ↓) move the cursor, Enter opens, x toggles selection, / focuses the filter.
+ * Pass `tableId` to persist column visibility per table, and `exportCsv` to offer an
+ * "Export CSV" of exactly the rows in view (filters + search + sort applied).
  */
 export function SmartTable<T extends { id: string }>({
   rows,
@@ -28,6 +58,8 @@ export function SmartTable<T extends { id: string }>({
   toolbar,
   bulkActions,
   emptyText = "No records match these filters.",
+  tableId,
+  exportCsv,
 }: {
   rows: T[];
   columns: Column<T>[];
@@ -37,6 +69,9 @@ export function SmartTable<T extends { id: string }>({
   toolbar?: React.ReactNode;
   bulkActions?: (selected: string[], clear: () => void) => React.ReactNode;
   emptyText?: string;
+  /** stable id used to persist column visibility in localStorage */
+  tableId?: string;
+  exportCsv?: { filename: string | (() => string); columns: CsvColumn<T>[] };
 }) {
   const router = useRouter();
   const [q, setQ] = useState("");
@@ -44,6 +79,15 @@ export function SmartTable<T extends { id: string }>({
   const [cursor, setCursor] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const bodyRef = useRef<HTMLTableSectionElement>(null);
+  const [hidden, setHidden] = useState<string[]>(() => readHidden(tableId));
+  useEffect(() => setHidden(readHidden(tableId)), [tableId]);
+  const shownColumns = useMemo(() => columns.filter((c, i) => i === 0 || c.hideable === false || !hidden.includes(c.id)), [columns, hidden]);
+  const toggleColumn = (id: string) =>
+    setHidden((h) => {
+      const next = h.includes(id) ? h.filter((x) => x !== id) : [...h, id];
+      writeHidden(tableId, next);
+      return next;
+    });
 
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -73,7 +117,9 @@ export function SmartTable<T extends { id: string }>({
         }
         return;
       }
-      if (e.metaKey || e.ctrlKey || e.altKey || document.querySelector("[role=dialog]")) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || document.querySelector("[role=dialog],[role=menu]")) return;
+      // Enter / x on a focused in-cell control (owner menu, link) belongs to that control, not the row
+      if ((e.key === "Enter" || e.key === "x") && el.closest("button,a,label")) return;
       if (e.key === "j" || e.key === "ArrowDown") {
         e.preventDefault();
         setCursor((c) => Math.min(visible.length - 1, c + 1));
@@ -115,6 +161,51 @@ export function SmartTable<T extends { id: string }>({
         </div>
         {toolbar}
         <div className="ml-auto flex items-center gap-2 text-2xs text-sg-dim">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="sm" aria-label="Choose columns">
+                <Columns3 /> Columns
+                {hidden.some((h) => columns.some((c, i) => i > 0 && c.hideable !== false && c.id === h)) ? <span className="rounded-sm bg-sg-card-3 px-1 text-[10px] text-sg-muted">{shownColumns.length}/{columns.length}</span> : null}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-56 p-1.5">
+              <div className="sg-eyebrow px-1.5 pb-1 pt-1">Visible columns</div>
+              {columns.map((c, i) => {
+                const locked = i === 0 || c.hideable === false;
+                const on = locked || !hidden.includes(c.id);
+                return (
+                  <label key={c.id} className={cn("flex items-center gap-2 rounded px-1.5 py-1 text-sm", locked ? "text-sg-dim" : "cursor-pointer text-sg-text hover:bg-sg-card-3 hover:text-sg-white")}>
+                    <input type="checkbox" checked={on} disabled={locked} onChange={() => toggleColumn(c.id)} className="size-3.5 accent-white" />
+                    {c.header}
+                    {locked ? <span className="ml-auto text-[10px] uppercase tracking-wider">always</span> : null}
+                  </label>
+                );
+              })}
+              {hidden.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHidden([]);
+                    writeHidden(tableId, []);
+                  }}
+                  className="mt-1 w-full rounded px-1.5 py-1 text-left text-xs text-sg-muted hover:bg-sg-card-3 hover:text-sg-white"
+                >
+                  Show all columns
+                </button>
+              )}
+            </PopoverContent>
+          </Popover>
+          {exportCsv && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!visible.length}
+              title={`Export the ${visible.length} rows in view`}
+              onClick={() => downloadCsv(typeof exportCsv.filename === "function" ? exportCsv.filename() : exportCsv.filename, visible, exportCsv.columns)}
+            >
+              <Download /> Export CSV
+            </Button>
+          )}
           <span className="hidden items-center gap-1 lg:flex">
             <Kbd>J</Kbd>
             <Kbd>K</Kbd> move · <Kbd>↵</Kbd> open · <Kbd>X</Kbd> select
@@ -148,7 +239,7 @@ export function SmartTable<T extends { id: string }>({
                   className="size-3.5 cursor-pointer accent-white"
                 />
               </th>
-              {columns.map((c) => (
+              {shownColumns.map((c) => (
                 <th key={c.id} className={cn("whitespace-nowrap border-b border-sg-line px-3 py-2 font-semibold", c.align === "right" && "text-right", c.className)}>
                   {c.sortValue ? (
                     <button type="button" className={cn("inline-flex items-center gap-1 hover:text-sg-white", sort.id === c.id && "text-sg-white")} onClick={() => setSort((s) => ({ id: c.id, dir: s.id === c.id ? ((-s.dir) as 1 | -1) : 1 }))}>
@@ -169,7 +260,9 @@ export function SmartTable<T extends { id: string }>({
                 data-row={i}
                 onMouseEnter={() => setCursor(i)}
                 onClick={(e) => {
-                  if ((e.target as HTMLElement).closest("a,button,input,select")) return;
+                  // clicks inside portalled menus/popovers bubble through React — ignore anything outside the row's DOM
+                  if (!e.currentTarget.contains(e.target as Node)) return;
+                  if ((e.target as HTMLElement).closest("a,button,input,select,label")) return;
                   router.push(hrefFor(row));
                 }}
                 className={cn("cursor-pointer", i === cursor ? "bg-sg-card-2" : "hover:bg-sg-card", selected.has(row.id) && "bg-soft-blue/10")}
@@ -177,7 +270,7 @@ export function SmartTable<T extends { id: string }>({
                 <td className={cn("border-b border-sg-line py-2 pl-5", i === cursor && "shadow-[inset_2px_0_0_rgb(var(--sg-white))]")}>
                   <input type="checkbox" aria-label="Select row" checked={selected.has(row.id)} onChange={() => toggle(row.id)} className="size-3.5 cursor-pointer accent-white" />
                 </td>
-                {columns.map((c) => (
+                {shownColumns.map((c) => (
                   <td key={c.id} className={cn("border-b border-sg-line px-3 py-2 align-middle", c.align === "right" && "text-right", c.className)}>
                     {c.cell(row)}
                   </td>

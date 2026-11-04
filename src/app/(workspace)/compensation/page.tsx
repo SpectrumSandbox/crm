@@ -1,11 +1,12 @@
 "use client";
 
-/* Finance / PRC compensation workspace — Project Initiative & Compensation Policy v3.0 §3.4, §4.4, §6.1–§6.8. */
+/* Finance / PRC compensation workspace — Project Initiative and Compensation Policy v4.0 §8–§11 (monthly cycle, deferral, clawback, probation, curve). */
 import { useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { CalendarDays } from "lucide-react";
 import { useCrm } from "@/lib/store";
-import { monthKey } from "@/lib/initiatives/engine";
+import { cycleMonth, monthKey } from "@/lib/initiatives/engine";
+import { POLICY_VERSION } from "@/lib/initiatives/policy";
 import { PageHeader } from "@/components/shell/page-header";
 import { Select } from "@/components/ui/input";
 import { Chip } from "@/components/ui/misc";
@@ -29,10 +30,12 @@ export default function CompensationPage() {
   const clawbacks = useCrm((s) => s.clawbacks);
   const profiles = useCrm((s) => s.employeeProfiles);
 
-  const current = useMemo(() => monthKey(Date.now()), []);
+  // the salary cycle today's collections fall in (collected after the 20th → next month, §8.2)
+  const current = useMemo(() => cycleMonth(new Date().toISOString()), []);
   const months = useMemo(() => {
     const set = new Set<string>([current]);
-    revenueEntries.forEach((e) => set.add(e.month));
+    set.add(monthKey(Date.now()));
+    revenueEntries.forEach((e) => set.add(e.collectedAt ? cycleMonth(e.collectedAt) : e.month));
     bonusRuns.forEach((r) => set.add(r.month));
     return Array.from(set)
       .filter((m) => /^\d{4}-\d{2}$/.test(m))
@@ -74,7 +77,7 @@ export default function CompensationPage() {
           </Chip>
         }
       >
-        <span className="hidden text-2xs text-sg-dim md:inline">Finance &amp; PRC workspace · Policy v3.0</span>
+        <span className="hidden text-2xs text-sg-dim md:inline">Finance &amp; PRC workspace · Policy v{POLICY_VERSION}</span>
         <div className="flex items-center gap-1.5">
           <CalendarDays className="size-3.5 text-sg-dim" />
           <Select value={month} onChange={(e) => go({ month: e.target.value })} wrapperClassName="w-44" aria-label="Month">
@@ -93,7 +96,7 @@ export default function CompensationPage() {
           value={tab}
           onChange={(t) => go({ tab: t })}
           items={[
-            { value: "run", label: "Monthly run" },
+            { value: "run", label: "Monthly cycle" },
             { value: "deferred", label: "Deferred", count: counts.deferred },
             { value: "probation", label: "Probation", count: counts.probation },
             { value: "clawbacks", label: "Clawbacks", count: counts.clawbacks },

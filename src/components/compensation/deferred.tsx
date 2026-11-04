@@ -1,69 +1,91 @@
 "use client";
 
-/* §6.3 deferred bonus ledger with vesting conditions and release / forfeit actions. */
+/* §9.3 deferred bonus ledger: vesting 6–12 months after project close, holds for unpaid invoices, reductions, release. */
 import { useMemo, useState } from "react";
-import { CircleCheck, CircleX, Hourglass, PiggyBank, SquareCheck } from "lucide-react";
+import { CircleAlert, CircleCheck, CircleX, Hourglass, PiggyBank, SquareCheck } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
-import type { DeferredBonus } from "@/lib/initiatives/types";
-import { paymentOutcome } from "@/lib/initiatives/engine";
+import type { DeferredBonus, EmployeeProfile, Initiative, RevenueEntry } from "@/lib/initiatives/types";
+import { cycleMonth, deferralShare, deferralVestDate, monthStart, netRevenue, paymentDate, paymentOutcome, projectRate, proposalEconomics, type PaymentOutcome } from "@/lib/initiatives/engine";
+import { POLICY } from "@/lib/initiatives/policy";
 import { cn, formatDate, formatIDR } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Chip, EmptyState } from "@/components/ui/misc";
 import { Modal } from "@/components/ui/overlays";
 import { Cite, Metric, Money } from "@/components/initiatives/shared";
-import { Callout, InitiativeLink, Panel, UserCell, dueText, monthLabel, parseAmount, tdCls, tdNum, thCls, thRight } from "./common";
-
-const CONDITIONS = [
-  { key: "paid", label: "Client has paid all invoices" },
-  { key: "warranty", label: "No material warranty claims" },
-  { key: "overruns", label: "No significant cost overruns" },
-  { key: "forecast", label: "Final net revenue within 10% of forecast" },
-] as const;
-type CondKey = (typeof CONDITIONS)[number]["key"];
+import { Callout, InitiativeLink, Panel, UserCell, dueText, monthLabel, parseAmount, pctLabel, tdCls, tdNum, thCls, thRight, useInitiativeMap } from "./common";
 
 const statusColor = { pending: "yellow", released: "green", forfeited: "red" } as const;
 
+interface Review {
+  d: DeferredBonus;
+  ini: Initiative | undefined;
+  vestAt: string;
+  estimated: boolean;
+  vested: boolean;
+  closed: boolean;
+  unpaid: RevenueEntry[];
+  outcome: PaymentOutcome;
+  payOn: string;
+  ready: boolean;
+}
+
+function review(d: DeferredBonus, ini: Initiative | undefined, entries: RevenueEntry[], profile: EmployeeProfile | undefined, now: number): Review {
+  const vestAt = ini ? deferralVestDate(ini) : d.vestAt;
+  const closed = !!ini?.completedAt;
+  const vested = closed && Date.parse(vestAt) <= now;
+  const unpaid = entries.filter((e) => e.initiativeId === d.initiativeId && !e.received);
+  // the deferred bonus was earned on a payment collected in its cycle, for work before it (§10)
+  const outcome = paymentOutcome(profile, new Date(now).toISOString(), paymentDate(d.month), monthStart(d.month));
+  const payOn = paymentDate(cycleMonth(vestAt));
+  return { d, ini, vestAt, estimated: !closed, vested, closed, unpaid, outcome, payOn, ready: vested && outcome.kind === "pay" };
+}
+
 export function DeferredTab() {
   const deferred = useCrm((s) => s.deferredBonuses);
-  const [filter, setFilter] = useState<"all" | DeferredBonus["status"]>("pending");
-  const [checks, setChecks] = useState<Record<string, Partial<Record<CondKey, boolean>>>>({});
-  const [action, setAction] = useState<{ kind: "partial" | "forfeit"; item: DeferredBonus } | null>(null);
-  const releaseDeferred = useCrm((s) => s.releaseDeferred);
-  const notify = useUi((s) => s.notify);
+  const entries = useCrm((s) => s.revenueEntries);
   const profiles = useCrm((s) => s.employeeProfiles);
+  const forfeitDeferred = useCrm((s) => s.forfeitDeferred);
+  const notify = useUi((s) => s.notify);
+  const iniMap = useInitiativeMap();
+  const [filter, setFilter] = useState<"all" | DeferredBonus["status"]>("pending");
+  const [releasing, setReleasing] = useState<Review | null>(null);
 
-  const rows = useMemo(() => [...deferred].filter((d) => filter === "all" || d.status === filter).sort((a, b) => a.vestAt.localeCompare(b.vestAt)), [deferred, filter]);
+  const now = useMemo(() => Date.now(), []);
+  const reviews = useMemo(() => deferred.map((d) => review(d, iniMap.get(d.initiativeId), entries, profiles.find((p) => p.userId === d.userId), now)), [deferred, iniMap, entries, profiles, now]);
+  const rows = useMemo(() => reviews.filter((r) => filter === "all" || r.d.status === filter).sort((a, b) => a.vestAt.localeCompare(b.vestAt)), [reviews, filter]);
   const stats = useMemo(() => {
-    const pending = deferred.filter((d) => d.status === "pending");
+    const pending = reviews.filter((r) => r.d.status === "pending");
     return {
-      pending: pending.reduce((s, d) => s + d.amount, 0),
+      pending: pending.reduce((s, r) => s + r.d.amount, 0),
       pendingCount: pending.length,
-      vested: pending.filter((d) => Date.parse(d.vestAt) <= Date.now()).length,
+      ready: pending.filter((r) => r.ready && !r.unpaid.length).length,
+      heldInvoices: pending.filter((r) => r.unpaid.length).reduce((s, r) => s + r.d.amount, 0),
       released: deferred.filter((d) => d.status === "released").reduce((s, d) => s + d.releasedAmount, 0),
-      forfeited: deferred.filter((d) => d.status !== "pending").reduce((s, d) => s + (d.amount - (d.status === "released" ? d.releasedAmount : 0)), 0),
+      reduced: deferred.filter((d) => d.status !== "pending").reduce((s, d) => s + (d.amount - (d.status === "released" ? d.releasedAmount : 0)), 0),
     };
-  }, [deferred]);
+  }, [reviews, deferred]);
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-xl border border-sg-line bg-sg-card px-4 py-3">
-        <Metric label="Pending deferred" value={formatIDR(stats.pending)} hint={`${stats.pendingCount} entries`} tone={stats.pending ? "yellow" : undefined} />
-        <Metric label="Vested · awaiting review" value={String(stats.vested)} tone={stats.vested ? "orange" : undefined} hint="vest date reached" />
+        <Metric label="Deferred, not yet due" value={formatIDR(stats.pending)} hint={`${stats.pendingCount} entries`} tone={stats.pending ? "yellow" : undefined} />
+        <Metric label="Ready to release" value={String(stats.ready)} tone={stats.ready ? "green" : undefined} hint="closed, vested, invoices paid" />
+        <Metric label="Held · unpaid invoices" value={formatIDR(stats.heldInvoices)} tone={stats.heldInvoices ? "orange" : undefined} />
         <Metric label="Released to date" value={formatIDR(stats.released)} tone="green" />
-        <Metric label="Forfeited to date" value={formatIDR(stats.forfeited)} tone={stats.forfeited ? "red" : undefined} />
-        <div className="ml-auto max-w-sm text-2xs text-sg-dim">
-          High-risk projects defer 30% of each bonus for 6–12 months <Cite s="6.3" />. Deferred bonuses earn no interest. Partial releases forfeit the remainder proportionally.
+        <Metric label="Reduced / forfeited" value={formatIDR(stats.reduced)} tone={stats.reduced ? "red" : undefined} />
+        <div className="ml-auto max-w-md text-2xs text-sg-dim">
+          On high-risk projects up to {Math.round(POLICY.deferral.maxPct * 100)}% of each interim bonus is deferred for {POLICY.deferral.minMonths}–{POLICY.deferral.maxMonths} months after project close <Cite s="9.3" />. It earns no interest and is paid in the cycle after the deferral period ends, subject to §10.
         </div>
       </div>
 
       <Panel
         title="Deferred bonus ledger"
         icon={PiggyBank}
-        cite="6.3"
+        cite="9.3"
         bodyClassName="p-0"
         actions={
-          <Select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)} wrapperClassName="w-36">
+          <Select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)} wrapperClassName="w-36" aria-label="Filter">
             <option value="pending">Pending</option>
             <option value="released">Released</option>
             <option value="forfeited">Forfeited</option>
@@ -73,11 +95,11 @@ export function DeferredTab() {
       >
         {!rows.length ? (
           <EmptyState icon={Hourglass} title={filter === "pending" ? "Nothing pending" : "No deferred bonuses"}>
-            Deferred entries are created when PRC authorises release of a run containing §6.3 deferrals or §6.1 carry-overs.
+            Deferred entries are created when the PRC releases a monthly run with lines on a project where a §9.3 trigger applies.
           </EmptyState>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1100px] text-sm">
+            <table className="w-full min-w-[1160px] text-sm">
               <thead>
                 <tr className="border-b border-sg-line">
                   <th className={thCls}>Employee</th>
@@ -86,25 +108,21 @@ export function DeferredTab() {
                   <th className={thRight}>Amount</th>
                   <th className={thCls}>Vests</th>
                   <th className={thCls}>Status</th>
-                  <th className={thCls}>Vesting conditions</th>
+                  <th className={thCls}>Conditions</th>
                   <th className={thCls} />
                 </tr>
               </thead>
               <tbody>
-                {rows.map((d) => {
-                  const profile = profiles.find((p) => p.userId === d.userId);
-                  const employed = paymentOutcome(profile, new Date().toISOString(), d.month);
-                  const c = checks[d.id] ?? {};
-                  const allTicked = CONDITIONS.every((k) => c[k.key]);
-                  const vested = Date.parse(d.vestAt) <= Date.now();
+                {rows.map((r) => {
+                  const { d } = r;
                   return (
                     <tr key={d.id} className="border-b border-sg-line align-top">
                       <td className={tdCls}>
                         <UserCell userId={d.userId} />
                       </td>
-                      <td className={cn(tdCls, "max-w-[220px]")}>
+                      <td className={cn(tdCls, "max-w-[240px]")}>
                         <InitiativeLink id={d.initiativeId} />
-                        {d.note ? <div className="mt-0.5 text-2xs text-sg-dim">{d.note}</div> : null}
+                        {d.note ? <div className="mt-0.5 line-clamp-3 text-2xs text-sg-dim" title={d.note}>{d.note}</div> : null}
                       </td>
                       <td className={cn(tdCls, "text-sg-muted")}>{monthLabel(d.month)}</td>
                       <td className={cn(tdNum, "font-semibold text-sg-white")}>
@@ -112,32 +130,29 @@ export function DeferredTab() {
                         {d.status === "released" && d.releasedAmount < d.amount ? <div className="text-2xs font-normal text-sg-dim">released {formatIDR(d.releasedAmount)}</div> : null}
                       </td>
                       <td className={tdCls}>
-                        <div className="text-sg-text">{formatDate(d.vestAt, "medium")}</div>
-                        {d.status === "pending" ? <div className={cn("text-2xs", vested ? "text-soft-orange" : "text-sg-dim")}>{vested ? "vested — review now" : dueText(d.vestAt)}</div> : null}
+                        <div className="text-sg-text">{formatDate(r.vestAt, "medium")}</div>
+                        {d.status === "pending" ? (
+                          <>
+                            <div className={cn("text-2xs", r.vested ? "text-soft-green" : "text-sg-dim")}>{r.estimated ? `estimated · ${r.ini?.deferralMonths ?? POLICY.deferral.minMonths} months after the contracted end` : r.vested ? "deferral period ended" : dueText(r.vestAt)}</div>
+                            <div className="text-2xs text-sg-dim">pays with the {formatDate(r.payOn, "short")} salary</div>
+                          </>
+                        ) : null}
                       </td>
                       <td className={tdCls}>
                         <Chip color={statusColor[d.status]} dot>
-                          {d.status === "pending" ? "Pending" : d.status === "released" ? (d.releasedAmount < d.amount ? "Partly released" : "Released") : "Forfeited"}
+                          {d.status === "pending" ? "Pending" : d.status === "released" ? (d.releasedAmount < d.amount ? "Released · reduced" : "Released") : "Forfeited"}
                         </Chip>
                       </td>
-                      <td className={cn(tdCls, "min-w-[260px]")}>
+                      <td className={cn(tdCls, "min-w-[280px] text-2xs")}>
                         {d.status === "pending" ? (
-                          <ul className="space-y-1 text-2xs">
-                            {CONDITIONS.map((k) => (
-                              <li key={k.key}>
-                                <label className="flex cursor-pointer items-center gap-1.5 text-sg-muted hover:text-sg-white">
-                                  <input type="checkbox" className="accent-sg-white" checked={!!c[k.key]} onChange={(e) => setChecks((s) => ({ ...s, [d.id]: { ...s[d.id], [k.key]: e.target.checked } }))} />
-                                  {k.label}
-                                </label>
-                              </li>
-                            ))}
-                            <li className={cn("flex items-center gap-1.5", employed.kind === "pay" ? "text-soft-green" : "text-soft-red")} title={employed.kind === "pay" ? "Computed from the HR record" : "reason" in employed ? employed.reason : "Probationary"}>
-                              {employed.kind === "pay" ? <CircleCheck className="size-3.5" /> : <CircleX className="size-3.5" />}
-                              Still employed &amp; in good standing {employed.kind !== "pay" ? `— ${"reason" in employed ? employed.reason : "on probation"}` : "(HR record)"}
-                            </li>
+                          <ul className="space-y-1">
+                            <Cond ok={r.closed} label={r.closed ? `Project closed ${formatDate(r.ini?.completedAt, "medium")}` : "Project not closed yet (§8.3)"} />
+                            <Cond ok={r.vested} label={r.vested ? "Deferral period ended" : `Deferral period runs to ${formatDate(r.vestAt, "medium")}`} />
+                            <Cond ok={!r.unpaid.length} warn label={r.unpaid.length ? `${r.unpaid.length} invoice${r.unpaid.length === 1 ? "" : "s"} unpaid (${formatIDR(r.unpaid.reduce((s, e) => s + e.revenue, 0))}) — held until paid or written off` : "No unpaid invoices on the project"} />
+                            <Cond ok={r.outcome.kind === "pay"} label={r.outcome.kind === "pay" ? r.outcome.note ?? "Employment status allows payment (§10)" : r.outcome.kind === "withhold_probation" ? "On probation — paid with the Probation Completion Bonus (§11)" : r.outcome.reason} />
                           </ul>
                         ) : (
-                          <span className="text-2xs text-sg-dim">—</span>
+                          <span className="text-sg-dim">—</span>
                         )}
                       </td>
                       <td className={cn(tdCls, "text-right")}>
@@ -146,22 +161,25 @@ export function DeferredTab() {
                             <Button
                               size="xs"
                               variant="primary"
-                              disabled={!allTicked || employed.kind !== "pay"}
-                              title={!allTicked ? "Tick every vesting condition first" : employed.kind !== "pay" ? "Employee no longer meets the employment condition" : "Release the full deferred amount"}
-                              onClick={() => {
-                                releaseDeferred(d.id, d.amount, "All §6.3 vesting conditions met — released in full");
-                                notify("Deferred bonus released in full");
-                              }}
+                              disabled={!r.ready}
+                              title={!r.closed ? "Deferred amounts vest only after project close" : !r.vested ? "The deferral period has not ended" : r.outcome.kind !== "pay" ? "Employment status does not allow payment now (§10)" : "Review deductions and release"}
+                              onClick={() => setReleasing(r)}
                             >
-                              <SquareCheck /> Release
+                              <SquareCheck /> Review &amp; release
                             </Button>
-                            <Button size="xs" variant="outline" disabled={employed.kind !== "pay"} onClick={() => setAction({ kind: "partial", item: d })}>
-                              Release partially
-                            </Button>
-                            <Button size="xs" variant="danger" onClick={() => setAction({ kind: "forfeit", item: d })}>
-                              Forfeit
-                            </Button>
-                            {!allTicked && employed.kind === "pay" ? <span className="text-2xs text-sg-dim">tick all conditions to release</span> : null}
+                            {r.outcome.kind === "forfeit" ? (
+                              <Button
+                                size="xs"
+                                variant="danger"
+                                title={r.outcome.reason}
+                                onClick={() => {
+                                  forfeitDeferred(d.id, `Forfeited under §10 — ${(r.outcome as { reason: string }).reason}`);
+                                  notify("Deferred bonus forfeited under §10");
+                                }}
+                              >
+                                Forfeit (§10)
+                              </Button>
+                            ) : null}
                           </div>
                         ) : null}
                       </td>
@@ -174,30 +192,82 @@ export function DeferredTab() {
         )}
       </Panel>
 
-      {action ? <DeferredActionModal action={action} conditions={checks[action.item.id] ?? {}} onClose={() => setAction(null)} /> : null}
+      {releasing ? <ReleaseModal r={releasing} pending={reviews.filter((x) => x.d.status === "pending" && x.d.initiativeId === releasing.d.initiativeId)} onClose={() => setReleasing(null)} /> : null}
     </div>
   );
 }
 
-function DeferredActionModal({ action, conditions, onClose }: { action: { kind: "partial" | "forfeit"; item: DeferredBonus }; conditions: Partial<Record<CondKey, boolean>>; onClose: () => void }) {
+function Cond({ ok, label, warn }: { ok: boolean; label: string; warn?: boolean }) {
+  return (
+    <li className={cn("flex items-start gap-1.5", ok ? "text-soft-green" : warn ? "text-soft-orange" : "text-sg-muted")}>
+      {ok ? <CircleCheck className="mt-px size-3.5 shrink-0" /> : warn ? <CircleAlert className="mt-px size-3.5 shrink-0" /> : <CircleX className="mt-px size-3.5 shrink-0" />}
+      <span>{label}</span>
+    </li>
+  );
+}
+
+function ReleaseModal({ r, pending, onClose }: { r: Review; pending: Review[]; onClose: () => void }) {
   const releaseDeferred = useCrm((s) => s.releaseDeferred);
   const forfeitDeferred = useCrm((s) => s.forfeitDeferred);
+  const entries = useCrm((s) => s.revenueEntries);
+  const adjustments = useCrm((s) => s.curveAdjustments);
   const notify = useUi((s) => s.notify);
-  const d = action.item;
-  const failed = CONDITIONS.filter((c) => !conditions[c.key]).map((c) => c.label);
-  const [amount, setAmount] = useState(String(Math.round(d.amount / 2)));
-  const [reason, setReason] = useState(failed.length ? `Not met: ${failed.join("; ")}` : "");
-  const amt = Math.min(d.amount, Math.max(0, parseAmount(amount)));
-  const valid = action.kind === "partial" ? amt > 0 && amt < d.amount && reason.trim().length > 0 : reason.trim().length > 0;
+  const { d, ini } = r;
+
+  const projectPending = pending.reduce((s, x) => s + x.d.amount, 0) || d.amount;
+  const portion = d.amount / projectPending;
+
+  // §9.3 written-off invoices: the deferred part of the bonus the invoice would have generated, this entry's share
+  const writeOffEstimate = useMemo(() => {
+    if (!ini || !r.unpaid.length) return 0;
+    const rate = projectRate(ini, adjustments).rate;
+    const defPct = deferralShare(ini, adjustments);
+    const net = r.unpaid.reduce((s, e) => s + Math.max(0, netRevenue(e.revenue, e.directCosts).net), 0);
+    return Math.floor(net * rate * defPct * portion);
+  }, [ini, r.unpaid, adjustments, portion]);
+
+  // §9.3 forecast shortfall
+  const shortfall = useMemo(() => {
+    if (!ini) return null;
+    const forecast = proposalEconomics(ini, adjustments).expected.net;
+    const actual = entries.filter((e) => e.initiativeId === ini.id && e.received).reduce((s, e) => s + netRevenue(e.revenue, e.directCosts).net, 0);
+    const pct = forecast > 0 ? Math.max(0, 1 - actual / forecast) : 0;
+    return { forecast, actual, pct };
+  }, [ini, entries, adjustments]);
+
+  const [costs, setCosts] = useState("");
+  const [writtenOff, setWrittenOff] = useState(false);
+  const [writeOff, setWriteOff] = useState(String(writeOffEstimate));
+  const [misstated, setMisstated] = useState(false);
+  const [shortPct, setShortPct] = useState(shortfall ? String(Math.round(shortfall.pct * 1000) / 10) : "0");
+  const [note, setNote] = useState("");
+
+  const projectCosts = Math.max(0, parseAmount(costs));
+  const costShare = Math.min(d.amount, Math.floor(projectCosts * portion));
+  const absorbed = Math.max(0, projectCosts - projectPending);
+  const writeOffCut = r.unpaid.length && writtenOff ? Math.max(0, parseAmount(writeOff)) : 0;
+  const shortfallApplies = !!shortfall && shortfall.pct > POLICY.deferral.forecastShortfallReviewPct;
+  const shortCutPct = shortfallApplies && misstated ? Math.min(shortfall!.pct, Math.max(0, parseAmount(shortPct) / 100)) : 0;
+  const shortCut = Math.floor(d.amount * shortCutPct);
+  const reductions = Math.min(d.amount, costShare + writeOffCut + shortCut);
+  const net = d.amount - reductions;
+  const blockedInvoices = r.unpaid.length > 0 && !writtenOff;
+  const valid = !blockedInvoices && (reductions === 0 || note.trim().length >= 5);
 
   const submit = () => {
     if (!valid) return;
-    if (action.kind === "partial") {
-      releaseDeferred(d.id, amt, `Partial release ${formatIDR(amt, "full")} of ${formatIDR(d.amount, "full")} — remainder ${formatIDR(d.amount - amt, "full")} forfeited proportionally. ${reason.trim()}`);
-      notify("Deferred bonus partially released");
+    const parts = [
+      costShare ? `warranty/rework costs ${formatIDR(costShare, "full")} (share of ${formatIDR(projectCosts, "full")})` : "",
+      writeOffCut ? `written-off invoice ${formatIDR(writeOffCut, "full")}` : "",
+      shortCut ? `forecast shortfall ${pctLabel(shortCutPct)} from misstated figures ${formatIDR(shortCut, "full")}` : "",
+    ].filter(Boolean);
+    const text = `${parts.length ? `Reduced (§9.3): ${parts.join("; ")}. ` : "No deductions. "}${note.trim()}`.trim();
+    if (net > 0) {
+      releaseDeferred(d.id, net, `Released ${formatIDR(net, "full")} with the ${formatDate(r.payOn, "medium")} salary — ${text}`);
+      notify(`Deferred bonus released — ${formatIDR(net)}${reductions ? ` after ${formatIDR(reductions)} deductions` : ""}`);
     } else {
-      forfeitDeferred(d.id, reason.trim());
-      notify("Deferred bonus forfeited");
+      forfeitDeferred(d.id, `Deferred amount fully used by §9.3 deductions — ${text}`);
+      notify("Deferred amount fully absorbed by §9.3 deductions");
     }
     onClose();
   };
@@ -206,40 +276,105 @@ function DeferredActionModal({ action, conditions, onClose }: { action: { kind: 
     <Modal
       open
       onOpenChange={(o) => !o && onClose()}
-      title={action.kind === "partial" ? "Release deferred bonus partially" : "Forfeit deferred bonus"}
-      description={`${formatIDR(d.amount, "full")} earned ${monthLabel(d.month)} · vests ${formatDate(d.vestAt, "medium")}`}
+      title="Release deferred bonus"
+      description={`${formatIDR(d.amount, "full")} earned ${monthLabel(d.month)} · ${ini?.code ?? ini?.title ?? ""} · pays with the ${formatDate(r.payOn, "medium")} salary`}
+      className="w-[min(640px,calc(100vw-32px))]"
       footer={
         <>
+          <span className="mr-auto text-2xs text-sg-dim">⌘/Ctrl+Enter to submit</span>
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant={action.kind === "partial" ? "primary" : "danger"} size="sm" disabled={!valid} onClick={submit}>
-            {action.kind === "partial" ? "Release partially" : "Forfeit"}
+          <Button variant="primary" size="sm" disabled={!valid} onClick={submit} title={blockedInvoices ? "Held until the invoices are paid or written off" : undefined}>
+            {net > 0 ? `Release ${formatIDR(net)}` : "Record — nothing left to pay"}
           </Button>
         </>
       }
     >
       <div
-        className="space-y-3"
+        className="space-y-4"
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
         }}
       >
-        {action.kind === "partial" ? (
-          <>
-            <Field label="Amount to release (IDR)" hint={`Remainder forfeited: ${formatIDR(d.amount - amt, "full")} (${d.amount ? Math.round(((d.amount - amt) / d.amount) * 100) : 0}%)`}>
-              <Input type="number" min={0} max={d.amount} value={amount} onChange={(e) => setAmount(e.target.value)} className="sg-num" autoFocus />
-            </Field>
-            <Callout>Use when conditions are only partly met — e.g. final net revenue came in below forecast, so the deferral is reduced in proportion (§6.3).</Callout>
-          </>
-        ) : (
-          <Callout tone="danger">The full deferred amount is forfeited. It does not redistribute to other team members.</Callout>
-        )}
-        <Field label={action.kind === "partial" ? "Rationale" : "Reason"}>
-          <Textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Which §6.3 condition was not met?" autoFocus={action.kind === "forfeit"} />
+        <div>
+          <Field label="Warranty, rework and other costs during deferral (project total, IDR)" hint={`Deducted from the project's deferred pool (${formatIDR(projectPending, "full")} pending across ${pending.length} entr${pending.length === 1 ? "y" : "ies"}); this entry carries ${pctLabel(portion)} → ${formatIDR(costShare, "full")}`}>
+            <Input type="number" min={0} value={costs} onChange={(e) => setCosts(e.target.value)} className="sg-num" autoFocus />
+          </Field>
+          {absorbed > 0 ? <p className="mt-1 text-2xs text-sg-muted">{formatIDR(absorbed, "full")} beyond the deferred pool is absorbed by the company — never recovered from salary.</p> : null}
+        </div>
+
+        {r.unpaid.length ? (
+          <div className="rounded-lg border border-soft-orange/30 bg-soft-orange/5 p-3">
+            <div className="text-xs font-semibold text-soft-orange">
+              {r.unpaid.length} unpaid invoice{r.unpaid.length === 1 ? "" : "s"} · {formatIDR(r.unpaid.reduce((s, e) => s + e.revenue, 0), "full")} <Cite s="9.3" />
+            </div>
+            <p className="mt-0.5 text-2xs text-sg-muted">Amounts linked to unpaid invoices are held until they are paid. If an invoice is written off, the deferred pool is reduced by the bonus it generated.</p>
+            <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-sg-text">
+              <input type="checkbox" className="accent-sg-white" checked={writtenOff} onChange={(e) => setWrittenOff(e.target.checked)} />
+              The unpaid invoice(s) have been written off
+            </label>
+            {writtenOff ? (
+              <Field label="Reduction for written-off invoices (this entry, IDR)" hint={`Estimate: net revenue × rate × deferral % × this entry's share = ${formatIDR(writeOffEstimate, "full")}`} className="mt-2">
+                <Input type="number" min={0} value={writeOff} onChange={(e) => setWriteOff(e.target.value)} className="sg-num" />
+              </Field>
+            ) : null}
+          </div>
+        ) : null}
+
+        {shortfall ? (
+          <div className={cn("rounded-lg border p-3", shortfallApplies ? "border-soft-yellow/30 bg-soft-yellow/5" : "border-sg-line")}>
+            <div className="flex flex-wrap items-baseline gap-x-3 text-xs">
+              <span className="font-semibold text-sg-white">Final net vs approved forecast</span>
+              <span className="sg-num text-sg-muted">
+                {formatIDR(shortfall.actual)} of {formatIDR(shortfall.forecast)}
+              </span>
+              <span className={cn("sg-num font-semibold", shortfallApplies ? "text-soft-yellow" : "text-sg-muted")}>{shortfall.pct > 0 ? `${pctLabel(shortfall.pct)} short` : "on or above forecast"}</span>
+            </div>
+            {shortfallApplies ? (
+              <>
+                <p className="mt-1 text-2xs text-sg-muted">More than {Math.round(POLICY.deferral.forecastShortfallReviewPct * 100)}% below forecast — the PRC reviews the reasons. Only if the shortfall came from figures misstated at approval may it reduce the deferred amount, by up to the percentage shortfall.</p>
+                <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-sg-text">
+                  <input type="checkbox" className="accent-sg-white" checked={misstated} onChange={(e) => setMisstated(e.target.checked)} />
+                  PRC finding: the shortfall came from figures misstated at approval
+                </label>
+                {misstated ? (
+                  <Field label="Reduction (%)" hint={`Up to ${pctLabel(shortfall.pct)} → ${formatIDR(shortCut, "full")}`} className="mt-2">
+                    <Input type="number" min={0} max={Math.round(shortfall.pct * 1000) / 10} step={0.1} value={shortPct} onChange={(e) => setShortPct(e.target.value)} className="sg-num w-28" />
+                  </Field>
+                ) : null}
+              </>
+            ) : (
+              <p className="mt-1 text-2xs text-sg-dim">Within {Math.round(POLICY.deferral.forecastShortfallReviewPct * 100)}% of forecast — no shortfall reduction applies.</p>
+            )}
+          </div>
+        ) : null}
+
+        <div className="rounded-lg border border-sg-line bg-sg-card-2/50 p-3 text-xs">
+          <Line label="Deferred amount" value={d.amount} />
+          {costShare ? <Line label="− Warranty / rework costs" value={-costShare} /> : null}
+          {writeOffCut ? <Line label="− Written-off invoices" value={-writeOffCut} /> : null}
+          {shortCut ? <Line label="− Forecast shortfall (misstated figures)" value={-shortCut} /> : null}
+          <div className="mt-1 flex items-center justify-between border-t border-sg-line pt-1.5">
+            <span className="font-semibold text-sg-white">Released</span>
+            <span className="sg-num font-display text-base font-extrabold text-sg-white">{formatIDR(net, "full")}</span>
+          </div>
+        </div>
+
+        <Field label={reductions ? "PRC rationale for the deductions" : "Note (optional)"}>
+          <Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder={reductions ? "Warranty claim reference, write-off approval, PRC minute…" : "e.g. vesting confirmed at the close-out review"} className="min-h-[64px]" />
         </Field>
-        <p className="text-2xs text-sg-dim">Deferred bonuses earn no interest. ⌘/Ctrl+Enter to submit.</p>
+        {blockedInvoices ? <Callout tone="warn">Held until the invoices are paid, or tick the write-off box to reduce and release.</Callout> : null}
       </div>
     </Modal>
+  );
+}
+
+function Line({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="flex items-center justify-between py-0.5">
+      <span className="text-sg-muted">{label}</span>
+      <span className="sg-num text-sg-text">{formatIDR(value, "full")}</span>
+    </div>
   );
 }

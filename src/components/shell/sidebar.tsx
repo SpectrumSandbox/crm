@@ -3,10 +3,13 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useMemo } from "react";
-import { Briefcase, Building2, ChevronsLeft, ChevronsRight, Handshake, Kanban, Keyboard, RotateCcw, Search, UserCheck, Users, Wallet, type LucideIcon } from "lucide-react";
+import { BookOpen, Briefcase, Building2, ChevronsLeft, ChevronsRight, CircleUser, ClipboardList, Handshake, House, Kanban, Keyboard, ListChecks, ListTodo, Search, Ticket, UserCheck, Users, Wallet, type LucideIcon } from "lucide-react";
+import { SidebarExtras } from "./sidebar-extras";
+import { NotificationBell } from "./notifications";
 import { useCrm, useUi } from "@/lib/store";
 import { SMART_LISTS } from "@/lib/smart-lists";
 import { cn } from "@/lib/utils";
+import { buildRegister, LIVE_PROJECT_STATUSES } from "@/components/projects/model";
 import { Avatar, Kbd, SpectrumMark } from "@/components/ui/misc";
 
 interface NavItem {
@@ -24,7 +27,6 @@ export function Sidebar() {
   const toggle = useUi((s) => s.toggleSidebar);
   const setPaletteOpen = useUi((s) => s.setPaletteOpen);
   const openDialog = useUi((s) => s.openDialog);
-  const notify = useUi((s) => s.notify);
   const deals = useCrm((s) => s.deals);
   const contacts = useCrm((s) => s.contacts);
   const companies = useCrm((s) => s.companies);
@@ -34,7 +36,11 @@ export function Sidebar() {
   const currentUserId = useCrm((s) => s.currentUserId);
   const pipelines = useCrm((s) => s.pipelines);
   const initiatives = useCrm((s) => s.initiatives);
-  const resetDemo = useCrm((s) => s.resetDemo);
+  const initiativeMembers = useCrm((s) => s.initiativeMembers);
+  const employeeProfiles = useCrm((s) => s.employeeProfiles);
+  const revenueEntries = useCrm((s) => s.revenueEntries);
+  const curveAdjustments = useCrm((s) => s.curveAdjustments);
+  const teamAmendments = useCrm((s) => s.teamAmendments);
   const me = users.find((u) => u.id === currentUserId);
 
   const counts = useMemo(() => {
@@ -49,17 +55,37 @@ export function Sidebar() {
     };
   }, [deals, contacts, companies, issues, sprints, pipelines, initiatives]);
 
+  /** §6.5 register: real (non-sample) live projects with their compliance state */
+  const ongoing = useMemo(() => {
+    const inp = { initiatives, members: initiativeMembers, profiles: employeeProfiles, users, entries: revenueEntries, adjustments: curveAdjustments, amendments: teamAmendments };
+    return initiatives
+      .filter((i) => !i.demo && (LIVE_PROJECT_STATUSES as readonly string[]).includes(i.status))
+      .map((i) => {
+        const r = buildRegister(i, inp);
+        return { id: i.id, title: i.title, type: i.type, failing: r.failing, people: r.rows.length };
+      })
+      .sort((a, b) => a.title.localeCompare(b.title));
+  }, [initiatives, initiativeMembers, employeeProfiles, users, revenueEntries, curveAdjustments, teamAmendments]);
+
   const revenue: NavItem[] = [
+    { href: "/home", label: "Home", icon: House, shortcut: "G H" },
     { href: "/deals", label: "Deals", icon: Handshake, shortcut: "G D", count: counts.openDeals },
     { href: "/contacts", label: "Contacts", icon: Users, shortcut: "G C", count: counts.contacts },
     { href: "/companies", label: "Companies", icon: Building2, shortcut: "G O", count: counts.companies },
+    { href: "/tickets", label: "Tickets", icon: Ticket, shortcut: "G T" },
   ];
   const programme: NavItem[] = [
     { href: "/initiatives", label: "Initiatives", icon: Briefcase, shortcut: "G I", count: counts.awaitingPrc },
     { href: "/compensation", label: "Compensation", icon: Wallet, shortcut: "G M" },
     { href: "/people", label: "People", icon: UserCheck, shortcut: "G P" },
+    { href: "/me", label: "My compensation", icon: CircleUser, shortcut: "G Y" },
+    { href: "/policy", label: "Policy", icon: BookOpen, shortcut: "G K" },
   ];
-  const delivery: NavItem[] = [{ href: "/board", label: "Agile Board", icon: Kanban, shortcut: "G B", count: counts.sprintIssues }];
+  const agile: NavItem[] = [
+    { href: "/board", label: "Board", icon: Kanban, shortcut: "G B", count: counts.sprintIssues },
+    { href: "/backlog", label: "Backlog", icon: ListChecks, shortcut: "G L" },
+    { href: "/issues", label: "Issues", icon: ListTodo, shortcut: "G U" },
+  ];
 
   const isActive = (href: string) => pathname === href || pathname.startsWith(href + "/");
   const activeView = params.get("view");
@@ -67,7 +93,7 @@ export function Sidebar() {
   return (
     <aside className={cn("flex h-full shrink-0 flex-col border-r border-sg-line bg-sg-bg transition-[width] duration-200 ease-sg", collapsed ? "w-[56px]" : "w-[232px]")}>
       <div className={cn("flex h-12 items-center border-b border-sg-line", collapsed ? "justify-center px-0" : "justify-between px-4")}>
-        <Link href="/deals" className="flex items-center gap-2" aria-label="Spectrum CRM home">
+        <Link href="/home" className="flex items-center gap-2" aria-label="Spectrum CRM home">
           {collapsed ? (
             <SpectrumMark className="h-4" />
           ) : (
@@ -80,10 +106,11 @@ export function Sidebar() {
         </Link>
       </div>
 
+      <div className={cn("mx-2 mt-3 flex gap-1", collapsed && "flex-col")}>
       <button
         type="button"
         onClick={() => setPaletteOpen(true)}
-        className={cn("mx-2 mt-3 flex h-8 items-center gap-2 rounded border border-sg-line bg-sg-card text-sm text-sg-dim transition-colors hover:border-sg-line-2 hover:text-sg-muted", collapsed ? "justify-center px-0" : "px-2.5")}
+        className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded border border-sg-line bg-sg-card text-sm text-sg-dim transition-colors hover:border-sg-line-2 hover:text-sg-muted", collapsed ? "justify-center px-0" : "px-2.5")}
         aria-label="Search (Command K)"
       >
         <Search className="size-3.5" />
@@ -94,6 +121,8 @@ export function Sidebar() {
           </>
         )}
       </button>
+      <NotificationBell collapsed={collapsed} />
+      </div>
 
       <nav className="mt-4 flex-1 space-y-5 overflow-y-auto px-2 pb-4">
         <Section title="Revenue" collapsed={collapsed}>
@@ -119,32 +148,55 @@ export function Sidebar() {
             <NavLink key={item.href} item={item} active={isActive(item.href)} collapsed={collapsed} />
           ))}
         </Section>
-        <Section title="Delivery" collapsed={collapsed}>
-          {delivery.map((item) => (
-            <NavLink key={item.href} item={item} active={isActive(item.href)} collapsed={collapsed} />
-          ))}
+        <Section title="Ongoing projects" collapsed={collapsed}>
+          <NavLink item={{ href: "/projects", label: "Project register", icon: ClipboardList, shortcut: "G J", count: ongoing.length }} active={pathname === "/projects"} collapsed={collapsed} />
+          {!collapsed &&
+            ongoing.map((p) => {
+              const href = `/projects/${p.id}`;
+              const on = pathname === href;
+              return (
+                <Link
+                  key={p.id}
+                  href={href}
+                  title={p.failing ? `${p.failing} policy item${p.failing === 1 ? "" : "s"} to fix` : "Meets the policy"}
+                  className={cn("group relative ml-4 flex h-7 items-center gap-2 rounded border-l border-sg-line pl-3 pr-2 text-xs transition-colors", on ? "bg-sg-card-2 text-sg-white" : "text-sg-muted hover:bg-sg-card hover:text-sg-white")}
+                >
+                  <span className="sg-num w-3 shrink-0 text-2xs font-bold text-sg-dim">{p.type}</span>
+                  <span className="flex-1 truncate font-medium">{p.title}</span>
+                  <span className="sg-num text-2xs text-sg-dim">{p.people || ""}</span>
+                  <span className={cn("size-1.5 shrink-0 rounded-full", p.failing ? "bg-soft-red" : "bg-soft-green")} aria-hidden />
+                </Link>
+              );
+            })}
+          <div className={cn("mt-1 flex gap-px", collapsed ? "flex-col" : "ml-4 border-l border-sg-line pl-1")}>
+            {agile.map((item) => {
+              const Icon = item.icon;
+              const on = isActive(item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  title={`${item.label} (${item.shortcut})`}
+                  className={cn("flex h-7 items-center gap-1.5 rounded text-xs font-medium transition-colors", collapsed ? "justify-center" : "flex-1 justify-center px-1.5", on ? "bg-sg-card-2 text-sg-white" : "text-sg-dim hover:bg-sg-card hover:text-sg-white")}
+                >
+                  <Icon className="size-3.5 shrink-0" />
+                  {!collapsed && <span className="truncate">{item.label}</span>}
+                  {!collapsed && typeof item.count === "number" && item.count > 0 ? <span className="sg-num text-2xs text-sg-dim">{item.count}</span> : null}
+                </Link>
+              );
+            })}
+          </div>
         </Section>
       </nav>
 
       <div className="space-y-1 border-t border-sg-line p-2">
+        <SidebarExtras collapsed={collapsed} />
         {!collapsed && (
           <div className="flex gap-1">
             <button type="button" onClick={() => openDialog({ kind: "shortcuts" })} className="flex h-7 flex-1 items-center gap-2 rounded px-2 text-xs text-sg-dim hover:bg-sg-card hover:text-sg-white">
               <Keyboard className="size-3.5" /> Shortcuts <Kbd className="ml-auto">?</Kbd>
             </button>
-            <button
-              type="button"
-              title="Reset demo data"
-              onClick={() => {
-                if (window.confirm("Reset all demo data to the original seed? Your local changes will be lost.")) {
-                  resetDemo();
-                  notify("Demo data reset");
-                }
-              }}
-              className="flex size-7 items-center justify-center rounded text-sg-dim hover:bg-sg-card hover:text-sg-white"
-            >
-              <RotateCcw className="size-3.5" />
-            </button>
+
           </div>
         )}
         <div className={cn("flex items-center gap-2 rounded px-1 py-1", collapsed && "justify-center")}>

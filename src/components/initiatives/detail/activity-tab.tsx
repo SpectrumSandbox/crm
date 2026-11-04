@@ -13,6 +13,7 @@ import { Card } from "./ui";
 const entityColor: Record<AuditEntry["entity"], SpectrumColor> = {
   initiative: "cyan",
   member: "magenta",
+  amendment: "yellow",
   run: "green",
   deferred: "orange",
   probation: "yellow",
@@ -21,25 +22,27 @@ const entityColor: Record<AuditEntry["entity"], SpectrumColor> = {
   policy: "blue",
 };
 
-/** §9.2 record keeping — every state change on this initiative and its members. */
+/** §13.3 records — every state change on this initiative, its ledger rows and its amendments. */
 export function ActivityTab({ ini }: { ini: Initiative }) {
   const auditLog = useCrm((s) => s.auditLog);
   const members = useCrm((s) => s.initiativeMembers);
+  const amendments = useCrm((s) => s.teamAmendments);
   const userMap = useUserMap();
 
   const entries = useMemo(() => {
     const memberUser = new Map(members.filter((m) => m.initiativeId === ini.id).map((m) => [m.id, m.userId] as const));
+    const amendmentIds = new Set(amendments.filter((a) => a.initiativeId === ini.id).map((a) => a.id));
     return auditLog
-      .filter((a) => a.entityId === ini.id || memberUser.has(a.entityId))
+      .filter((a) => a.entityId === ini.id || memberUser.has(a.entityId) || amendmentIds.has(a.entityId))
       .map((a) => ({ a, subjectUserId: memberUser.get(a.entityId) }))
       .sort((x, y) => y.a.at.localeCompare(x.a.at));
-  }, [auditLog, members, ini.id]);
+  }, [auditLog, members, amendments, ini.id]);
 
   return (
-    <Card title="Audit trail" icon={ClipboardList} cite="9.2" actions={<span className="text-2xs text-sg-muted">{entries.length} entries</span>} bodyClassName="p-0">
+    <Card title="Audit trail" icon={ClipboardList} cite="13.3" actions={<span className="text-2xs text-sg-muted">{entries.length} entries</span>} bodyClassName="p-0">
       {entries.length === 0 ? (
         <EmptyState icon={ClipboardList} title="No recorded activity yet">
-          Every submission, review step, decision, team change and revenue entry is logged here with who acted and when.
+          Every submission, review step, decision, ledger change, amendment vote and client payment is logged here with who acted and when.
         </EmptyState>
       ) : (
         <ol className="divide-y divide-sg-line/60">

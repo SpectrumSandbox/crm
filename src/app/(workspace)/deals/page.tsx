@@ -1,22 +1,28 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { DragDropContext, Draggable, Droppable, type DropResult } from "@hello-pangea/dnd";
-import { CalendarClock, Columns3, OctagonAlert, Plus, Rows3, Search, Users } from "lucide-react";
+import { CalendarClock, Columns3, Download, OctagonAlert, Pencil, Plus, Rows3, Search, Users } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useCompanyMap, useStageMap, useUserMap } from "@/lib/selectors";
 import type { Deal } from "@/lib/types";
-import { cn, daysFromNow, formatDate, formatIDR, softBorderLeft } from "@/lib/utils";
+import { cn, daysFromNow, formatDate, formatIDR, fromDateInput, softBorderLeft, toDateInput } from "@/lib/utils";
+import { csvDate, csvFilename, downloadCsv, type CsvColumn } from "@/lib/csv";
 import { PageHeader } from "@/components/shell/page-header";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/input";
+import { Input, Select } from "@/components/ui/input";
 import { Avatar, Chip, Dot, Kbd } from "@/components/ui/misc";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
 
 type View = "board" | "table";
 type SortKey = "name" | "amount" | "closeDate" | "stage" | "owner";
 
 export default function DealsPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
   const pipelines = useCrm((s) => s.pipelines);
   const deals = useCrm((s) => s.deals);
   const crossLinks = useCrm((s) => s.crossLinks);
@@ -30,12 +36,44 @@ export default function DealsPage() {
   const companyMap = useCompanyMap();
 
   const dealPipelines = pipelines.filter((p) => p.objectType === "deal");
-  const [pipelineId, setPipelineId] = useState(dealPipelines[0]?.id ?? "");
-  const [ownerId, setOwnerId] = useState("");
-  const [q, setQ] = useState("");
-  const [view, setView] = useState<View>("board");
+  // filters live in the URL (?pipeline=&owner=&view=&q=) so a view can be shared or bookmarked
+  const [pipelineId, setPipelineId] = useState(() => {
+    const fromUrl = params.get("pipeline");
+    return fromUrl && dealPipelines.some((p) => p.id === fromUrl) ? fromUrl : (dealPipelines[0]?.id ?? "");
+  });
+  const [ownerId, setOwnerId] = useState(() => params.get("owner") ?? "");
+  const [q, setQ] = useState(() => params.get("q") ?? "");
+  const [view, setView] = useState<View>(() => (params.get("view") === "table" ? "table" : "board"));
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "closeDate", dir: 1 });
   const pipeline = dealPipelines.find((p) => p.id === pipelineId) ?? dealPipelines[0];
+
+  // keep state in step with the URL when it changes from outside (back/forward, a shared link, the sidebar)
+  const URL_KEYS = ["pipeline", "owner", "view", "q"] as const;
+  const urlKey = URL_KEYS.map((k) => params.get(k) ?? "").join("|");
+  const lastWritten = useRef(urlKey);
+  useEffect(() => {
+    if (urlKey === lastWritten.current) return;
+    lastWritten.current = urlKey;
+    const p = params.get("pipeline");
+    setPipelineId(p && dealPipelines.some((x) => x.id === p) ? p : (dealPipelines[0]?.id ?? ""));
+    setOwnerId(params.get("owner") ?? "");
+    setView(params.get("view") === "table" ? "table" : "board");
+    setQ(params.get("q") ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlKey]);
+
+  useEffect(() => {
+    const sp = new URLSearchParams();
+    if (pipeline && pipeline.id !== dealPipelines[0]?.id) sp.set("pipeline", pipeline.id);
+    if (ownerId) sp.set("owner", ownerId);
+    if (view !== "board") sp.set("view", view);
+    if (q.trim()) sp.set("q", q.trim());
+    const qs = sp.toString();
+    lastWritten.current = URL_KEYS.map((k) => sp.get(k) ?? "").join("|");
+    const current = typeof window !== "undefined" ? window.location.search.replace(/^\?/, "") : "";
+    if (qs !== current) router.replace(qs ? `${pathname}?${qs}` : pathname);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pipeline?.id, ownerId, view, q]);
 
   /** open Jira issues that block each deal */
   const blockers = useMemo(() => {
@@ -103,6 +141,31 @@ export default function DealsPage() {
     return rows;
   }, [filtered, sort, pipeline, userMap]);
 
+  const csvColumns: CsvColumn<Deal>[] = [
+    { header: "Deal ID", value: (d) => d.id },
+    { header: "Deal", value: (d) => d.name },
+    { header: "Pipeline", value: (d) => pipelines.find((p) => p.id === d.pipelineId)?.name ?? "" },
+    { header: "Stage", value: (d) => stageMap.get(d.stageId)?.name ?? "" },
+    { header: "Probability %", value: (d) => Math.round((stageMap.get(d.stageId)?.probability ?? 0) * 100) },
+    { header: "Amount (IDR)", value: (d) => d.amount },
+    { header: "Weighted (IDR)", value: (d) => Math.round(d.amount * (stageMap.get(d.stageId)?.probability ?? 0)) },
+    { header: "Close date", value: (d) => csvDate(d.closeDate) },
+    { header: "Owner", value: (d) => userMap.get(d.ownerId)?.name ?? "" },
+    { header: "Company", value: (d) => companyMap.get(d.companyId ?? "")?.name ?? "" },
+    { header: "Contacts", value: (d) => d.contactIds.length },
+    { header: "Priority", value: (d) => d.priority },
+    { header: "Deal type", value: (d) => d.dealType },
+    { header: "Capability", value: (d) => d.capability },
+    { header: "Blocked by", value: (d) => (blockers.get(d.id) ?? []).join(" ") },
+    { header: "In stage since", value: (d) => csvDate(d.stageEnteredAt) },
+    { header: "Created", value: (d) => csvDate(d.createdAt) },
+  ];
+  const exportRows = () => {
+    // board view exports column order (stage, then close date); table view exports its current sort
+    const rows = view === "table" ? sorted : [...filtered].sort((a, b) => (pipeline?.stages.findIndex((s) => s.id === a.stageId) ?? 0) - (pipeline?.stages.findIndex((s) => s.id === b.stageId) ?? 0) || a.closeDate.localeCompare(b.closeDate));
+    downloadCsv(csvFilename(`deals-${(pipeline?.name ?? "pipeline").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`), rows, csvColumns);
+  };
+
   if (!pipeline) return null;
 
   return (
@@ -142,6 +205,9 @@ export default function DealsPage() {
             </button>
           ))}
         </div>
+        <Button variant="outline" size="md" onClick={exportRows} disabled={!filtered.length} title={`Export the ${filtered.length} deals in view`}>
+          <Download /> Export CSV
+        </Button>
         <Button variant="primary" size="md" onClick={() => openDialog({ kind: "createDeal", pipelineId: pipeline.id })}>
           <Plus /> Create deal <Kbd className="ml-1 border-sg-bg/30 bg-transparent text-sg-bg/70">C</Kbd>
         </Button>
@@ -280,6 +346,7 @@ function DealCard({ deal, dragging, blockedBy }: { deal: Deal; dragging: boolean
   const company = companyMap.get(deal.companyId ?? "");
   const daysInStage = Math.max(0, -daysFromNow(deal.stageEnteredAt));
   return (
+    <div className="group relative">
     <Link
       href={`/deals/${deal.id}`}
       draggable={false}
@@ -289,7 +356,7 @@ function DealCard({ deal, dragging, blockedBy }: { deal: Deal; dragging: boolean
         dragging && "rotate-[1.5deg] border-sg-white/50 shadow-pop",
       )}
     >
-      <div className="line-clamp-2 text-sm font-semibold leading-snug text-sg-white">{deal.name.split(" — ")[1] ?? deal.name}</div>
+      <div className="line-clamp-2 pr-6 text-sm font-semibold leading-snug text-sg-white">{deal.name.split(" — ")[1] ?? deal.name}</div>
       <div className="mt-0.5 truncate text-2xs text-sg-dim">{company?.name ?? "No company"}</div>
       <div className="mt-2 flex items-center justify-between">
         <span className="sg-num font-display text-base font-extrabold text-sg-white">{formatIDR(deal.amount)}</span>
@@ -315,5 +382,87 @@ function DealCard({ deal, dragging, blockedBy }: { deal: Deal; dragging: boolean
         </span>
       </div>
     </Link>
+    <QuickEdit deal={deal} />
+    </div>
+  );
+}
+
+/** pencil on each card: edit amount + close date in place (no navigation) */
+function QuickEdit({ deal }: { deal: Deal }) {
+  const updateDeal = useCrm((s) => s.updateDeal);
+  const notify = useUi((s) => s.notify);
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState("");
+  const [closeDate, setCloseDate] = useState("");
+  const parsed = Number(amount.replace(/[^\d]/g, ""));
+  const valid = amount.trim() !== "" && Number.isFinite(parsed) && parsed >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(closeDate);
+  const changed = valid && (parsed !== deal.amount || closeDate !== toDateInput(deal.closeDate));
+
+  const save = () => {
+    if (!valid) return;
+    if (changed) {
+      const prev = { amount: deal.amount, closeDate: deal.closeDate };
+      updateDeal(deal.id, { amount: parsed, closeDate: closeDate === toDateInput(deal.closeDate) ? deal.closeDate : fromDateInput(closeDate) });
+      notify(`${deal.name.split(" — ")[1] ?? deal.name} updated`, { label: "Undo", run: () => updateDeal(deal.id, prev) });
+    }
+    setOpen(false);
+  };
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) {
+          setAmount(String(deal.amount));
+          setCloseDate(toDateInput(deal.closeDate));
+        }
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={`Quick edit ${deal.name}`}
+          title="Edit amount and close date"
+          className={cn("absolute right-1.5 top-1.5 flex size-6 items-center justify-center rounded text-sg-dim hover:bg-sg-card-3 hover:text-sg-white focus:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-sg-white", open ? "bg-sg-card-3 text-sg-white opacity-100" : "opacity-0 group-hover:opacity-100")}
+        >
+          <Pencil className="size-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-64">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            save();
+          }}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault();
+              save();
+            }
+          }}
+          className="space-y-2.5"
+        >
+          <div className="sg-eyebrow truncate">{deal.name.split(" — ")[1] ?? deal.name}</div>
+          <label className="block">
+            <span className="mb-1 block text-2xs font-semibold uppercase tracking-[0.12em] text-sg-dim">Amount (IDR)</span>
+            <Input autoFocus inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value)} />
+            <span className="mt-1 block text-2xs text-sg-dim">{valid ? formatIDR(parsed, "full") : "Enter a whole number"}</span>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-2xs font-semibold uppercase tracking-[0.12em] text-sg-dim">Close date</span>
+            <Input type="date" value={closeDate} onChange={(e) => setCloseDate(e.target.value)} />
+          </label>
+          <div className="flex justify-end gap-1.5 pt-1">
+            <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" size="sm" disabled={!valid}>
+              Save
+            </Button>
+          </div>
+        </form>
+      </PopoverContent>
+    </Popover>
   );
 }

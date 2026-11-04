@@ -4,17 +4,32 @@ import * as React from "react";
 import type { SpectrumColor, User } from "@/lib/types";
 import { cn, softChip, spectrumDot } from "@/lib/utils";
 
-export function Chip({ color = "blue", children, className, dot }: { color?: SpectrumColor; children: React.ReactNode; className?: string; dot?: boolean }) {
+/**
+ * Status / label chip. Extra span attributes (title, aria-label, role…) pass through, so a chip that only
+ * carries meaning through colour can be given an accessible name. The leading dot is decorative.
+ */
+export function Chip({
+  color = "blue",
+  children,
+  className,
+  dot,
+  ...rest
+}: { color?: SpectrumColor; children: React.ReactNode; className?: string; dot?: boolean } & Omit<React.HTMLAttributes<HTMLSpanElement>, "color" | "children" | "className">) {
   return (
-    <span className={cn("inline-flex h-5 items-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-2xs font-semibold ring-1 ring-inset", softChip[color], className)}>
-      {dot ? <span className={cn("size-1.5 rounded-full", spectrumDot[color])} /> : null}
+    <span {...rest} className={cn("inline-flex h-5 items-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-2xs font-semibold ring-1 ring-inset", softChip[color], className)}>
+      {dot ? <span aria-hidden className={cn("size-1.5 rounded-full", spectrumDot[color])} /> : null}
       {children}
     </span>
   );
 }
 
-export function Dot({ color, className }: { color: SpectrumColor; className?: string }) {
-  return <span className={cn("inline-block size-2 shrink-0 rounded-full", spectrumDot[color], className)} />;
+/** Colour dot — decorative by default; pass `label` when the colour itself is the information. */
+export function Dot({ color, className, label }: { color: SpectrumColor; className?: string; label?: string }) {
+  return label ? (
+    <span role="img" aria-label={label} title={label} className={cn("inline-block size-2 shrink-0 rounded-full", spectrumDot[color], className)} />
+  ) : (
+    <span aria-hidden className={cn("inline-block size-2 shrink-0 rounded-full", spectrumDot[color], className)} />
+  );
 }
 
 const avatarBg: Record<SpectrumColor, string> = {
@@ -30,10 +45,10 @@ const avatarBg: Record<SpectrumColor, string> = {
 export function Avatar({ user, size = "sm", className, title }: { user?: Pick<User, "initials" | "color" | "name"> | null; size?: "xs" | "sm" | "md" | "lg"; className?: string; title?: string }) {
   const dims = { xs: "size-5 text-[9px]", sm: "size-6 text-2xs", md: "size-8 text-xs", lg: "size-11 text-sm" }[size];
   if (!user) {
-    return <span title={title ?? "Unassigned"} className={cn("inline-flex shrink-0 items-center justify-center rounded-full border border-dashed border-sg-line-2 text-sg-dim", dims, className)}>?</span>;
+    return <span role="img" aria-label={title ?? "Unassigned"} title={title ?? "Unassigned"} className={cn("inline-flex shrink-0 items-center justify-center rounded-full border border-dashed border-sg-line-2 text-sg-dim", dims, className)}>?</span>;
   }
   return (
-    <span title={title ?? user.name} className={cn("inline-flex shrink-0 items-center justify-center rounded-full font-bold", avatarBg[user.color], dims, className)}>
+    <span role="img" aria-label={title ?? user.name} title={title ?? user.name} className={cn("inline-flex shrink-0 items-center justify-center rounded-full font-bold", avatarBg[user.color], dims, className)}>
       {user.initials}
     </span>
   );
@@ -51,8 +66,50 @@ export function RecordAvatar({ label, color = "blue", size = "md", square }: { l
   return <span className={cn("inline-flex shrink-0 items-center justify-center font-bold", square ? "rounded-md" : "rounded-full", avatarBg[color], dims)}>{text}</span>;
 }
 
+const KEY_NAMES: Record<string, string> = {
+  "⌘": "Command",
+  "⌥": "Option",
+  "⇧": "Shift",
+  "⌃": "Control",
+  "↵": "Enter",
+  "↑": "Up arrow",
+  "↓": "Down arrow",
+  "←": "Left arrow",
+  "→": "Right arrow",
+  esc: "Escape",
+  "?": "Question mark",
+  "/": "Slash",
+  "[": "Left bracket",
+  "–": "to",
+};
+
+/** Spoken form of a key label: "⌘K" → "Command K", "↵" → "Enter". Returns undefined when it reads fine as-is. */
+function spokenKey(label: string) {
+  if (KEY_NAMES[label]) return KEY_NAMES[label];
+  if (!/[⌘⌥⇧⌃↵↑↓←→]/.test(label)) return undefined;
+  return Array.from(label)
+    .map((ch) => KEY_NAMES[ch] ?? ch)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Keyboard key. Symbol keys (⌘ ↵ ↑ …) get a screen-reader name; the glyph itself is hidden from AT. */
 export function Kbd({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <kbd className={cn("inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-sm border border-sg-line-2 bg-sg-bg px-1 font-sans text-[10px] font-semibold text-sg-muted", className)}>{children}</kbd>;
+  const cls = cn("inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-sm border border-sg-line-2 bg-sg-bg px-1 font-sans text-[10px] font-semibold text-sg-muted", className);
+  const spoken = typeof children === "string" ? spokenKey(children) : undefined;
+  if (!spoken) return <kbd className={cls}>{children}</kbd>;
+  return (
+    <kbd className={cls}>
+      <span aria-hidden>{children}</span>
+      <span className="sr-only">{spoken}</span>
+    </kbd>
+  );
+}
+
+/** Shimmering placeholder block on the brand surfaces (static under prefers-reduced-motion). */
+export function Skeleton({ className, rounded = "rounded", style }: { className?: string; rounded?: "rounded" | "rounded-full" | "rounded-md" | "rounded-xl" | "rounded-sm"; style?: React.CSSProperties }) {
+  return <div aria-hidden className={cn("sg-skeleton", rounded, className)} style={style} />;
 }
 
 export function Eyebrow({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -62,7 +119,11 @@ export function Eyebrow({ children, className }: { children: React.ReactNode; cl
 export function EmptyState({ icon: Icon, title, children, action }: { icon?: React.ComponentType<{ className?: string }>; title: string; children?: React.ReactNode; action?: React.ReactNode }) {
   return (
     <div className="flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
-      {Icon ? <Icon className="size-6 text-sg-dim" /> : null}
+      {Icon ? (
+        <span aria-hidden className="contents">
+          <Icon className="size-6 text-sg-dim" />
+        </span>
+      ) : null}
       <p className="font-display text-sm font-bold text-sg-white">{title}</p>
       {children ? <p className="max-w-sm text-xs text-sg-muted">{children}</p> : null}
       {action}

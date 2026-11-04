@@ -1,36 +1,53 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
-import { ArrowRight, Briefcase, Building2, FileText, Handshake, Kanban, Keyboard, Phone, Plus, Ticket, User, UserCheck, Users, Wallet } from "lucide-react";
+import { ArrowRight, BookOpen, Briefcase, Building2, ChevronsLeft, CircleUser, FileText, Handshake, History, House, Kanban, Keyboard, Layers, ListChecks, ListTodo, Phone, Plus, Settings, Ticket, User, UserCheck, Users, Wallet, type LucideIcon } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { issueTypeMeta, lifecycleMeta } from "@/lib/meta";
 import { cn, formatIDR, softText } from "@/lib/utils";
 import { Kbd } from "@/components/ui/misc";
 import { initiativeStatusMeta } from "@/components/initiatives/shared";
 import { PROJECT_TYPE_META } from "@/lib/initiatives/policy";
-import { recordFromPath } from "./hotkeys";
+import { tokenFilter } from "@/lib/search";
+import { readRecent, recordFromPath, toggleNavigation, type RecentVisit } from "./hotkeys";
 
 const itemCls =
   "flex cursor-pointer select-none items-center gap-2.5 rounded px-2.5 py-2 text-sm text-sg-text aria-selected:bg-sg-card-3 aria-selected:text-sg-white data-[disabled=true]:opacity-40";
 const groupCls =
   "[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.14em] [&_[cmdk-group-heading]]:text-sg-dim";
 
-/** Every typed word must appear somewhere in the item's value or keywords; whole-word/prefix hits rank higher. */
-function tokenFilter(value: string, search: string, keywords?: string[]) {
-  const hay = `${value} ${(keywords ?? []).join(" ")}`.toLowerCase();
-  const tokens = search.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!tokens.length) return 1;
-  let score = 0;
-  for (const t of tokens) {
-    const at = hay.indexOf(t);
-    if (at < 0) return 0;
-    score += at === 0 || /[\s\-—·(/]/.test(hay[at - 1] ?? "") ? 1 : 0.5;
-  }
-  return score / tokens.length;
+export { tokenFilter };
+
+interface NavEntry {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  keys?: string;
+  keywords?: string[];
 }
+
+const NAV_ITEMS: NavEntry[] = [
+  { href: "/home", label: "Home", icon: House, keys: "G H", keywords: ["dashboard", "today", "overview"] },
+  { href: "/deals", label: "Deals pipeline", icon: Handshake, keys: "G D" },
+  { href: "/contacts", label: "Contacts", icon: Users, keys: "G C" },
+  { href: "/companies", label: "Companies", icon: Building2, keys: "G O" },
+  { href: "/tickets", label: "Tickets", icon: Ticket, keys: "G T", keywords: ["support", "service", "helpdesk"] },
+  { href: "/board", label: "Agile board", icon: Kanban, keys: "G B" },
+  { href: "/backlog", label: "Backlog & Sprints", icon: ListChecks, keys: "G L", keywords: ["sprint", "planning", "scrum"] },
+  { href: "/issues", label: "Issues", icon: ListTodo, keys: "G U", keywords: ["jira", "bugs", "stories", "tasks"] },
+  { href: "/projects", label: "Ongoing projects", icon: Layers, keywords: ["register", "delivery", "programme"] },
+  { href: "/initiatives", label: "Initiatives", icon: Briefcase, keys: "G I", keywords: ["prc", "proposals", "projects"] },
+  { href: "/compensation", label: "Compensation", icon: Wallet, keys: "G M", keywords: ["bonus", "run", "payroll", "deferred", "clawback"] },
+  { href: "/people", label: "People", icon: UserCheck, keys: "G P", keywords: ["hr", "eligibility", "employees", "probation"] },
+  { href: "/me", label: "My compensation", icon: CircleUser, keys: "G Y", keywords: ["my bonus", "payslip", "me", "statement"] },
+  { href: "/policy", label: "Policy", icon: BookOpen, keys: "G K", keywords: ["handbook", "rules", "initiative policy"] },
+  { href: "/settings", label: "Settings", icon: Settings, keywords: ["preferences", "workspace", "admin", "sync"] },
+];
+
+const RECORD_ROUTE = /^\/(contacts|companies|deals|tickets|initiatives)\/([^/]+)$/;
 
 export function CommandPalette() {
   const open = useUi((s) => s.paletteOpen);
@@ -52,6 +69,46 @@ export function CommandPalette() {
   const stageName = useMemo(() => new Map(pipelines.flatMap((p) => p.stages.map((s) => [s.id, s.name] as const))), [pipelines]);
   const companyName = useMemo(() => new Map(companies.map((c) => [c.id, c.name] as const)), [companies]);
   const current = recordFromPath(pathname);
+
+  // recents are written by useRecentTracker (always mounted); re-read each time the palette opens
+  const [visits, setVisits] = useState<RecentVisit[]>([]);
+  useEffect(() => {
+    if (open) setVisits(readRecent());
+  }, [open]);
+
+  const recent = useMemo(() => {
+    const out: { path: string; label: string; detail: string; icon: LucideIcon; iconCls: string }[] = [];
+    for (const v of visits) {
+      if (v.path === pathname) continue;
+      const nav = NAV_ITEMS.find((n) => n.href === v.path);
+      if (nav) {
+        out.push({ path: v.path, label: nav.label, detail: "Page", icon: nav.icon, iconCls: "text-sg-muted" });
+        continue;
+      }
+      const m = v.path.match(RECORD_ROUTE);
+      if (!m) continue;
+      const id = decodeURIComponent(m[2]);
+      if (m[1] === "contacts") {
+        const c = contacts.find((x) => x.id === id);
+        if (c) out.push({ path: v.path, label: `${c.firstName} ${c.lastName}`, detail: "Contact", icon: User, iconCls: "text-soft-blue" });
+      } else if (m[1] === "companies") {
+        const c = companies.find((x) => x.id === id);
+        if (c) out.push({ path: v.path, label: c.name, detail: "Company", icon: Building2, iconCls: "text-soft-orange" });
+      } else if (m[1] === "deals") {
+        const d = deals.find((x) => x.id === id);
+        if (d) out.push({ path: v.path, label: d.name, detail: "Deal", icon: Handshake, iconCls: "text-soft-yellow" });
+      } else if (m[1] === "tickets") {
+        const t = tickets.find((x) => x.id === id);
+        if (t) out.push({ path: v.path, label: t.subject, detail: "Ticket", icon: Ticket, iconCls: "text-soft-red" });
+      } else if (id === "new") {
+        out.push({ path: v.path, label: "New initiative proposal", detail: "Page", icon: Briefcase, iconCls: "text-soft-green" });
+      } else {
+        const i = initiatives.find((x) => x.id === id);
+        if (i) out.push({ path: v.path, label: i.title, detail: "Initiative", icon: Briefcase, iconCls: "text-soft-green" });
+      }
+    }
+    return out;
+  }, [visits, pathname, contacts, companies, deals, tickets, initiatives]);
 
   const close = () => {
     setOpen(false);
@@ -86,6 +143,21 @@ export function CommandPalette() {
             </div>
             <Command.List className="max-h-[56vh] overflow-y-auto p-2">
               <Command.Empty className="px-3 py-8 text-center text-sm text-sg-muted">No matches. Try a company, a person, a deal or an issue key like UAV-102.</Command.Empty>
+
+              {!searching && recent.length > 0 && (
+                <Command.Group heading="Recent" className={groupCls}>
+                  {recent.map((r) => (
+                    <Command.Item key={r.path} value={`recent ${r.path} ${r.label}`} onSelect={() => go(r.path)} className={itemCls}>
+                      <r.icon className={cn("size-4 shrink-0", r.iconCls)} />
+                      <span className="truncate">{r.label}</span>
+                      <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-sg-dim">
+                        <History className="size-3" aria-hidden />
+                        {r.detail}
+                      </span>
+                    </Command.Item>
+                  ))}
+                </Command.Group>
+              )}
 
               <Command.Group heading="Quick actions" className={groupCls}>
                 <Command.Item value="action log call" keywords={["phone", "activity"]} onSelect={() => openDialog({ kind: "logActivity", activityType: "call", target: current })} className={itemCls}>
@@ -124,26 +196,34 @@ export function CommandPalette() {
               </Command.Group>
 
               <Command.Group heading="Navigate" className={groupCls}>
-                {[
-                  { href: "/deals", label: "Deals pipeline", icon: Handshake, keys: "G D" },
-                  { href: "/contacts", label: "Contacts", icon: Users, keys: "G C" },
-                  { href: "/companies", label: "Companies", icon: Building2, keys: "G O" },
-                  { href: "/board", label: "Agile board", icon: Kanban, keys: "G B" },
-                  { href: "/initiatives", label: "Initiatives", icon: Briefcase, keys: "G I", keywords: ["prc", "proposals", "projects"] },
-                  { href: "/compensation", label: "Compensation", icon: Wallet, keys: "G M", keywords: ["bonus", "run", "payroll", "deferred", "clawback"] },
-                  { href: "/people", label: "People", icon: UserCheck, keys: "G P", keywords: ["hr", "eligibility", "employees", "probation"] },
-                ].map((n) => (
+                {NAV_ITEMS.map((n) => (
                   <Command.Item key={n.href} value={`nav ${n.label}`} keywords={n.keywords} onSelect={() => go(n.href)} className={itemCls}>
                     <n.icon className="size-4 text-sg-muted" /> {n.label}
-                    <span className="ml-auto flex gap-1">
-                      {n.keys.split(" ").map((k) => (
-                        <Kbd key={k}>{k}</Kbd>
-                      ))}
-                    </span>
+                    {n.keys ? (
+                      <span className="ml-auto flex gap-1">
+                        {n.keys.split(" ").map((k) => (
+                          <Kbd key={k}>{k}</Kbd>
+                        ))}
+                      </span>
+                    ) : null}
                   </Command.Item>
                 ))}
                 <Command.Item value="nav keyboard shortcuts help" onSelect={() => openDialog({ kind: "shortcuts" })} className={itemCls}>
                   <Keyboard className="size-4 text-sg-muted" /> Keyboard shortcuts <Kbd className="ml-auto">?</Kbd>
+                </Command.Item>
+              </Command.Group>
+
+              <Command.Group heading="Actions" className={groupCls}>
+                <Command.Item
+                  value="action toggle sidebar"
+                  keywords={["collapse", "expand", "navigation", "menu", "drawer"]}
+                  onSelect={() => {
+                    close();
+                    toggleNavigation();
+                  }}
+                  className={itemCls}
+                >
+                  <ChevronsLeft className="size-4 text-sg-muted" /> Toggle sidebar <Kbd className="ml-auto">[</Kbd>
                 </Command.Item>
               </Command.Group>
 

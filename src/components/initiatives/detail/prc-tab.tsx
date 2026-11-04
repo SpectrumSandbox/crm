@@ -1,42 +1,44 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { BadgeCheck, Ban, ClipboardCheck, ClipboardList, Gavel, Hourglass, ListChecks, Scale, Search, ShieldCheck, SlidersHorizontal, UserCheck } from "lucide-react";
+import { BadgeCheck, Ban, ClipboardCheck, ClipboardList, Gavel, Hourglass, Landmark, ListChecks, Lock, Scale, Search, ShieldCheck, SlidersHorizontal, UserCheck } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
 import type { DecisionOutcome, Initiative, PrcScores } from "@/lib/initiatives/types";
-import { addBusinessDays, capacityCheck, deferralTriggers, isLiveMember, participationEligibility, proposalEconomics, proposalGaps } from "@/lib/initiatives/engine";
-import { POLICY, ROLE_META } from "@/lib/initiatives/policy";
-import { cn, formatDate, fromDateInput, toDateInput } from "@/lib/utils";
+import { addBusinessDays, approvalTier, capacityCheck, concurrentNonLeadRoles, deferralTriggers, isLiveMember, maxAllocationFactor, participationEligibility, proposalEconomics, proposalGaps, standardBonusOf } from "@/lib/initiatives/engine";
+import { POLICY, ROLE_META, TIER_META } from "@/lib/initiatives/policy";
+import { cn, formatDate, formatIDR, fromDateInput, toDateInput } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Avatar, Chip } from "@/components/ui/misc";
-import { Cite, Money, Pct } from "@/components/initiatives/shared";
+import { Cite, Money, Rate, TierChip, rateSourceLabel } from "@/components/initiatives/shared";
 import { Card, CheckRow, KV, SlaTimer, onCmdEnter } from "./ui";
 
 const CRITERIA: { key: keyof Omit<PrcScores, "notes">; label: string; hint: string }[] = [
-  { key: "feasibility", label: "Technical feasibility", hint: "Can the team deliver the scope with the proposed approach?" },
-  { key: "profitability", label: "Profitability", hint: "Margin after costs, taxes and the bonus pool" },
-  { key: "resources", label: "Resource availability", hint: "People, capacity and equipment without starving other work" },
-  { key: "strategic", label: "Strategic alignment", hint: "Fit with company capabilities and direction" },
-  { key: "risk", label: "Risk profile", hint: "5 = low, well-mitigated risk · 1 = high, unmitigated" },
+  { key: "feasibility", label: "Feasibility", hint: "Technical approach, realistic schedule, team skills and certifications, equipment availability" },
+  { key: "profitability", label: "Profitability", hint: "Credible revenue, complete costs, margin above the CFO's minimum, payment terms that support cash flow" },
+  { key: "resources", label: "Resources", hint: "Team capacity and line manager agreement, leadership capacity (§7.3), no clash with higher-priority work" },
+  { key: "strategic", label: "Strategy & classification", hint: "Fit with the company's markets, client value, no conflict with existing clients; correct project type (§5.1)" },
+  { key: "risk", label: "Risk and compliance", hint: "5 = risks identified and mitigated, no unacceptable legal, safety, tax or reputational exposure · 1 = unmitigated" },
 ];
 
 const OUTCOMES: { value: DecisionOutcome; label: string; hint: string; color: "green" | "orange" | "red" | "yellow" }[] = [
-  { value: "approved", label: "Full approval", hint: "Project code, budget and team formation", color: "green" },
-  { value: "conditional", label: "Conditional approval", hint: "Proceeds once stated conditions are met", color: "orange" },
-  { value: "rejected", label: "Rejection", hint: "With rationale; appeal possible within 10 business days", color: "red" },
-  { value: "deferred", label: "Deferral", hint: "More information or better timing needed", color: "yellow" },
+  { value: "approved", label: "Approved", hint: "Project code, budget, type and revenue-share rate are issued", color: "green" },
+  { value: "conditional", label: "Conditionally approved", hint: "Conditions and a deadline; the code is issued once the PMO confirms them", color: "orange" },
+  { value: "rejected", label: "Rejected", hint: "Written reasons and guidance on resubmission; appeal within 10 business days", color: "red" },
+  { value: "deferred", label: "Deferred", hint: "The information needed and a new decision date", color: "yellow" },
 ];
 
 const outcomeColor: Record<DecisionOutcome, "green" | "orange" | "red" | "yellow"> = { approved: "green", conditional: "orange", rejected: "red", deferred: "yellow" };
-const outcomeLabel: Record<DecisionOutcome, string> = { approved: "Full approval", conditional: "Conditional approval", rejected: "Rejected", deferred: "Deferred" };
+const outcomeLabel: Record<DecisionOutcome, string> = { approved: "Approved", conditional: "Conditionally approved", rejected: "Rejected", deferred: "Deferred" };
 
 export function PrcTab({ ini }: { ini: Initiative }) {
   if (ini.status === "draft") {
     return (
-      <Card title="PRC review" icon={Gavel} cite="2.3">
-        <p className="text-sm text-sg-muted">This proposal has not been submitted yet. Once submitted, the PRC acknowledges it within 1 business day, screens it, evaluates it against five criteria and records a decision within 5 business days.</p>
+      <Card title="PRC review" icon={Gavel} cite="4.5">
+        <p className="text-sm text-sg-muted">
+          This proposal has not been submitted yet. Once submitted, the PMO acknowledges it within 1 business day and checks completeness within 2; a PRC reviewer evaluates it with Finance against §4.4, and {TIER_META[approvalTier(ini).tier].label} decides within {TIER_META[approvalTier(ini).tier].decisionBusinessDays} business days.
+        </p>
         <div className="mt-4">
           <AutomatedChecks ini={ini} />
         </div>
@@ -54,7 +56,7 @@ export function PrcTab({ ini }: { ini: Initiative }) {
         <AppealCard ini={ini} />
       </div>
       <div className="min-w-0">
-        <Card title="Automated checks" icon={ListChecks} cite="2.3.3">
+        <Card title="Automated checks" icon={ListChecks} cite="4.4">
           <AutomatedChecks ini={ini} />
         </Card>
       </div>
@@ -86,7 +88,7 @@ function ScreeningCard({ ini }: { ini: Initiative }) {
   const reviewer = ini.primaryReviewerId ? userMap.get(ini.primaryReviewerId) : undefined;
 
   return (
-    <Card title="Screening" icon={Search} cite="2.3.2">
+    <Card title="Acknowledgment & completeness" icon={Search} cite="4.5">
       <div className="space-y-1">
         <KV label="Tracking number">
           <span className="sg-num font-semibold text-sg-white">{ini.trackingNo || "—"}</span>
@@ -111,7 +113,7 @@ function ScreeningCard({ ini }: { ini: Initiative }) {
 
       {ini.status === "submitted" ? (
         <div className="mt-4 border-t border-sg-line pt-4">
-          <p className="mb-2 text-xs text-sg-muted">The PRC Secretary checks completeness and eligibility, issues the tracking number and assigns a primary reviewer from the PRC.</p>
+          <p className="mb-2 text-xs text-sg-muted">The PMO acknowledges the proposal (tracking number issued at submission), checks completeness within 2 business days and assigns a PRC reviewer, who evaluates it with Finance.</p>
           {reviewers.length ? (
             <div className="flex flex-wrap items-end gap-2">
               <Field label="Primary reviewer (PRC member)" className="min-w-[220px] flex-1">
@@ -142,15 +144,15 @@ function ScreeningCard({ ini }: { ini: Initiative }) {
 
       {ini.status === "screening" ? (
         <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-sg-line pt-4">
-          <p className="flex-1 text-xs text-sg-muted">Screening complete? Move the proposal into detailed evaluation (Day 2–5).</p>
+          <p className="flex-1 text-xs text-sg-muted">Complete? Move the proposal to evaluation with Finance against §4.4. Incomplete proposals go back to the proposer with a list of what is missing; the clock restarts on resubmission.</p>
           <Button
             variant="primary"
             onClick={() => {
               startEvaluation(ini.id);
-              notify("Detailed evaluation started");
+              notify("Evaluation started with Finance");
             }}
           >
-            <ClipboardCheck /> Start detailed evaluation
+            <ClipboardCheck /> Start evaluation
           </Button>
         </div>
       ) : null}
@@ -185,7 +187,7 @@ function ScorecardCard({ ini }: { ini: Initiative }) {
     <Card
       title="Evaluation scorecard"
       icon={SlidersHorizontal}
-      cite="2.3.3"
+      cite="4.4"
       actions={
         <span className="flex items-center gap-2 text-xs text-sg-muted">
           Average <span className={cn("sg-num font-display text-base font-extrabold", avg >= 4 ? "text-soft-green" : avg >= 3 ? "text-soft-yellow" : "text-soft-red")}>{avg.toFixed(1)}</span>/5
@@ -228,7 +230,7 @@ function ScorecardCard({ ini }: { ini: Initiative }) {
         <div className="flex items-center justify-between gap-2">
           <span className="text-2xs text-sg-dim">
             {reviewer ? `Primary reviewer: ${reviewer.name}` : "No primary reviewer assigned"}
-            {notYet ? " · scoring opens when detailed evaluation starts" : !editable ? " · scorecard is locked after the decision" : ""}
+            {notYet ? " · scoring opens when evaluation starts" : !editable ? " · scorecard is locked after the decision" : ""}
           </span>
           {editable ? (
             <Button variant="primary" size="sm" onClick={save} disabled={!dirty}>
@@ -247,7 +249,7 @@ function AutomatedChecks({ ini }: { ini: Initiative }) {
   const members = useCrm((s) => s.initiativeMembers);
   const initiatives = useCrm((s) => s.initiatives);
   const profiles = useCrm((s) => s.employeeProfiles);
-  const adjustments = useCrm((s) => s.shareAdjustments);
+  const adjustments = useCrm((s) => s.curveAdjustments);
   const userMap = useUserMap();
 
   const data = useMemo(() => {
@@ -255,19 +257,28 @@ function AutomatedChecks({ ini }: { ini: Initiative }) {
     const team = members.filter((m) => m.initiativeId === ini.id && isLiveMember(m));
     const eligibility = team.map((m) => ({ m, r: participationEligibility(profiles.find((p) => p.userId === m.userId)) }));
     const leads = team.filter((m) => m.roles.some((r) => ROLE_META[r].leadership)).map((m) => ({ m, c: capacityCheck(m.userId, ini, m.roles, initiatives, members) }));
-    const econ = proposalEconomics(ini, adjustments, ini.approvedAt ?? new Date().toISOString());
+    const econ = proposalEconomics(ini, adjustments);
     const deferral = deferralTriggers(ini, adjustments);
-    return { gaps, eligibility, leads, econ, deferral };
+    const nonLead = team.filter((m) => m.roles.some((r) => r === "engineer" || r === "secretary" || r === "specialist")).map((m) => ({ m, n: concurrentNonLeadRoles(m.userId, initiatives, members, ini.id) })).filter((x) => x.n >= POLICY.maxConcurrentNonLeadRoles);
+    const allocation = team.filter((m) => (m.allocationFactor ?? 1) > maxAllocationFactor(profiles.find((p) => p.userId === m.userId)) + 1e-9);
+    const unsigned = team.filter((m) => m.consent !== "accepted" || !m.managerApproved);
+    const tier = approvalTier(ini);
+    return { gaps, eligibility, leads, econ, deferral, nonLead, allocation, unsigned, tier };
   }, [ini, members, initiatives, profiles, adjustments]);
 
   const ineligible = data.eligibility.filter((e) => !e.r.ok);
   const warned = data.eligibility.filter((e) => e.r.ok && e.r.warnings.length);
   const breaches = data.leads.filter((l) => !l.c.ok);
   const margin = data.econ.expected.marginPct;
+  const name = (id: string) => userMap.get(id)?.name ?? id;
 
   return (
     <div className="divide-y divide-sg-line/60">
-      <CheckRow ok={data.gaps.length === 0} title={data.gaps.length ? `Proposal completeness — ${data.gaps.length} gap${data.gaps.length === 1 ? "" : "s"}` : "Proposal complete"}>
+      <CheckRow ok title={`${TIER_META[data.tier.tier].label} — ${TIER_META[data.tier.tier].decides}`}>
+        {data.tier.reasons.join("; ")}. {TIER_META[data.tier.tier].proposal}; decision within {TIER_META[data.tier.tier].decisionBusinessDays} business days. <Cite s="4.2" />
+      </CheckRow>
+
+      <CheckRow ok={data.gaps.length === 0} title={data.gaps.length ? `Completeness — ${data.gaps.length} gap${data.gaps.length === 1 ? "" : "s"}` : "Proposal complete"}>
         {data.gaps.length ? (
           <ul className="list-disc pl-4">
             {data.gaps.map((g) => (
@@ -276,53 +287,69 @@ function AutomatedChecks({ ini }: { ini: Initiative }) {
           </ul>
         ) : (
           <>
-            All required sections present <Cite s="2.2" />
+            Everything §4.3 requires is present <Cite s="4.3" />
           </>
         )}
       </CheckRow>
 
-      <CheckRow ok={ineligible.length === 0} warn={warned.length > 0} title={ineligible.length ? `Team eligibility — ${ineligible.length} not eligible` : `Team eligibility — ${data.eligibility.length} member${data.eligibility.length === 1 ? "" : "s"} eligible`}>
+      <CheckRow ok={data.unsigned.length === 0} title={data.unsigned.length ? `Role and Weight Agreement — ${data.unsigned.length} not signed or without line manager agreement` : "Role and Weight Agreement signed, line managers agreed"}>
+        {data.unsigned.length ? data.unsigned.map((m) => `${name(m.userId)}${m.consent !== "accepted" ? " (not signed)" : ""}${!m.managerApproved ? " (no line manager agreement)" : ""}`).join("; ") : "Every member signed Annex D Part 1."} <Cite s="6.7" />
+      </CheckRow>
+
+      <CheckRow ok={ineligible.length === 0} warn={warned.length > 0} title={ineligible.length ? `Eligibility — ${ineligible.length} not eligible` : `Eligibility — ${data.eligibility.length} member${data.eligibility.length === 1 ? "" : "s"} eligible`}>
         {data.eligibility.length === 0 ? "No team members proposed." : null}
         <ul className="mt-0.5 space-y-1">
           {data.eligibility.map(({ m, r }) => (
             <li key={m.id} className="flex items-start gap-1.5">
               <span className={cn("mt-1 size-1.5 shrink-0 rounded-full", !r.ok ? "bg-soft-red" : r.warnings.length ? "bg-soft-yellow" : "bg-soft-green")} />
               <span>
-                <span className="text-sg-text">{userMap.get(m.userId)?.name ?? m.userId}</span>
+                <span className="text-sg-text">{name(m.userId)}</span>
                 {r.blockers.length ? <span className="text-soft-red"> — {r.blockers.join("; ")}</span> : null}
                 {r.warnings.length ? <span className="text-soft-yellow"> — {r.warnings.join("; ")}</span> : null}
               </span>
             </li>
           ))}
         </ul>
-        <Cite s="2.1" />
+        {data.allocation.length ? <p className="text-soft-red">Allocation factor above the part-time cap: {data.allocation.map((m) => name(m.userId)).join(", ")} (§3.1)</p> : null}
+        <Cite s="3.1" />
       </CheckRow>
 
-      <CheckRow ok={breaches.length === 0} title={breaches.length ? `Leadership capacity — ${breaches.length} breach${breaches.length === 1 ? "" : "es"}` : "Leadership capacity within 2.0"}>
+      <CheckRow ok={breaches.length === 0} warn={data.nonLead.length > 0} title={breaches.length ? `Leadership capacity — ${breaches.length} breach${breaches.length === 1 ? "" : "es"}` : "Leadership capacity within 2.0"}>
         {data.leads.length === 0 ? "No leads assigned." : null}
         <ul className="mt-0.5 space-y-0.5">
           {data.leads.map(({ m, c }) => (
             <li key={m.id}>
-              <span className="text-sg-text">{userMap.get(m.userId)?.name ?? m.userId}</span>:{" "}
+              <span className="text-sg-text">{name(m.userId)}</span>:{" "}
               <span className={cn("sg-num", c.ok ? "text-sg-muted" : "text-soft-red")}>
                 {c.before.toFixed(2)} + {c.adds.toFixed(2)} = {c.after.toFixed(2)} / {POLICY.leadershipCapacity.toFixed(1)}
               </span>
             </li>
           ))}
         </ul>
-        <Cite s="5.1" />
+        {data.nonLead.length ? (
+          <p className="text-soft-yellow">
+            {data.nonLead.map((x) => `${name(x.m.userId)} (${x.n + 1} non-lead roles)`).join(", ")} — more than 3 concurrent non-lead roles need line manager and PRC approval (§7.1)
+          </p>
+        ) : null}
+        <Cite s="7.3" />
       </CheckRow>
 
       <CheckRow ok={data.econ.expected.pool > 0 && margin > 0} warn={margin > 0 && margin < 0.1} title={`Profitability — expected company margin ${Math.round(margin * 1000) / 10}%`}>
-        Expected P <Money value={data.econ.expected.net} /> · pool <Money value={data.econ.expected.pool} /> at <Pct value={data.econ.share} /> · company keeps <Money value={data.econ.expected.companyMargin} />.
+        Expected net <Money value={data.econ.expected.net} /> · x <Money value={data.econ.rate.x} /> over {data.econ.rate.months} months · rate <Rate value={data.econ.rate.rate} /> · pool <Money value={data.econ.expected.pool} /> · company keeps <Money value={data.econ.expected.companyMargin} />.
         {data.econ.expected.pool <= 0 ? <span className="text-soft-red"> No bonus pool in the expected case.</span> : null}
         {data.econ.worst.net < 0 ? <span className="text-soft-orange"> Worst case is loss-making.</span> : null}
-        <Cite s="3.4" />
+        <Cite s="5.1" />
       </CheckRow>
 
-      <CheckRow ok warn={data.deferral.length > 0} title={data.deferral.length ? `Deferral triggers — 30% deferred ${ini.deferralMonths || POLICY.deferral.minMonths} months` : "No deferral triggers"}>
-        {data.deferral.length ? data.deferral.join("; ") : "Bonuses pay in full on schedule."} <Cite s="6.3" />
+      <CheckRow ok warn={data.deferral.length > 0} title={data.deferral.length ? `Deferral — ${Math.round((ini.deferralPct ?? POLICY.deferral.defaultPct) * 100)}% for ${ini.deferralMonths || POLICY.deferral.minMonths} months proposed` : "No deferral triggers"}>
+        {data.deferral.length ? data.deferral.join("; ") : "Bonuses are paid with the next salary after collection."} <Cite s="9.3" />
       </CheckRow>
+
+      {ini.type === "C" ? (
+        <CheckRow ok={standardBonusOf(ini) >= POLICY.typeCMinimum.standardBonus} title={`Type C standard bonus ${formatIDR(standardBonusOf(ini), "full")} a month`}>
+          Guaranteed minimum monthly pool, at least Rp1,000,000; the PRC fixes it at approval. <Cite s="8.6" />
+        </CheckRow>
+      ) : null}
     </div>
   );
 }
@@ -332,7 +359,7 @@ function AutomatedChecks({ ini }: { ini: Initiative }) {
 function JiraProjectSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const projects = useCrm((s) => s.projects);
   return (
-    <Field label="Jira project for the delivery epic" hint="Creates an epic and a kickoff task with Finance & PMO (§2.3.6).">
+    <Field label="Jira project for the delivery epic" hint="The PMO opens the project: an epic and a kickoff task with Finance & PMO (§4.5).">
       <Select value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">Don’t create an epic</option>
         {projects.map((p) => (
@@ -345,40 +372,52 @@ function JiraProjectSelect({ value, onChange }: { value: string; onChange: (v: s
   );
 }
 
+const DEFERRAL_PCTS = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3];
+
 function DecisionForm({ ini }: { ini: Initiative }) {
   const decideInitiative = useCrm((s) => s.decideInitiative);
   const profiles = useCrm((s) => s.employeeProfiles);
   const currentUserId = useCrm((s) => s.currentUserId);
   const projects = useCrm((s) => s.projects);
-  const adjustments = useCrm((s) => s.shareAdjustments);
+  const adjustments = useCrm((s) => s.curveAdjustments);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
   const me = userMap.get(currentUserId);
   const isCeo = !!profiles.find((p) => p.userId === currentUserId)?.governanceRoles?.includes("ceo");
+  const tier = useMemo(() => approvalTier(ini), [ini]);
+  const econ = useMemo(() => proposalEconomics(ini, adjustments), [ini, adjustments]);
 
   const [outcome, setOutcome] = useState<DecisionOutcome>("approved");
   const [rationale, setRationale] = useState("");
   const [conditions, setConditions] = useState("");
   const [conditionsDue, setConditionsDue] = useState(() => toDateInput(addBusinessDays(new Date().toISOString(), 10)));
-  const [votesFor, setVotesFor] = useState("3");
+  const [votesFor, setVotesFor] = useState(tier.tier === 1 ? "2" : "3");
   const [votesAgainst, setVotesAgainst] = useState("0");
   const [veto, setVeto] = useState(false);
   const [highRisk, setHighRisk] = useState(ini.highRisk);
+  const [deferralPct, setDeferralPct] = useState(Math.min(POLICY.deferral.maxPct, ini.deferralPct ?? POLICY.deferral.defaultPct) || POLICY.deferral.defaultPct);
   const [deferralMonths, setDeferralMonths] = useState(Math.min(POLICY.deferral.maxMonths, Math.max(POLICY.deferral.minMonths, ini.deferralMonths || POLICY.deferral.minMonths)));
-  const [jiraProjectId, setJiraProjectId] = useState(() => projects[0]?.id ?? "");
+  const [standardBonus, setStandardBonus] = useState(String(standardBonusOf(ini)));
+  const [rateChecked, setRateChecked] = useState(false);
+  const [jiraProjectId, setJiraProjectId] = useState(() => ini.jiraProjectId ?? projects[0]?.id ?? "");
   const [tried, setTried] = useState(false);
 
   const effective: DecisionOutcome = veto ? "rejected" : outcome;
   const otherTriggers = useMemo(() => deferralTriggers({ ...ini, highRisk: false }, adjustments), [ini, adjustments]);
   const willDefer = highRisk || otherTriggers.length > 0;
+  const approving = effective === "approved" || effective === "conditional";
+  const sb = Math.floor(Number(standardBonus.replace(/\D/g, "")) || 0);
 
   const errors: string[] = [];
-  if (!rationale.trim()) errors.push("Rationale is required");
+  if (!rationale.trim()) errors.push("Reasons are required");
   if (effective === "conditional" && !conditions.trim()) errors.push("State the conditions for conditional approval");
-  if (effective === "conditional" && !conditionsDue) errors.push("Set a due date for the conditions");
+  if (effective === "conditional" && !conditionsDue) errors.push("Set a deadline for the conditions");
+  if (approving && econ.rate.source === "curve" && !rateChecked) errors.push("Confirm Finance checked the expected case that sets the rate");
+  if (approving && ini.type === "C" && sb < POLICY.typeCMinimum.standardBonus) errors.push("Type C standard bonus must be at least Rp1,000,000 a month");
+  if (tier.tier === 3 && !isCeo && approving) errors.push("Tier 3 is decided by the full PRC with the CEO present");
   const vf = Math.max(0, Math.floor(Number(votesFor) || 0));
   const va = Math.max(0, Math.floor(Number(votesAgainst) || 0));
-  const voteMismatch = !veto && (effective === "approved" || effective === "conditional") && va >= vf;
+  const voteMismatch = !veto && approving && va >= vf;
 
   const submit = () => {
     setTried(true);
@@ -394,14 +433,17 @@ function DecisionForm({ ini }: { ini: Initiative }) {
         votesAgainst: va,
         ceoVeto: veto,
       },
-      { jiraProjectId: effective === "approved" && jiraProjectId ? jiraProjectId : undefined, highRisk, deferralMonths },
+      { jiraProjectId: effective === "approved" && jiraProjectId ? jiraProjectId : undefined, highRisk, deferralMonths, deferralPct: willDefer ? deferralPct : 0, standardBonus: ini.type === "C" ? sb : undefined },
     );
-    notify(veto ? "CEO veto recorded — proposal rejected" : `PRC decision recorded: ${outcomeLabel[effective]}`);
+    notify(veto ? "CEO veto recorded — proposal rejected" : `PRC decision recorded: ${outcomeLabel[effective]}${effective === "approved" && econ.rate.source !== "provisional" ? ` · rate ${(econ.rate.rate * 100).toFixed(3)}% fixed` : ""}`);
   };
 
   return (
-    <Card title="PRC decision" icon={Gavel} cite="2.3.4">
+    <Card title="PRC decision" icon={Gavel} cite={["4.5", "Annex A"]} actions={<TierChip tier={tier.tier} long />}>
       <div className="space-y-4" onKeyDown={onCmdEnter(submit)}>
+        <p className="text-2xs text-sg-dim">
+          {TIER_META[tier.tier].decides} decides within {TIER_META[tier.tier].decisionBusinessDays} business days<Cite s="4.2" />.
+        </p>
         <div role="radiogroup" aria-label="Outcome" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {OUTCOMES.map((o) => {
             const active = outcome === o.value;
@@ -428,8 +470,8 @@ function DecisionForm({ ini }: { ini: Initiative }) {
           })}
         </div>
 
-        <Field label="Rationale (required)">
-          <Textarea value={rationale} onChange={(e) => setRationale(e.target.value)} placeholder="Why the PRC reached this decision — recorded in the minutes and shared with the initiator." className={cn(tried && !rationale.trim() && "border-soft-red/60")} />
+        <Field label="Reasons (required)">
+          <Textarea value={rationale} onChange={(e) => setRationale(e.target.value)} placeholder="Why the PRC reached this decision — recorded and sent to the proposer in writing." className={cn(tried && !rationale.trim() && "border-soft-red/60")} />
         </Field>
 
         {effective === "conditional" ? (
@@ -437,9 +479,30 @@ function DecisionForm({ ini }: { ini: Initiative }) {
             <Field label="Conditions (required)">
               <Textarea value={conditions} onChange={(e) => setConditions(e.target.value)} placeholder="e.g. Signed LOI from the client; revised cost estimate with subcontractor quote" className={cn("min-h-[64px]", tried && !conditions.trim() && "border-soft-red/60")} />
             </Field>
-            <Field label="Conditions due">
+            <Field label="Deadline">
               <Input type="date" value={conditionsDue} onChange={(e) => setConditionsDue(e.target.value)} className={cn(tried && !conditionsDue && "border-soft-red/60")} />
             </Field>
+          </div>
+        ) : null}
+
+        {approving ? (
+          <div className="rounded-md border border-sg-line p-3">
+            <div className="sg-eyebrow mb-2 flex items-center gap-1">
+              <Landmark className="size-3" /> Confirmed type, x and revenue-share rate <Cite s="5.1" />
+            </div>
+            <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
+              <Rate value={econ.rate.rate} className="font-display text-xl font-extrabold text-sg-white" />
+              <span className="text-xs text-sg-muted">
+                x <Money value={econ.rate.x} className="text-sg-white" /> · {econ.rate.months} contracted month{econ.rate.months === 1 ? "" : "s"} · Type {ini.type}
+              </span>
+            </div>
+            <p className="mt-1 text-2xs text-sg-dim">{econ.rate.source === "curve" ? "The PRC fixes this rate in the approval decision; it applies to all of the project's net revenue for its whole life." : rateSourceLabel(econ.rate.source)}</p>
+            {econ.rate.source === "curve" ? (
+              <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-sg-text">
+                <input type="checkbox" checked={rateChecked} onChange={(e) => setRateChecked(e.target.checked)} className="accent-white" />
+                <Lock className="size-3.5" /> Finance checked the expected case — fix y at {(econ.rate.rate * 100).toFixed(3)}%
+              </label>
+            ) : null}
           </div>
         ) : null}
 
@@ -454,7 +517,7 @@ function DecisionForm({ ini }: { ini: Initiative }) {
             {isCeo ? (
               <label className={cn("flex w-full cursor-pointer items-center gap-2 rounded-md border px-2.5 py-2 text-xs", veto ? "border-soft-red/60 bg-soft-red/10 text-soft-red" : "border-sg-line text-sg-text hover:border-sg-line-2")}>
                 <input type="checkbox" checked={veto} onChange={(e) => setVeto(e.target.checked)} className="accent-white" />
-                <Ban className="size-3.5" /> CEO veto — forces rejection <Cite s="2.3.4" />
+                <Ban className="size-3.5" /> CEO veto — forces rejection
               </label>
             ) : (
               <span className="text-2xs text-sg-dim">Only the CEO may exercise a veto.</span>
@@ -463,32 +526,59 @@ function DecisionForm({ ini }: { ini: Initiative }) {
         </div>
         {voteMismatch ? <p className="-mt-2 text-2xs text-soft-yellow">Votes against are not fewer than votes for — check the tally before recording an approval.</p> : null}
 
-        <div className="rounded-md border border-sg-line p-3">
-          <div className="sg-eyebrow mb-2 flex items-center">
-            PRC risk classification <Cite s="6.3" />
+        {approving ? (
+          <div className="rounded-md border border-sg-line p-3">
+            <div className="sg-eyebrow mb-2 flex items-center">
+              Risk and deferral <Cite s="9.3" />
+            </div>
+            <div className="flex flex-wrap items-center gap-4">
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-sg-text">
+                <input type="checkbox" checked={highRisk} onChange={(e) => setHighRisk(e.target.checked)} className="accent-white" />
+                Technical or execution risk rated high
+              </label>
+              <label className={cn("flex items-center gap-2 text-xs text-sg-muted", !willDefer && "opacity-50")}>
+                Deferral
+                <Select value={String(deferralPct)} disabled={!willDefer} onChange={(e) => setDeferralPct(Number(e.target.value))} wrapperClassName="w-28" className="h-7 text-xs">
+                  {DEFERRAL_PCTS.map((p) => (
+                    <option key={p} value={p}>
+                      {Math.round(p * 100)}% of each bonus
+                    </option>
+                  ))}
+                </Select>
+              </label>
+              <label className={cn("flex items-center gap-2 text-xs text-sg-muted", !willDefer && "opacity-50")}>
+                for
+                <Select value={String(deferralMonths)} disabled={!willDefer} onChange={(e) => setDeferralMonths(Number(e.target.value))} wrapperClassName="w-40" className="h-7 text-xs">
+                  {Array.from({ length: POLICY.deferral.maxMonths - POLICY.deferral.minMonths + 1 }, (_, i) => POLICY.deferral.minMonths + i).map((n) => (
+                    <option key={n} value={n}>
+                      {n} months after close
+                    </option>
+                  ))}
+                </Select>
+              </label>
+            </div>
+            <p className="mt-2 text-2xs text-sg-dim">
+              {willDefer
+                ? `Deferral applies: ${[...(highRisk ? ["rated high risk by the PRC"] : []), ...otherTriggers].join("; ")}. Up to 30%, 6–12 months after close, based on the warranty period and risk.`
+                : "No trigger applies — no deferral unless the PRC rates the risk high."}
+            </p>
           </div>
-          <div className="flex flex-wrap items-center gap-4">
-            <label className="flex cursor-pointer items-center gap-2 text-sm text-sg-text">
-              <input type="checkbox" checked={highRisk} onChange={(e) => setHighRisk(e.target.checked)} className="accent-white" />
-              High technical / execution risk
-            </label>
-            <label className="flex items-center gap-2 text-xs text-sg-muted">
-              Deferral period
-              <Select value={String(deferralMonths)} onChange={(e) => setDeferralMonths(Number(e.target.value))} wrapperClassName="w-28" className="h-7 text-xs">
-                {Array.from({ length: POLICY.deferral.maxMonths - POLICY.deferral.minMonths + 1 }, (_, i) => POLICY.deferral.minMonths + i).map((n) => (
-                  <option key={n} value={n}>
-                    {n} months
-                  </option>
-                ))}
-              </Select>
-            </label>
+        ) : null}
+
+        {approving && ini.type === "C" ? (
+          <div className="rounded-md border border-sg-line p-3">
+            <div className="sg-eyebrow mb-2 flex items-center">
+              Type C standard bonus approved <Cite s="8.6" />
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="relative w-48">
+                <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-2xs font-semibold text-sg-dim">Rp</span>
+                <Input inputMode="numeric" value={standardBonus} onChange={(e) => setStandardBonus(e.target.value.replace(/\D/g, ""))} className="sg-num pl-8 text-right" aria-label="Standard bonus per month" />
+              </div>
+              <span className="text-2xs text-sg-dim">a month · proposed {formatIDR(standardBonusOf(ini), "full")} · at least Rp1,000,000</span>
+            </div>
           </div>
-          <p className="mt-2 text-2xs text-sg-dim">
-            {willDefer
-              ? `30% of each bonus will be deferred for ${deferralMonths} months${otherTriggers.length ? ` (also triggered by: ${otherTriggers.join("; ")})` : ""}.`
-              : "No deferral will apply unless classified high risk."}
-          </p>
-        </div>
+        ) : null}
 
         {effective === "approved" ? <JiraProjectSelect value={jiraProjectId} onChange={setJiraProjectId} /> : null}
 
@@ -517,11 +607,11 @@ function ConditionsCard({ ini }: { ini: Initiative }) {
   const confirmConditions = useCrm((s) => s.confirmConditions);
   const projects = useCrm((s) => s.projects);
   const notify = useUi((s) => s.notify);
-  const [jiraProjectId, setJiraProjectId] = useState(() => (ini.epicId ? "" : projects[0]?.id ?? ""));
+  const [jiraProjectId, setJiraProjectId] = useState(() => (ini.epicId ? "" : ini.jiraProjectId ?? projects[0]?.id ?? ""));
   const due = ini.decision?.conditionsDueAt;
 
   return (
-    <Card title="Conditions for approval" icon={BadgeCheck} cite="2.3.4">
+    <Card title="Conditions for approval" icon={BadgeCheck} cite="4.5">
       <p className="whitespace-pre-wrap text-sm text-sg-text">{ini.decision?.conditions || <span className="text-sg-dim">No conditions recorded.</span>}</p>
       {due ? (
         <div className="mt-2">
@@ -534,10 +624,10 @@ function ConditionsCard({ ini }: { ini: Initiative }) {
           variant="primary"
           onClick={() => {
             confirmConditions(ini.id, { jiraProjectId: jiraProjectId || undefined });
-            notify("Conditions confirmed — project approved");
+            notify("Conditions confirmed by the PMO — project code issued");
           }}
         >
-          <ShieldCheck /> Confirm conditions met
+          <ShieldCheck /> Confirm conditions met (PMO)
         </Button>
       </div>
     </Card>
@@ -546,15 +636,18 @@ function ConditionsCard({ ini }: { ini: Initiative }) {
 
 function DecisionRecord({ ini }: { ini: Initiative }) {
   const userMap = useUserMap();
+  const adjustments = useCrm((s) => s.curveAdjustments);
+  const econ = useMemo(() => proposalEconomics(ini, adjustments), [ini, adjustments]);
+  const deferral = useMemo(() => deferralTriggers(ini, adjustments), [ini, adjustments]);
   const d = ini.decision!;
   const by = userMap.get(d.decidedById);
   const superseded = ini.status === "evaluation";
   return (
-    <Card title={superseded ? "Previous decision" : "Decision record"} icon={ClipboardCheck} cite="2.3.4" actions={<Chip color={outcomeColor[d.outcome]} dot>{outcomeLabel[d.outcome]}</Chip>}>
+    <Card title={superseded ? "Previous decision" : "Decision record"} icon={ClipboardCheck} cite={["4.5", "Annex A"]} actions={<Chip color={outcomeColor[d.outcome]} dot>{outcomeLabel[d.outcome]}</Chip>}>
       {superseded ? <p className="mb-2 text-2xs text-soft-yellow">The appeal was upheld — the proposal returned to evaluation for a fresh decision.</p> : null}
       <div className="space-y-3">
         <div>
-          <div className="sg-eyebrow mb-1">Rationale</div>
+          <div className="sg-eyebrow mb-1">Reasons</div>
           <p className="whitespace-pre-wrap text-sm text-sg-text">{d.rationale || "—"}</p>
         </div>
         {d.conditions ? (
@@ -572,8 +665,20 @@ function DecisionRecord({ ini }: { ini: Initiative }) {
             <span className="sg-num text-soft-red">{d.votesAgainst}</span>
           </KV>
           <KV label="CEO veto">{d.ceoVeto ? <span className="text-soft-red">Yes</span> : "No"}</KV>
-          <KV label="High risk">{ini.highRisk ? <span className="text-soft-orange">Yes · {ini.deferralMonths}m</span> : "No"}</KV>
+          <KV label="High risk">{ini.highRisk ? <span className="text-soft-orange">Yes</span> : "No"}</KV>
         </div>
+        {d.outcome === "approved" || d.outcome === "conditional" ? (
+          <div className="grid grid-cols-1 gap-x-6 border-t border-sg-line pt-2 sm:grid-cols-2">
+            <KV label="Type · x · rate">
+              <span className="sg-num">
+                {ini.type} · <Money value={econ.rate.x} /> · <Rate value={econ.rate.rate} />
+              </span>
+            </KV>
+            <KV label="Rate basis">{rateSourceLabel(econ.rate.source)}</KV>
+            <KV label="Deferral applied">{deferral.length ? `${Math.round((ini.deferralPct ?? POLICY.deferral.defaultPct) * 100)}% for ${ini.deferralMonths} months after close` : "None"}</KV>
+            {ini.type === "C" ? <KV label="Standard bonus approved">{formatIDR(standardBonusOf(ini), "full")} a month</KV> : null}
+          </div>
+        ) : null}
         <div className="flex items-center gap-2 text-2xs text-sg-muted">
           <Avatar user={by} size="xs" /> Decided by {by?.name ?? d.decidedById} · {formatDate(d.decidedAt, "datetime")}
           {ini.code ? (
@@ -612,9 +717,9 @@ function AppealCard({ ini }: { ini: Initiative }) {
       notify("Appeal filed with the Executive Committee");
     };
     return (
-      <Card title="Appeal" icon={Scale} cite="2.3.7">
+      <Card title="Appeal" icon={Scale} cite="4.6">
         <p className="text-xs text-sg-muted">
-          The initiator may appeal a {ini.status === "rejected" ? "rejection" : "conditional approval"} to the Executive Committee within 10 business days of the decision. The Committee decides within 10 business days.
+          The proposer may appeal a {ini.status === "rejected" ? "rejection" : "condition"} within 10 business days. The appeal must bring new information or show a procedural error; the Executive Committee decides within 10 business days and its decision is final within the company.
         </p>
         <div className="mt-2">
           <SlaTimer label="Appeal window closes" dueIso={deadline} />
@@ -649,7 +754,7 @@ function AppealCard({ ini }: { ini: Initiative }) {
     <Card
       title="Appeal to the Executive Committee"
       icon={Scale}
-      cite="2.3.7"
+      cite="4.6"
       actions={
         <Chip color={a.status === "pending" ? "yellow" : a.status === "upheld" ? "green" : "red"} dot>
           {a.status === "pending" ? "Pending" : a.status === "upheld" ? "Upheld" : "Denied"}

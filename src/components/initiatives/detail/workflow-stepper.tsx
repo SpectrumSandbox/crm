@@ -2,36 +2,40 @@
 
 import { Ban, Check, CircleAlert, Gavel, Hourglass, RotateCcw, Scale } from "lucide-react";
 import type { Initiative } from "@/lib/initiatives/types";
-import { addBusinessDays } from "@/lib/initiatives/engine";
-import { POLICY } from "@/lib/initiatives/policy";
+import { addBusinessDays, approvalTier } from "@/lib/initiatives/engine";
+import { POLICY, TIER_META } from "@/lib/initiatives/policy";
 import { cn, formatDate } from "@/lib/utils";
 import { Chip } from "@/components/ui/misc";
-import { Cite, initiativeStatusMeta } from "@/components/initiatives/shared";
+import { Cite, TierChip, initiativeStatusMeta } from "@/components/initiatives/shared";
 import { SlaTimer } from "./ui";
 
-const STEPS: { stage: number; label: string; hint: string }[] = [
-  { stage: 1, label: "Submitted", hint: "Tracking no. issued" },
-  { stage: 2, label: "Screening", hint: "Day 1–2" },
-  { stage: 3, label: "Evaluation", hint: "Day 2–5" },
-  { stage: 4, label: "PRC decision", hint: "Day 5" },
-  { stage: 5, label: "Approved", hint: "Code & budget" },
-  { stage: 6, label: "Active", hint: "Delivery" },
+const steps = (decisionDays: number): { stage: number; label: string; hint: string }[] => [
+  { stage: 1, label: "Submitted", hint: "Tracking no. · ack ≤ 1d" },
+  { stage: 2, label: "Completeness", hint: "PMO check ≤ 2d" },
+  { stage: 3, label: "Evaluation", hint: "Reviewer + Finance" },
+  { stage: 4, label: "PRC decision", hint: `≤ ${decisionDays} business days` },
+  { stage: 5, label: "Approved", hint: "Code, budget, rate" },
+  { stage: 6, label: "Active", hint: "Ledger & kickoff" },
   { stage: 7, label: "Completed", hint: "Reconcile ≤ 30d" },
 ];
 
 const branchMeta = {
-  conditional: { icon: CircleAlert, color: "orange" as const, text: "Conditional approval — proceeds once the stated conditions are met" },
-  deferred: { icon: Hourglass, color: "orange" as const, text: "Deferred — the PRC asked for more information or better timing; resubmission returns to evaluation" },
-  rejected: { icon: Ban, color: "red" as const, text: "Rejected — the initiator may appeal to the Executive Committee within 10 business days" },
+  conditional: { icon: CircleAlert, color: "orange" as const, text: "Conditionally approved — the project code is issued once the PMO confirms the conditions" },
+  deferred: { icon: Hourglass, color: "orange" as const, text: "Deferred — the PRC stated the information needed and a new decision date" },
+  rejected: { icon: Ban, color: "red" as const, text: "Rejected — written reasons given; the proposer may appeal to the Executive Committee within 10 business days" },
 };
 
-/** §2.3 approval workflow with SLA timers and decision branches. */
+/** §4.5 approval workflow with SLA timers (decision time by approval tier, §4.2) and decision branches. */
 export function WorkflowStepper({ ini }: { ini: Initiative }) {
+  const tier = approvalTier(ini).tier;
+  const decisionDays = TIER_META[tier].decisionBusinessDays;
+  const STEPS = steps(decisionDays);
   const meta = initiativeStatusMeta[ini.status];
   const current = meta.stage;
   const branch = ini.status === "conditional" || ini.status === "deferred" || ini.status === "rejected" ? branchMeta[ini.status] : null;
   const ackDue = ini.submittedAt ? addBusinessDays(ini.submittedAt, POLICY.sla.acknowledgeBusinessDays) : null;
-  const decisionDue = ini.submittedAt ? addBusinessDays(ini.submittedAt, POLICY.sla.decisionBusinessDays) : null;
+  const completenessDue = ini.submittedAt ? addBusinessDays(ini.submittedAt, POLICY.sla.completenessBusinessDays) : null;
+  const decisionDue = ini.submittedAt ? addBusinessDays(ini.submittedAt, decisionDays) : null;
   const appealDue = ini.appeal ? addBusinessDays(ini.appeal.filedAt, POLICY.sla.appealBusinessDays) : null;
 
   return (
@@ -80,13 +84,18 @@ export function WorkflowStepper({ ini }: { ini: Initiative }) {
             </div>
           );
         })}
-        <Cite s="2.3" />
+        <Cite s="4.5" />
+        <span className="ml-2 shrink-0">
+          <TierChip tier={tier} long />
+        </span>
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-1.5">
-        {ackDue ? <SlaTimer label="Acknowledgment" dueIso={ackDue} doneIso={ini.acknowledgedAt} cite="2.3.2" /> : null}
-        {decisionDue ? <SlaTimer label="PRC decision" dueIso={decisionDue} doneIso={ini.decision?.decidedAt ?? (current >= 5 ? ini.approvedAt : null)} cite="2.3.4" /> : null}
-        {!ini.submittedAt ? <span className="text-xs text-sg-dim">SLA timers start when the proposal is submitted: acknowledgment in 1 business day, decision in 5.</span> : null}
+        {ackDue ? <SlaTimer label="Acknowledgment" dueIso={ackDue} doneIso={ini.acknowledgedAt} cite="4.5" /> : null}
+        {completenessDue ? <SlaTimer label="Completeness" dueIso={completenessDue} doneIso={current >= 2 ? ini.acknowledgedAt ?? ini.decision?.decidedAt ?? null : null} /> : null}
+        {decisionDue ? <SlaTimer label={`Decision (Tier ${tier})`} dueIso={decisionDue} doneIso={ini.decision?.decidedAt ?? (current >= 5 ? ini.approvedAt : null)} cite="4.2" /> : null}
+        {!ini.submittedAt && ini.status === "draft" ? <span className="text-xs text-sg-dim">Timers start at submission: acknowledgment in 1 business day, completeness in 2, decision in {decisionDays} ({TIER_META[tier].label}).</span> : null}
+        {!ini.submittedAt && ini.status !== "draft" ? <span className="text-xs text-sg-dim">{ini.registeredRetroactively ? "Registered after it started — brought under the policy for PRC ratification (§15.1)." : "No submission on record."}</span> : null}
         {branch ? (
           <span className="flex items-center gap-1.5 text-xs text-sg-muted">
             <Chip color={branch.color}>{meta.label}</Chip> {branch.text}
@@ -98,7 +107,7 @@ export function WorkflowStepper({ ini }: { ini: Initiative }) {
       {ini.appeal && appealDue ? (
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-sg-line bg-sg-card px-3 py-2 text-xs">
           <span className="flex items-center gap-1.5 font-semibold text-sg-white">
-            <Scale className="size-3.5 text-soft-magenta" /> Appeal to the Executive Committee <Cite s="2.3.7" />
+            <Scale className="size-3.5 text-soft-magenta" /> Appeal to the Executive Committee <Cite s="4.6" />
           </span>
           <Chip color={ini.appeal.status === "pending" ? "yellow" : ini.appeal.status === "upheld" ? "green" : "red"} dot>
             {ini.appeal.status === "pending" ? "Pending" : ini.appeal.status === "upheld" ? "Upheld — back to evaluation" : "Denied"}

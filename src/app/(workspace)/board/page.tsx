@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { DragDropContext, Draggable, Droppable, type DropResult } from "@hello-pangea/dnd";
-import { Handshake, ListTree, OctagonAlert, Plus, Search, Target, Ticket } from "lucide-react";
+import { Gauge, Handshake, Kanban, Keyboard, ListTree, OctagonAlert, Plus, Target, Ticket, X } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useStageMap, useUserMap } from "@/lib/selectors";
 import { ISSUE_STATUSES, type Issue, type IssueStatus, type SpectrumColor } from "@/lib/types";
@@ -11,8 +12,13 @@ import { issueStatusMeta, issueTypeMeta, priorityMeta } from "@/lib/meta";
 import { cn, daysFromNow, formatIDR, softText, spectrumDot } from "@/lib/utils";
 import { PageHeader } from "@/components/shell/page-header";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/input";
-import { Avatar, Dot, Kbd } from "@/components/ui/misc";
+import { Input, Select } from "@/components/ui/input";
+import { Avatar, Dot, EmptyState, Kbd } from "@/components/ui/misc";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
+import { JqlBar, useJql, useUrlQuery } from "@/components/agile/jql-bar";
+import { Burndown } from "@/components/agile/burndown";
+import { useProjectParam } from "@/components/agile/project-param";
+import { createIssueKey, useAgileHotkeys } from "@/components/agile/use-agile-hotkeys";
 
 type GroupBy = "status" | "sprint" | "dealStage";
 type Swimlane = "none" | "epic" | "assignee" | "account";
@@ -33,6 +39,40 @@ interface LaneDef {
 
 const NONE = "__none__";
 
+/* ───────────── WIP limits (localStorage, per project selection) ───────────── */
+
+type WipStatus = "in_progress" | "in_review";
+type WipLimits = Partial<Record<WipStatus, number>>;
+const WIP_STATUSES: WipStatus[] = ["in_progress", "in_review"];
+const wipKey = (projectId: string) => `sg-board-wip:${projectId}`;
+
+function readWip(projectId: string): WipLimits {
+  try {
+    const raw = window.localStorage.getItem(wipKey(projectId));
+    const v = raw ? (JSON.parse(raw) as WipLimits) : {};
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+function useWipLimits(projectId: string): [WipLimits, (status: WipStatus, limit: number | null) => void] {
+  const [limits, setLimits] = useState<WipLimits>({});
+  useEffect(() => setLimits(readWip(projectId)), [projectId]);
+  const set = (status: WipStatus, limit: number | null) => {
+    const next = { ...limits };
+    if (limit && limit > 0) next[status] = Math.round(limit);
+    else delete next[status];
+    setLimits(next);
+    try {
+      window.localStorage.setItem(wipKey(projectId), JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  };
+  return [limits, set];
+}
+
 export default function BoardPage() {
   const params = useSearchParams();
   const issues = useCrm((s) => s.issues);
@@ -45,7 +85,7 @@ export default function BoardPage() {
   const companies = useCrm((s) => s.companies);
   const pipelines = useCrm((s) => s.pipelines);
   const currentUserId = useCrm((s) => s.currentUserId);
-  const moveIssue = useCrm((s) => s.moveIssue);
+  const moveIssueTracked = useCrm((s) => s.moveIssueTracked);
   const moveDeal = useCrm((s) => s.moveDeal);
   const openIssue = useUi((s) => s.openIssue);
   const openDialog = useUi((s) => s.openDialog);
@@ -53,24 +93,36 @@ export default function BoardPage() {
   const userMap = useUserMap();
   const stageMap = useStageMap();
 
-  const [projectId, setProjectId] = useState<string>("all");
   const [scope, setScope] = useState<Scope>("active");
+  const [projectId, setProjectId] = useProjectParam("all", (pid) => {
+    // linked from the ongoing-projects register: show all open work when there's no active sprint
+    if (!sprints.some((s) => s.projectId === pid && s.state === "active")) setScope("all");
+    else setScope((cur) => (cur === "active" || cur === "all" ? cur : "active"));
+  });
   const [groupBy, setGroupBy] = useState<GroupBy>("status");
   const [lane, setLane] = useState<Swimlane>("none");
-  const [q, setQ] = useState("");
+  const [q, setQ] = useUrlQuery();
+  const jql = useJql(q);
+  const [epicFilter, setEpicFilter] = useState<string | null>(null);
   const [onlyMine, setOnlyMine] = useState(false);
   const [onlyCrm, setOnlyCrm] = useState(false);
   const [onlyBlocking, setOnlyBlocking] = useState(false);
   const [showSubtasks, setShowSubtasks] = useState(false);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [wip, setWip] = useWipLimits(projectId);
 
   // deep link: /board?issue=UAV-102
+  const issueParam = params.get("issue");
   useEffect(() => {
-    const key = params.get("issue");
-    if (!key) return;
-    const found = issues.find((i) => i.key.toLowerCase() === key.toLowerCase());
+    if (!issueParam) return;
+    const found = issues.find((i) => i.key.toLowerCase() === issueParam.toLowerCase());
     if (found) openIssue(found.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params]);
+  }, [issueParam]);
+
+  useEffect(() => {
+    if (epicFilter && projectId !== "all" && epics.find((e) => e.id === epicFilter)?.projectId !== projectId) setEpicFilter(null);
+  }, [projectId, epicFilter, epics]);
 
   /* derived link info per issue */
   const linkInfo = useMemo(() => {
@@ -93,11 +145,14 @@ export default function BoardPage() {
     return m;
   }, [crossLinks, deals]);
 
+  const project = projects.find((p) => p.id === projectId);
+  const projectIssueCount = useMemo(() => (projectId === "all" ? issues.length : issues.filter((i) => i.projectId === projectId).length), [issues, projectId]);
   const activeSprintIds = useMemo(() => new Set(sprints.filter((s) => s.state === "active").map((s) => s.id)), [sprints]);
+  const selectionHasActiveSprint = sprints.some((s) => s.state === "active" && (projectId === "all" || s.projectId === projectId));
   const projectSprints = sprints.filter((s) => (projectId === "all" || s.projectId === projectId) && s.state !== "closed");
 
-  const visible = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+  /** everything except the epic filter — feeds the epic strip */
+  const baseVisible = useMemo(() => {
     return issues.filter((i) => {
       if (projectId !== "all" && i.projectId !== projectId) return false;
       if (!showSubtasks && i.type === "subtask") return false;
@@ -110,10 +165,27 @@ export default function BoardPage() {
       if (onlyMine && i.assigneeId !== currentUserId && i.reporterId !== currentUserId) return false;
       if (onlyCrm && !linkInfo.has(i.id)) return false;
       if (onlyBlocking && !linkInfo.get(i.id)?.blocks) return false;
-      if (needle && !`${i.key} ${i.summary} ${i.labels.join(" ")}`.toLowerCase().includes(needle)) return false;
+      if (jql.active && !jql.match(i)) return false;
       return true;
     });
-  }, [issues, projectId, scope, groupBy, q, onlyMine, onlyCrm, onlyBlocking, showSubtasks, activeSprintIds, sprints, currentUserId, linkInfo]);
+  }, [issues, projectId, scope, groupBy, jql, onlyMine, onlyCrm, onlyBlocking, showSubtasks, activeSprintIds, sprints, currentUserId, linkInfo]);
+
+  const visible = useMemo(() => (epicFilter ? baseVisible.filter((i) => i.epicId === epicFilter) : baseVisible), [baseVisible, epicFilter]);
+
+  /* epic progress strip: epics present on the board, progress over the whole epic */
+  const epicStrip = useMemo(() => {
+    const present = new Set(baseVisible.map((i) => i.epicId).filter((x): x is string => !!x));
+    if (epicFilter) present.add(epicFilter);
+    return epics
+      .filter((e) => present.has(e.id))
+      .map((e) => {
+        const its = issues.filter((i) => i.epicId === e.id && i.type !== "subtask");
+        const done = its.filter((i) => i.status === "done");
+        const pts = its.reduce((a, i) => a + (i.storyPoints ?? 0), 0);
+        const donePts = done.reduce((a, i) => a + (i.storyPoints ?? 0), 0);
+        return { e, total: its.length, done: done.length, pts, donePts };
+      });
+  }, [baseVisible, epics, issues, epicFilter]);
 
   const newBusiness = pipelines.find((p) => p.id === "pl-new");
   const renewals = pipelines.find((p) => p.id === "pl-renew");
@@ -168,6 +240,19 @@ export default function BoardPage() {
       .filter((i) => (lane === "none" || laneOf(i) === laneId) && columnOf(i) === colId)
       .sort((a, b) => a.rank - b.rank || priorityMeta[b.priority].weight - priorityMeta[a.priority].weight);
 
+  /** column → issues top-to-bottom across lanes (keyboard navigation order) */
+  const navColumns = columns.map((c) => lanes.flatMap((l) => cell(l.id, c.id)));
+
+  const wipState = (status: string, count: number): "ok" | "at" | "over" => {
+    const limit = groupBy === "status" ? wip[status as WipStatus] : undefined;
+    if (!limit) return "ok";
+    return count > limit ? "over" : count === limit ? "at" : "ok";
+  };
+  const warnWip = (status: IssueStatus, addingTo: number) => {
+    const limit = groupBy === "status" ? wip[status as WipStatus] : undefined;
+    if (limit && addingTo + 1 > limit) notify(`${issueStatusMeta[status].label} is over its WIP limit (${addingTo + 1}/${limit})`);
+  };
+
   const onDragEnd = (r: DropResult) => {
     if (!r.destination) return;
     const [toLane, toCol] = r.destination.droppableId.split("::");
@@ -178,7 +263,10 @@ export default function BoardPage() {
 
     const patch: Partial<Issue> = {};
     if (toCol !== fromCol) {
-      if (groupBy === "status") patch.status = toCol as IssueStatus;
+      if (groupBy === "status") {
+        patch.status = toCol as IssueStatus;
+        warnWip(toCol as IssueStatus, visible.filter((i) => i.status === toCol).length);
+      }
       if (groupBy === "sprint") patch.sprintId = toCol === NONE ? null : toCol;
       if (groupBy === "dealStage") {
         const dealId = linkInfo.get(issue.id)?.dealId;
@@ -207,8 +295,88 @@ export default function BoardPage() {
     // re-rank the destination cell in its new visual order
     const dest = cell(toLane, toCol).filter((i) => i.id !== issue.id);
     dest.splice(r.destination.index, 0, issue);
-    moveIssue(issue.id, patch, dest.map((i) => i.id));
+    moveIssueTracked(issue.id, patch, dest.map((i) => i.id));
+    setFocusedId(issue.id);
   };
+
+  /* ───────────── keyboard navigation ───────────── */
+
+  const statusOrder: IssueStatus[] = groupBy === "status" ? (columns.map((c) => c.id) as IssueStatus[]) : ISSUE_STATUSES.filter((s) => s !== "backlog" || scope === "all");
+
+  const shiftStatus = (issue: Issue, dir: 1 | -1) => {
+    const idx = statusOrder.indexOf(issue.status);
+    const next = idx < 0 ? (dir === 1 ? statusOrder[0] : undefined) : statusOrder[idx + dir];
+    if (!next) {
+      notify(dir === 1 ? `${issue.key} is already in the last column` : `${issue.key} is already in the first column`);
+      return;
+    }
+    const destList =
+      groupBy === "status"
+        ? cell(laneOf(issue), next).filter((i) => i.id !== issue.id)
+        : visible.filter((i) => i.status === next && i.id !== issue.id).sort((a, b) => a.rank - b.rank);
+    warnWip(next, visible.filter((i) => i.status === next && i.id !== issue.id).length);
+    moveIssueTracked(issue.id, { status: next }, [...destList.map((i) => i.id), issue.id]);
+    notify(`${issue.key} → ${issueStatusMeta[next].label}`);
+  };
+
+  useAgileHotkeys((e) => {
+    if (createIssueKey(e, projectId === "all" ? undefined : projectId)) return true;
+    const pos = (() => {
+      if (!focusedId) return null;
+      for (let c = 0; c < navColumns.length; c++) {
+        const r = navColumns[c]!.findIndex((i) => i.id === focusedId);
+        if (r >= 0) return { c, r };
+      }
+      return null;
+    })();
+    const firstFocus = () => {
+      const c = navColumns.findIndex((col) => col.length > 0);
+      if (c >= 0) setFocusedId(navColumns[c]![0]!.id);
+    };
+    const k = e.key;
+    if (!e.shiftKey && (k === "j" || k === "k" || k === "h" || k === "l")) {
+      if (!pos) {
+        firstFocus();
+        return true;
+      }
+      if (k === "j" || k === "k") {
+        const col = navColumns[pos.c]!;
+        const r = Math.min(col.length - 1, Math.max(0, pos.r + (k === "j" ? 1 : -1)));
+        setFocusedId(col[r]!.id);
+      } else {
+        const dir = k === "l" ? 1 : -1;
+        for (let c = pos.c + dir; c >= 0 && c < navColumns.length; c += dir) {
+          const col = navColumns[c]!;
+          if (col.length) {
+            setFocusedId(col[Math.min(pos.r, col.length - 1)]!.id);
+            break;
+          }
+        }
+      }
+      return true;
+    }
+    if (k === "Enter" && pos) {
+      const t = e.target as HTMLElement | null;
+      if (t && t !== document.body && !t.hasAttribute("data-issue-card")) return false;
+      openIssue(focusedId);
+      return true;
+    }
+    if (e.shiftKey && (k === "ArrowRight" || k === "ArrowLeft") && pos) {
+      const issue = issues.find((i) => i.id === focusedId);
+      if (issue) shiftStatus(issue, k === "ArrowRight" ? 1 : -1);
+      return true;
+    }
+    if (k === "Escape" && focusedId) {
+      setFocusedId(null);
+      return true;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (!focusedId) return;
+    document.querySelector<HTMLElement>(`[data-issue-card="${focusedId}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [focusedId]);
 
   /* sprint header for the active scope */
   const focusSprints = scope === "active" ? sprints.filter((s) => s.state === "active" && (projectId === "all" || s.projectId === projectId)) : sprints.filter((s) => s.id === scope);
@@ -220,18 +388,25 @@ export default function BoardPage() {
     return { s, total, done, inProgress, daysLeft: daysFromNow(s.endDate) };
   });
 
+  const filtersOn = jql.active || onlyMine || onlyCrm || onlyBlocking || !!epicFilter;
+  const clearFilters = () => {
+    setQ("");
+    setOnlyMine(false);
+    setOnlyCrm(false);
+    setOnlyBlocking(false);
+    setEpicFilter(null);
+  };
+  const backlogHref = `/backlog${projectId !== "all" ? `?project=${projectId}` : ""}`;
+  const projectEmpty = projectId !== "all" && projectIssueCount === 0;
+
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="Agile Board">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-sg-dim" />
-          <input data-page-filter value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter issues" className="h-8 w-48 rounded border border-sg-line bg-sg-bg/60 pl-7 pr-8 text-sm text-sg-text placeholder:text-sg-dim focus:border-sg-white/60 focus:outline-none" />
-          <Kbd className="absolute right-1.5 top-1/2 -translate-y-1/2">/</Kbd>
-        </div>
+      <PageHeader title="Agile Board" meta={project ? <span className="text-sm text-sg-dim">{project.name}</span> : undefined}>
         <Select
           value={projectId}
           onChange={(e) => {
-            setProjectId(e.target.value);
+            const pid = e.target.value;
+            setProjectId(pid);
             if (scope !== "active" && scope !== "all") setScope("active");
           }}
           wrapperClassName="w-48"
@@ -252,34 +427,40 @@ export default function BoardPage() {
             </option>
           ))}
         </Select>
+        <Link href={backlogHref} className="flex h-8 items-center rounded border border-sg-line-2 px-3 text-sm font-semibold text-sg-text hover:border-sg-white hover:text-sg-white">
+          Backlog
+        </Link>
         <Button variant="primary" onClick={() => openDialog({ kind: "createIssue", projectId: projectId === "all" ? undefined : projectId })}>
           <Plus /> Create issue <Kbd className="ml-1 border-sg-bg/30 bg-transparent text-sg-bg/70">C</Kbd>
         </Button>
       </PageHeader>
 
-      {/* configuration bar */}
-      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-sg-line px-5 py-2 text-xs">
-        <Segmented
-          label="Columns"
-          value={groupBy}
-          onChange={(v) => setGroupBy(v)}
-          options={[
-            { value: "status", label: "Status" },
-            { value: "sprint", label: "Sprint" },
-            { value: "dealStage", label: "Deal stage" },
-          ]}
-        />
-        <Segmented
-          label="Swimlanes"
-          value={lane}
-          onChange={(v) => setLane(v)}
-          options={[
-            { value: "none", label: "None" },
-            { value: "epic", label: "Epic" },
-            { value: "assignee", label: "Assignee" },
-            { value: "account", label: "Customer" },
-          ]}
-        />
+      {/* query + configuration bar */}
+      <div className="shrink-0 space-y-2 border-b border-sg-line px-5 py-2 text-xs">
+        <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
+          <JqlBar value={q} onChange={setQ} issues={issues} errors={jql.errors} className="w-full min-w-[260px] flex-1 lg:max-w-[560px]" />
+          <Segmented
+            label="Columns"
+            value={groupBy}
+            onChange={(v) => setGroupBy(v)}
+            options={[
+              { value: "status", label: "Status" },
+              { value: "sprint", label: "Sprint" },
+              { value: "dealStage", label: "Deal stage" },
+            ]}
+          />
+          <Segmented
+            label="Swimlanes"
+            value={lane}
+            onChange={(v) => setLane(v)}
+            options={[
+              { value: "none", label: "None" },
+              { value: "epic", label: "Epic" },
+              { value: "assignee", label: "Assignee" },
+              { value: "account", label: "Customer" },
+            ]}
+          />
+        </div>
         <div className="flex flex-wrap items-center gap-1">
           <Toggle on={onlyMine} onClick={() => setOnlyMine((v) => !v)}>
             My issues
@@ -293,36 +474,59 @@ export default function BoardPage() {
           <Toggle on={showSubtasks} onClick={() => setShowSubtasks((v) => !v)}>
             Sub-tasks
           </Toggle>
+          {filtersOn && (
+            <button type="button" onClick={clearFilters} className="ml-1 text-2xs font-semibold text-sg-dim hover:text-sg-white">
+              Clear filters
+            </button>
+          )}
+          <span className="ml-auto flex items-center gap-3 text-sg-dim">
+            <span className="hidden items-center gap-1 md:flex" title="Board keyboard: j/k up-down, h/l left-right, Enter opens, Shift+→/← moves status, Esc clears focus">
+              <Keyboard className="size-3.5" />
+              <Kbd>j</Kbd>
+              <Kbd>k</Kbd>
+              <Kbd>h</Kbd>
+              <Kbd>l</Kbd>
+              <Kbd>⇧→</Kbd>
+            </span>
+            {visible.length} issues
+          </span>
         </div>
-        <span className="ml-auto text-sg-dim">{visible.length} issues</span>
       </div>
 
-      {groupBy !== "sprint" && sprintStats.length > 0 && (
+      {groupBy !== "sprint" && sprintStats.length > 0 && !projectEmpty && (
         <div className="flex shrink-0 gap-3 overflow-x-auto border-b border-sg-line px-5 py-2.5">
           {sprintStats.map(({ s, total, done, inProgress, daysLeft }) => {
-            const project = projects.find((p) => p.id === s.projectId);
+            const p = projects.find((pp) => pp.id === s.projectId);
             const over = total > s.capacity;
             return (
-              <div key={s.id} className="min-w-[280px] flex-1 rounded-lg border border-sg-line bg-sg-card px-3 py-2">
-                <div className="flex items-center gap-2 text-xs">
-                  {project && <Dot color={project.color} />}
-                  <span className="font-bold text-sg-white">{s.name}</span>
-                  <span className={cn("ml-auto", daysLeft < 0 ? "text-soft-red" : daysLeft <= 2 ? "text-soft-orange" : "text-sg-dim")}>{daysLeft < 0 ? `${-daysLeft}d over` : `${daysLeft}d left`}</span>
+              <div key={s.id} className="flex min-w-[340px] flex-1 gap-3 rounded-lg border border-sg-line bg-sg-card px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 text-xs">
+                    {p && <Dot color={p.color} />}
+                    <Link href={`/backlog?project=${s.projectId}`} className="font-bold text-sg-white hover:underline">
+                      {s.name}
+                    </Link>
+                    <span className={cn("ml-auto", daysLeft < 0 ? "text-soft-red" : daysLeft <= 2 ? "text-soft-orange" : "text-sg-dim")}>{daysLeft < 0 ? `${-daysLeft}d over` : `${daysLeft}d left`}</span>
+                  </div>
+                  <div className="mt-0.5 flex items-center gap-1 truncate text-2xs text-sg-dim">
+                    <Target className="size-3 shrink-0" /> {s.goal || "No sprint goal"}
+                  </div>
+                  <div className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-sg-card-3" title={`${done} done · ${inProgress} in progress · ${total} committed · capacity ${s.capacity}`}>
+                    <div className="bg-soft-green" style={{ width: `${(done / Math.max(total, s.capacity, 1)) * 100}%` }} />
+                    <div className="bg-soft-cyan" style={{ width: `${(inProgress / Math.max(total, s.capacity, 1)) * 100}%` }} />
+                  </div>
+                  <div className="mt-1 flex justify-between gap-2 text-2xs">
+                    <span className="text-sg-muted">
+                      <span className="font-semibold text-soft-green">{done}</span> / {total} pts done
+                    </span>
+                    <span className={over ? "font-semibold text-soft-orange" : "text-sg-dim"}>
+                      {total}/{s.capacity} capacity{over ? " · over" : ""}
+                    </span>
+                  </div>
                 </div>
-                <div className="mt-0.5 flex items-center gap-1 truncate text-2xs text-sg-dim">
-                  <Target className="size-3 shrink-0" /> {s.goal}
-                </div>
-                <div className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-sg-card-3" title={`${done} done · ${inProgress} in progress · ${total} committed · capacity ${s.capacity}`}>
-                  <div className="bg-soft-green" style={{ width: `${(done / Math.max(total, s.capacity)) * 100}%` }} />
-                  <div className="bg-soft-cyan" style={{ width: `${(inProgress / Math.max(total, s.capacity)) * 100}%` }} />
-                </div>
-                <div className="mt-1 flex justify-between text-2xs">
-                  <span className="text-sg-muted">
-                    <span className="font-semibold text-soft-green">{done}</span> / {total} pts done
-                  </span>
-                  <span className={over ? "font-semibold text-soft-orange" : "text-sg-dim"}>
-                    {total}/{s.capacity} capacity{over ? " · over-committed" : ""}
-                  </span>
+                <div className="w-[120px] shrink-0 self-center" title="Burndown (approximation)">
+                  <Burndown sprint={s} issues={issues} mini />
+                  <div className="mt-0.5 text-center text-[10px] text-sg-dim">burndown ≈</div>
                 </div>
               </div>
             );
@@ -330,79 +534,230 @@ export default function BoardPage() {
         </div>
       )}
 
-      <DragDropContext onDragEnd={onDragEnd}>
-        <div className="min-h-0 flex-1 overflow-auto">
-          <div className="min-w-max p-4">
-            {/* column headers */}
-            <div className="sticky top-0 z-10 -mt-4 flex gap-3 bg-sg-bg pb-2 pt-4">
-              {columns.map((c) => {
-                const items = visible.filter((i) => columnOf(i) === c.id);
-                const pts = items.reduce((a, i) => a + (i.storyPoints ?? 0), 0);
-                return (
-                  <div key={c.id} className="flex w-[280px] shrink-0 items-center gap-2 rounded-lg border border-sg-line bg-sg-card px-3 py-2">
-                    <span className={cn("size-2 rounded-full", spectrumDot[c.color])} />
-                    <span className="truncate text-xs font-bold uppercase tracking-[0.08em] text-sg-white">{c.label}</span>
-                    {c.hint && <span className="text-2xs text-sg-dim">{c.hint}</span>}
-                    <span className="ml-auto text-2xs text-sg-dim">{pts} pts</span>
-                    <span className="rounded-sm bg-sg-card-3 px-1.5 text-2xs font-semibold text-sg-muted">{items.length}</span>
-                  </div>
-                );
-              })}
-            </div>
-
-            {lanes.map((l) => (
-              <div key={l.id} className="mb-3">
-                {lane !== "none" && (
-                  <div className="sticky left-0 mb-2 flex w-max items-center gap-2 px-1 text-xs font-semibold text-sg-muted">
-                    {l.color && <span className={cn("size-2 rounded-sm", spectrumDot[l.color])} />}
-                    {l.avatar && <Avatar user={userMap.get(l.avatar)} size="xs" />}
-                    {l.label}
-                    <span className="text-sg-dim">({visible.filter((i) => laneOf(i) === l.id).length})</span>
-                  </div>
-                )}
-                <div className="flex gap-3">
-                  {columns.map((c) => {
-                    const items = cell(l.id, c.id);
-                    return (
-                      <Droppable key={c.id} droppableId={`${l.id}::${c.id}`}>
-                        {(provided, snapshot) => (
-                          <div
-                            ref={provided.innerRef}
-                            {...provided.droppableProps}
-                            className={cn("flex w-[280px] shrink-0 flex-col gap-2 rounded-lg p-1.5 transition-colors", lane === "none" ? "min-h-[60vh]" : "min-h-[72px]", snapshot.isDraggingOver ? "bg-sg-card-2" : "bg-sg-card/40")}
-                          >
-                            {items.map((issue, index) => (
-                              <Draggable key={issue.id} draggableId={issue.id} index={index}>
-                                {(p, s) => (
-                                  <div ref={p.innerRef} {...p.draggableProps} {...p.dragHandleProps} style={p.draggableProps.style}>
-                                    <IssueCard issue={issue} dragging={s.isDragging} info={linkInfo.get(issue.id)} onOpen={() => openIssue(issue.id)} />
-                                  </div>
-                                )}
-                              </Draggable>
-                            ))}
-                            {provided.placeholder}
-                            {groupBy === "status" && lane === "none" && c.id !== "done" && (
-                              <button type="button" onClick={() => openDialog({ kind: "createIssue", status: c.id as IssueStatus, projectId: projectId === "all" ? undefined : projectId })} className="flex h-8 items-center gap-1.5 rounded px-2 text-xs text-sg-dim hover:bg-sg-card-2 hover:text-sg-white">
-                                <Plus className="size-3.5" /> Create issue
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </Droppable>
-                    );
-                  })}
+      {epicStrip.length > 0 && !projectEmpty && (
+        <div className="flex shrink-0 items-stretch gap-2 overflow-x-auto border-b border-sg-line px-5 py-2">
+          <span className="sg-eyebrow self-center pr-1">Epics</span>
+          {epicStrip.map(({ e, total, done, pts, donePts }) => {
+            const on = epicFilter === e.id;
+            const pct = pts ? (donePts / pts) * 100 : total ? (done / total) * 100 : 0;
+            return (
+              <button
+                key={e.id}
+                type="button"
+                onClick={() => setEpicFilter(on ? null : e.id)}
+                aria-pressed={on}
+                title={`${e.key} · ${e.name}\n${done}/${total} issues done · ${donePts}/${pts} pts (whole epic)`}
+                className={cn("w-[190px] shrink-0 rounded-md border px-2.5 py-1.5 text-left transition-colors", on ? "border-sg-white bg-sg-card-2" : "border-sg-line bg-sg-card hover:border-sg-line-2")}
+              >
+                <div className="flex items-center gap-1.5 text-2xs">
+                  <span className={cn("size-2 shrink-0 rounded-sm", spectrumDot[e.color])} />
+                  <span className="truncate font-semibold text-sg-white">{e.name}</span>
+                  {on && <X className="ml-auto size-3 shrink-0 text-sg-muted" />}
                 </div>
-              </div>
-            ))}
-            {!visible.length && <p className="py-16 text-center text-sm text-sg-muted">No issues match. Try “All open work” or clear the quick filters.</p>}
+                <div className="mt-1 h-1 overflow-hidden rounded-full bg-sg-card-3">
+                  <div className={cn("h-full", spectrumDot[e.color])} style={{ width: `${pct}%` }} />
+                </div>
+                <div className="mt-0.5 flex justify-between text-[10px] text-sg-dim">
+                  <span>
+                    {done}/{total} issues
+                  </span>
+                  <span>
+                    {donePts}/{pts} pts
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {projectEmpty ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+          <div className="w-full max-w-md rounded-xl border border-dashed border-sg-line-2 bg-sg-card/40">
+            <EmptyState
+              icon={Kanban}
+              title={`${project?.name ?? "This project"} has no issues yet`}
+              action={
+                <div className="mt-2 flex gap-2">
+                  <Button size="sm" variant="primary" onClick={() => openDialog({ kind: "createIssue", projectId })}>
+                    <Plus /> Create the first issue
+                  </Button>
+                  <Link href={backlogHref} className="flex h-7 items-center rounded border border-sg-line-2 px-2.5 text-xs font-semibold text-sg-text hover:border-sg-white hover:text-sg-white">
+                    Plan sprints in the backlog
+                  </Link>
+                </div>
+              }
+            >
+              {project?.key} issues will appear here once they're created. Start with a few stories in the backlog, create a sprint, then start it to work from this board.
+            </EmptyState>
           </div>
         </div>
-      </DragDropContext>
+      ) : (
+        <DragDropContext onDragEnd={onDragEnd}>
+          <div className="min-h-0 flex-1 overflow-auto">
+            <div className="min-w-max p-4">
+              {/* column headers */}
+              <div className="sticky top-0 z-10 -mt-4 flex gap-3 bg-sg-bg pb-2 pt-4">
+                {columns.map((c) => {
+                  const items = visible.filter((i) => columnOf(i) === c.id);
+                  const pts = items.reduce((a, i) => a + (i.storyPoints ?? 0), 0);
+                  const wipable = groupBy === "status" && (WIP_STATUSES as string[]).includes(c.id);
+                  const limit = wipable ? wip[c.id as WipStatus] : undefined;
+                  const state = wipState(c.id, items.length);
+                  const tip = limit ? (state === "over" ? `Over WIP limit: ${items.length}/${limit} — finish work before pulling more` : state === "at" ? `At WIP limit: ${items.length}/${limit}` : `WIP limit ${limit} (${items.length} now)`) : undefined;
+                  return (
+                    <div
+                      key={c.id}
+                      title={tip}
+                      className={cn(
+                        "flex w-[280px] shrink-0 items-center gap-2 rounded-lg border px-3 py-2",
+                        state === "over" ? "border-soft-red/60 bg-soft-red/10" : state === "at" ? "border-soft-orange/60 bg-soft-orange/10" : "border-sg-line bg-sg-card",
+                      )}
+                    >
+                      <span className={cn("size-2 rounded-full", spectrumDot[c.color])} />
+                      <span className="truncate text-xs font-bold uppercase tracking-[0.08em] text-sg-white">{c.label}</span>
+                      {c.hint && <span className="text-2xs text-sg-dim">{c.hint}</span>}
+                      <span className="ml-auto text-2xs text-sg-dim">{pts} pts</span>
+                      <span className={cn("rounded-sm px-1.5 text-2xs font-semibold", state === "over" ? "bg-soft-red/20 text-soft-red" : state === "at" ? "bg-soft-orange/20 text-soft-orange" : "bg-sg-card-3 text-sg-muted")}>
+                        {items.length}
+                        {limit ? `/${limit}` : ""}
+                      </span>
+                      {wipable && <WipPopover label={c.label} limit={limit} onSave={(n) => setWip(c.id as WipStatus, n)} />}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {lanes.map((l) => (
+                <div key={l.id} className="mb-3">
+                  {lane !== "none" && (
+                    <div className="sticky left-0 mb-2 flex w-max items-center gap-2 px-1 text-xs font-semibold text-sg-muted">
+                      {l.color && <span className={cn("size-2 rounded-sm", spectrumDot[l.color])} />}
+                      {l.avatar && <Avatar user={userMap.get(l.avatar)} size="xs" />}
+                      {l.label}
+                      <span className="text-sg-dim">({visible.filter((i) => laneOf(i) === l.id).length})</span>
+                    </div>
+                  )}
+                  <div className="flex gap-3">
+                    {columns.map((c) => {
+                      const items = cell(l.id, c.id);
+                      return (
+                        <Droppable key={c.id} droppableId={`${l.id}::${c.id}`}>
+                          {(provided, snapshot) => (
+                            <div
+                              ref={provided.innerRef}
+                              {...provided.droppableProps}
+                              className={cn("flex w-[280px] shrink-0 flex-col gap-2 rounded-lg p-1.5 transition-colors", lane === "none" ? "min-h-[60vh]" : "min-h-[72px]", snapshot.isDraggingOver ? "bg-sg-card-2" : "bg-sg-card/40")}
+                            >
+                              {items.map((issue, index) => (
+                                <Draggable key={issue.id} draggableId={issue.id} index={index}>
+                                  {(p, s) => (
+                                    <div ref={p.innerRef} {...p.draggableProps} {...p.dragHandleProps} style={p.draggableProps.style}>
+                                      <IssueCard
+                                        issue={issue}
+                                        dragging={s.isDragging}
+                                        focused={focusedId === issue.id}
+                                        info={linkInfo.get(issue.id)}
+                                        onOpen={() => {
+                                          setFocusedId(issue.id);
+                                          openIssue(issue.id);
+                                        }}
+                                      />
+                                    </div>
+                                  )}
+                                </Draggable>
+                              ))}
+                              {provided.placeholder}
+                              {groupBy === "status" && lane === "none" && c.id !== "done" && (
+                                <button type="button" onClick={() => openDialog({ kind: "createIssue", status: c.id as IssueStatus, projectId: projectId === "all" ? undefined : projectId })} className="flex h-8 items-center gap-1.5 rounded px-2 text-xs text-sg-dim hover:bg-sg-card-2 hover:text-sg-white">
+                                  <Plus className="size-3.5" /> Create issue
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </Droppable>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+              {!visible.length && (
+                <div className="sticky left-0 w-[min(100%,calc(100vw-2rem))] py-12 text-center text-sm text-sg-muted">
+                  {scope === "active" && groupBy !== "sprint" && !selectionHasActiveSprint ? (
+                    <>
+                      <p>{project ? `${project.key} has no active sprint.` : "No project has an active sprint."}</p>
+                      <div className="mt-3 flex justify-center gap-2">
+                        <Button size="sm" variant="outline" onClick={() => setScope("all")}>
+                          Show all open work
+                        </Button>
+                        <Link href={backlogHref} className="flex h-7 items-center rounded bg-sg-card-2 px-2.5 text-xs font-semibold text-sg-text hover:bg-sg-card-3 hover:text-sg-white">
+                          Start a sprint in the backlog
+                        </Link>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p>No issues match.{scope === "active" ? " Try “All open work”" : ""}{filtersOn ? " or clear the filters." : "."}</p>
+                      {filtersOn && (
+                        <Button size="sm" variant="outline" className="mt-3" onClick={clearFilters}>
+                          Clear filters
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </DragDropContext>
+      )}
     </div>
   );
 }
 
-function IssueCard({ issue, dragging, info, onOpen }: { issue: Issue; dragging: boolean; info?: { dealId?: string; ticketIds: string[]; blocks: boolean }; onOpen: () => void }) {
+function WipPopover({ label, limit, onSave }: { label: string; limit?: number; onSave: (n: number | null) => void }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(limit ? String(limit) : "");
+  useEffect(() => {
+    if (open) setDraft(limit ? String(limit) : "");
+  }, [open, limit]);
+  const save = (n: number | null) => {
+    onSave(n);
+    setOpen(false);
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" className={cn("rounded p-0.5 hover:bg-sg-card-3 hover:text-sg-white", limit ? "text-sg-muted" : "text-sg-dim")} aria-label={`WIP limit for ${label}`} title="Set WIP limit">
+          <Gauge className="size-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-60">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const n = Number(draft);
+            save(draft.trim() && Number.isFinite(n) && n > 0 ? n : null);
+          }}
+        >
+          <div className="sg-eyebrow mb-1">WIP limit · {label}</div>
+          <p className="mb-2 text-2xs text-sg-dim">The header turns orange at the limit and red above it. Saved in this browser for the current project selection.</p>
+          <Input autoFocus type="number" min={1} max={99} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="No limit" />
+          <div className="mt-2 flex justify-between">
+            <Button size="xs" variant="ghost" onClick={() => save(null)} disabled={!limit}>
+              Remove limit
+            </Button>
+            <Button size="xs" variant="primary" type="submit">
+              Save
+            </Button>
+          </div>
+        </form>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function IssueCard({ issue, dragging, focused, info, onOpen }: { issue: Issue; dragging: boolean; focused: boolean; info?: { dealId?: string; ticketIds: string[]; blocks: boolean }; onOpen: () => void }) {
   const userMap = useUserMap();
   const epics = useCrm((s) => s.epics);
   const deals = useCrm((s) => s.deals);
@@ -416,13 +771,15 @@ function IssueCard({ issue, dragging, info, onOpen }: { issue: Issue; dragging: 
     <div
       role="button"
       tabIndex={0}
+      data-issue-card={issue.id}
       onClick={onOpen}
       onKeyDown={(e) => {
         if (e.key === "Enter") onOpen();
       }}
       className={cn(
-        "cursor-pointer rounded-md border bg-sg-card p-2.5 transition-[border-color,box-shadow] hover:border-sg-line-2",
+        "cursor-pointer rounded-md border bg-sg-card p-2.5 transition-[border-color,box-shadow] hover:border-sg-line-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70",
         info?.blocks && issue.status !== "done" ? "border-soft-red/40" : "border-sg-line",
+        focused && "border-sg-white/70 ring-2 ring-sg-white/80 ring-offset-2 ring-offset-sg-bg",
         dragging && "rotate-[1.5deg] border-sg-white/50 shadow-pop",
       )}
     >
@@ -438,7 +795,9 @@ function IssueCard({ issue, dragging, info, onOpen }: { issue: Issue; dragging: 
           {deal && (
             <div className={cn("flex items-center gap-1 truncate rounded-sm px-1.5 py-1 text-2xs", info?.blocks && issue.status !== "done" ? "bg-soft-red/10 text-soft-red" : "bg-soft-yellow/10 text-soft-yellow")}>
               {info?.blocks && issue.status !== "done" ? <OctagonAlert className="size-3 shrink-0" /> : <Handshake className="size-3 shrink-0" />}
-              <span className="truncate">{deal.name.split(" — ")[0]} · {formatIDR(deal.amount)}</span>
+              <span className="truncate">
+                {deal.name.split(" — ")[0]} · {formatIDR(deal.amount)}
+              </span>
             </div>
           )}
           {(info?.ticketIds.length ?? 0) > 0 && (

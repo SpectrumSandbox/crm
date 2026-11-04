@@ -1,4 +1,6 @@
-// Visual smoke test used by CI: boots against a running `next start` and captures every Phase 1 view.
+// Visual smoke test used by CI: boots against a running `next start` and captures every view.
+// Fails (exit 1) on any uncaught page error, console error or script error; pages that other
+// workstreams have not shipped yet (OPTIONAL_PAGES) only log a warning when they 404.
 // Usage: BASE_URL=http://localhost:3000 OUT=shots node scripts/ci-screenshots.mjs
 import { chromium } from "playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -7,13 +9,57 @@ const BASE = process.env.BASE_URL ?? "http://localhost:3000";
 const OUT = process.env.OUT ?? "shots";
 mkdirSync(OUT, { recursive: true });
 
+/** Routes that may not exist yet — a 404 (document or RSC prefetch) is a warning, not a failure. */
+const OPTIONAL_PAGES = ["/home", "/tickets", "/backlog", "/issues", "/me", "/policy", "/settings", "/projects"];
+/** Deliberately missing route used to capture the branded 404 page. */
+const NOT_FOUND_PATH = "/this-page-does-not-exist";
+
 const log = [];
+const failures = [];
+const warnings = [];
+
+const pathOf = (url) => {
+  try {
+    return new URL(url, BASE).pathname.replace(/\/$/, "") || "/";
+  } catch {
+    return "";
+  }
+};
+const isOptionalPath = (p) => OPTIONAL_PAGES.some((o) => p === o || p.startsWith(o + "/"));
+
+/** Console noise that is not an app error. */
+function classifyConsoleError(text, resourceUrl, pageUrl) {
+  if (/React DevTools/i.test(text)) return "ignore";
+  const is404 = /status of 404/.test(text);
+  if (is404 && /favicon/i.test(resourceUrl || text)) return "ignore";
+  if (is404 && pathOf(resourceUrl || pageUrl) === NOT_FOUND_PATH) return "ignore";
+  if (is404 && (isOptionalPath(pathOf(resourceUrl)) || (!resourceUrl && isOptionalPath(pathOf(pageUrl))))) return "warn";
+  return "fail";
+}
+
+function instrument(page, label) {
+  page.on("console", (m) => {
+    const type = m.type();
+    if (type !== "error" && type !== "warning") return;
+    const resourceUrl = m.location()?.url ?? "";
+    const line = `[${type}] ${label} ${page.url()} :: ${m.text()}${resourceUrl ? ` (${resourceUrl})` : ""}`;
+    log.push(line);
+    if (type !== "error") return;
+    const verdict = classifyConsoleError(m.text(), resourceUrl, page.url());
+    if (verdict === "fail") failures.push(line);
+    else if (verdict === "warn") warnings.push(line);
+  });
+  page.on("pageerror", (e) => {
+    const line = `[pageerror] ${label} ${page.url()} :: ${e.message}`;
+    log.push(line);
+    failures.push(line);
+  });
+}
+
 const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
-page.on("console", (m) => {
-  if (m.type() === "error" || m.type() === "warning") log.push(`[${m.type()}] ${page.url()} :: ${m.text()}`);
-});
-page.on("pageerror", (e) => log.push(`[pageerror] ${page.url()} :: ${e.message}`));
+const desktop = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
+instrument(desktop, "desktop");
+let page = desktop;
 
 const settle = async () => {
   await page.waitForLoadState("networkidle").catch(() => {});
@@ -27,6 +73,18 @@ const shot = async (name) => {
 const go = async (path, name) => {
   await page.goto(BASE + path);
   await shot(name);
+};
+/** Like go(), but a 404 for a not-yet-built page is logged as a warning and the shot is skipped. */
+const goOptional = async (path, name) => {
+  const res = await page.goto(BASE + path);
+  if (res && res.status() === 404) {
+    const line = `[warn] ${path} returned 404 — page not built yet, skipped ${name}`;
+    log.push(line);
+    warnings.push(line);
+    return false;
+  }
+  await shot(name);
+  return true;
 };
 
 try {
@@ -105,10 +163,59 @@ try {
   await settle();
   await page.keyboard.press("?");
   await shot("18-shortcuts");
+  await page.keyboard.press("Escape");
+
+  // pages added in the 50-improvement batch
+  await goOptional("/home", "33-home");
+  await goOptional("/tickets", "34-tickets");
+  await goOptional("/backlog", "35-backlog");
+  await goOptional("/issues", "36-issues");
+  await goOptional("/me", "37-my-compensation");
+  await goOptional("/policy", "38-policy");
+  await goOptional("/settings", "39-settings");
+  // ongoing-projects register (Policy v4.0)
+  await go("/projects", "41-projects-register");
+  await page.getByText("People register").first().click().catch(() => log.push("[warn] no people tab"));
+  await shot("42-projects-people");
+  await go("/projects/prj-elang", "43-project-elang");
+  await go("/projects/prj-navora", "44-project-navora");
+  await go("/projects/ini-sbs-pdm", "45-project-sample-sbs");
+
+  // 404 page
+  await page.goto(BASE + NOT_FOUND_PATH);
+  await shot("40-not-found");
+
+  // mobile pass (390×844): top bar, then the off-canvas navigation drawer
+  const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  instrument(mobile, "mobile");
+  page = mobile;
+  for (const [path, name, optional] of [
+    ["/home", "41-mobile-home", true],
+    ["/deals", "42-mobile-deals", false],
+    ["/initiatives", "43-mobile-initiatives", false],
+  ]) {
+    const shown = optional ? await goOptional(path, name) : (await go(path, name), true);
+    if (!shown) continue;
+    await page.getByRole("button", { name: "Open navigation" }).click();
+    await page.waitForTimeout(400);
+    await shot(`${name}-drawer`);
+    await page.keyboard.press("Escape");
+  }
 } catch (e) {
-  log.push(`[script-error] ${e instanceof Error ? e.stack : String(e)}`);
+  const line = `[script-error] ${e instanceof Error ? e.stack : String(e)}`;
+  log.push(line);
+  failures.push(line);
   await page.screenshot({ path: `${OUT}/99-failure.png` }).catch(() => {});
 } finally {
+  log.push("", `== ${failures.length} failure(s), ${warnings.length} warning(s) ==`, ...failures.map((f) => `FAIL ${f}`), ...warnings.map((w) => `WARN ${w}`));
   writeFileSync(`${OUT}/log.txt`, log.join("\n") + "\n");
   await browser.close();
 }
+
+for (const w of warnings) console.warn(`warning: ${w}`);
+if (failures.length) {
+  console.error(`ci-screenshots: ${failures.length} failure(s)`);
+  for (const f of failures) console.error(`  ${f}`);
+  process.exit(1);
+}
+console.log(`ci-screenshots: ok (${warnings.length} warning(s))`);

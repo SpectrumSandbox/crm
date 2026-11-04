@@ -24,4 +24,6 @@ interface CloudflareEnv {
   DB: SgD1Database;
   APP_ENV: string;
   APP_URL: string;
+  /** Secret (`wrangler secret put SEED_TOKEN`) enabling POST /api/admin/seed; absent = seeding disabled. */
+  SEED_TOKEN?: string;
 }

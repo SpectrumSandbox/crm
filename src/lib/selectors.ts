@@ -144,3 +144,56 @@ export function useLinksForAgile(agileType: "issue" | "epic", agileId: string) {
     [crossLinks, agileType, agileId, contacts, companies, deals, tickets],
   );
 }
+
+/* ───────────────────────── record navigation & ticket helpers ───────────────────────── */
+
+/**
+ * Ids of every record of a type, sorted the way its default list is:
+ * contacts by lead score (desc), companies by name (children under their parent),
+ * deals by close date, tickets by SLA due.
+ */
+export function useRecordSequence(type: CrmObjectType): string[] {
+  const contacts = useCrm((s) => s.contacts);
+  const companies = useCrm((s) => s.companies);
+  const deals = useCrm((s) => s.deals);
+  const tickets = useCrm((s) => s.tickets);
+  return useMemo(() => {
+    if (type === "contact") {
+      return [...contacts]
+        .sort((a, b) => b.leadScore - a.leadScore || `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`))
+        .map((c) => c.id);
+    }
+    if (type === "company") {
+      const byId = new Map(companies.map((c) => [c.id, c] as const));
+      const key = (c: Company) => (c.parentId ? `${byId.get(c.parentId)?.name ?? ""} ~ ${c.name}` : c.name).toLowerCase();
+      return [...companies].sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0)).map((c) => c.id);
+    }
+    if (type === "deal") return [...deals].sort((a, b) => a.closeDate.localeCompare(b.closeDate) || a.name.localeCompare(b.name)).map((d) => d.id);
+    return [...tickets].sort((a, b) => a.slaDueAt.localeCompare(b.slaDueAt) || a.id.localeCompare(b.id)).map((t) => t.id);
+  }, [type, contacts, companies, deals, tickets]);
+}
+
+/** ticket id → number of linked Jira issues/epics (escalations) */
+export function useTicketEscalations() {
+  const crossLinks = useCrm((s) => s.crossLinks);
+  return useMemo(() => {
+    const m = new Map<string, number>();
+    crossLinks.forEach((x) => {
+      if (x.crmType === "ticket") m.set(x.crmId, (m.get(x.crmId) ?? 0) + 1);
+    });
+    return m;
+  }, [crossLinks]);
+}
+
+export type SlaState = "met" | "breached" | "due_soon" | "on_track";
+
+/** SLA health of a ticket: breached (red), < 12h left (orange), otherwise on track; closed tickets are met */
+export function ticketSla(t: Pick<Ticket, "slaDueAt" | "closedAt">, now = Date.now()): { state: SlaState; hoursLeft: number; label: string } {
+  const ms = Date.parse(t.slaDueAt) - now;
+  const hoursLeft = ms / 3_600_000;
+  if (t.closedAt) return { state: "met", hoursLeft, label: Date.parse(t.closedAt) <= Date.parse(t.slaDueAt) ? "SLA met" : "Closed late" };
+  const abs = Math.abs(ms);
+  const span = abs < 3_600_000 ? `${Math.max(1, Math.round(abs / 60_000))}m` : abs < 48 * 3_600_000 ? `${Math.round(abs / 3_600_000)}h` : `${Math.round(abs / 86_400_000)}d`;
+  if (ms < 0) return { state: "breached", hoursLeft, label: `Breached ${span} ago` };
+  return { state: hoursLeft < 12 ? "due_soon" : "on_track", hoursLeft, label: `${span} left` };
+}

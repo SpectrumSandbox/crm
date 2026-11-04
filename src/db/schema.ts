@@ -5,7 +5,7 @@
  */
 import { sql } from "drizzle-orm";
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
-import type { Appeal, BonusRun, CostBreakdown, Decision, EmployeeProfile, GovernanceRole, Milestone, PrcScores, ProjectRole, ProjectType, RiskItem } from "../lib/initiatives/types";
+import type { Appeal, BonusRun, CostBreakdown, Decision, EmployeeProfile, GovernanceRole, Milestone, PrcScores, ProjectRole, RiskItem, TeamAmendment } from "../lib/initiatives/types";
 
 const id = () => text("id").primaryKey();
 const createdAt = () => text("created_at").notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`);
@@ -377,6 +377,8 @@ export const employeeProfiles = sqliteTable(
     hireDate: text("hire_date").notNull(),
     probationEndDate: text("probation_end_date"),
     annualBaseSalary: integer("annual_base_salary").notNull().default(0),
+    contractedHoursPct: integer("contracted_hours_pct"), // part-time: caps the allocation factor (§3.1)
+    contractEndDate: text("contract_end_date"), // fixed-term (PKWT)
     directManagerId: text("direct_manager_id").references(() => users.id, { onDelete: "set null" }),
     goodStanding: integer("good_standing", { mode: "boolean" }).notNull().default(true),
     activeWrittenWarning: integer("active_written_warning", { mode: "boolean" }).notNull().default(false),
@@ -394,7 +396,7 @@ export const employeeProfiles = sqliteTable(
   (t) => [index("employee_profiles_manager_idx").on(t.directManagerId)],
 );
 
-/** §2.2 proposal → §2.3 review → delivery. */
+/** Policy v4.0 §4 proposal → approval → delivery (ongoing projects register). */
 export const initiatives = sqliteTable(
   "initiatives",
   {
@@ -405,6 +407,8 @@ export const initiatives = sqliteTable(
     type: text("type").notNull(), // A | B | C
     status: text("status").notNull(), // draft | submitted | screening | evaluation | conditional | deferred | rejected | approved | active | completed
     initiatorId: text("initiator_id").notNull().references(() => users.id),
+    origination: text("origination"), // personal | follow_on | company (§4.1)
+    firstContactAt: text("first_contact_at"),
     summary: text("summary").notNull().default(""),
     valueProposition: text("value_proposition").notNull().default(""),
     scope: text("scope").notNull().default(""),
@@ -425,8 +429,16 @@ export const initiatives = sqliteTable(
     highRisk: integer("high_risk", { mode: "boolean" }).notNull().default(false),
     warranty: integer("warranty", { mode: "boolean" }).notNull().default(false),
     deferralMonths: integer("deferral_months").notNull().default(6),
-    lockedSharePct: real("locked_share_pct"),
-    capException: integer("cap_exception", { mode: "boolean" }).notNull().default(false),
+    lockedSharePct: real("locked_share_pct"), // PRC-fixed rate y, or v3.0 flat share kept (§15.1)
+    unusualTerms: integer("unusual_terms", { mode: "boolean" }).notNull().default(false),
+    deferralPct: real("deferral_pct"),
+    policyVersion: text("policy_version").notNull().default("4.0"),
+    standardBonus: integer("standard_bonus"), // Type C guaranteed minimum (§8.6)
+    pilot: integer("pilot", { mode: "boolean" }).notNull().default(false),
+    jiraProjectId: text("jira_project_id"),
+    demo: integer("demo", { mode: "boolean" }).notNull().default(false),
+    registeredRetroactively: integer("registered_retroactively", { mode: "boolean" }).notNull().default(false),
+    shareNote: text("share_note").notNull().default(""),
     submittedAt: text("submitted_at"),
     acknowledgedAt: text("acknowledged_at"),
     primaryReviewerId: text("primary_reviewer_id").references(() => users.id, { onDelete: "set null" }),
@@ -449,7 +461,7 @@ export const initiatives = sqliteTable(
   ],
 );
 
-/** §4.1 roles (cumulative weights), §5.3 removal, §7 consent / approval. */
+/** §6.5 Team Allocation Ledger rows: roles, weights, allocation factor, dates on the team. */
 export const initiativeMembers = sqliteTable(
   "initiative_members",
   {
@@ -467,11 +479,14 @@ export const initiativeMembers = sqliteTable(
     joinedAt: text("joined_at").notNull(),
     leftAt: text("left_at"),
     removal: text("removal", { mode: "json" }).$type<{ stage: "none" | "verbal" | "written" | "removed"; updatedAt: string | null; note: string }>().notNull(),
+    allocationFactor: real("allocation_factor").notNull().default(1),
+    weightNote: text("weight_note").notNull().default(""),
+    authority: text("authority").notNull().default(""),
   },
   (t) => [index("initiative_members_initiative_idx").on(t.initiativeId), index("initiative_members_user_idx").on(t.userId)],
 );
 
-/** §4.4 revenue recognised / milestone payments per month. */
+/** §8.1 client payments: earned and collected, with the work period they pay for (§6.5). */
 export const revenueEntries = sqliteTable(
   "revenue_entries",
   {
@@ -482,23 +497,30 @@ export const revenueEntries = sqliteTable(
     directCosts: integer("direct_costs").notNull().default(0),
     basis: text("basis").notNull(), // recognized | milestone
     received: integer("received", { mode: "boolean" }).notNull().default(false),
+    collectedAt: text("collected_at"),
+    workPeriodStart: text("work_period_start"),
+    workPeriodEnd: text("work_period_end"),
     note: text("note").notNull().default(""),
   },
   (t) => [index("revenue_entries_initiative_idx").on(t.initiativeId, t.month), index("revenue_entries_month_idx").on(t.month)],
 );
 
-/** §6.1 monthly break-even test + bonus run. */
+/** §8.2 monthly cycle with the §9.1 break-even test and cash check. */
 export const bonusRuns = sqliteTable(
   "bonus_runs",
   {
     id: id(),
     month: text("month").notNull(), // YYYY-MM
     status: text("status").notNull(), // draft | failed | certified | released
+    policyVersion: text("policy_version").notNull().default("4.0"),
+    companyRevenue: integer("company_revenue").notNull().default(0),
+    directCosts: integer("direct_costs").notNull().default(0),
     overheads: integer("overheads").notNull().default(0),
-    ebitda: integer("ebitda").notNull().default(0),
-    shareOverrides: text("share_overrides", { mode: "json" }).$type<Partial<Record<ProjectType, number>>>().notNull().default(sql`'{}'`),
-    partialDeferralPct: real("partial_deferral_pct").notNull().default(0),
+    cash: integer("cash").notNull().default(0),
+    fixedCostsMonthly: integer("fixed_costs_monthly").notNull().default(0),
     operatingResult: real("operating_result").notNull(),
+    cashAfter: real("cash_after").notNull().default(0),
+    payoutPct: real("payout_pct").notNull().default(1),
     totals: text("totals", { mode: "json" }).$type<BonusRun["totals"]>().notNull(),
     certifiedById: text("certified_by_id").references(() => users.id),
     certifiedAt: text("certified_at"),
@@ -508,7 +530,7 @@ export const bonusRuns = sqliteTable(
   (t) => [uniqueIndex("bonus_runs_month_uq").on(t.month)],
 );
 
-/** One line per member per project in a run (§4.2 split, §4.5 / §6.2 / §6.3 / §6.8 outcomes). */
+/** One line per member per project in a cycle (§6.6 split, §8.6 top-ups, §9.2–9.3, §10–11 outcomes). */
 export const bonusLines = sqliteTable(
   "bonus_lines",
   {
@@ -521,19 +543,25 @@ export const bonusLines = sqliteTable(
     netRevenue: real("net_revenue").notNull(),
     pool: real("pool").notNull(),
     gross: real("gross").notNull(),
+    weightDays: real("weight_days").notNull().default(0),
+    totalWeightDays: real("total_weight_days").notNull().default(0),
+    topUp: real("top_up").notNull().default(0),
+    topUpDeducted: real("top_up_deducted").notNull().default(0),
+    guaranteed: real("guaranteed").notNull().default(0),
+    carriedIn: real("carried_in").notNull().default(0),
     payable: real("payable").notNull().default(0),
     deferred: real("deferred").notNull().default(0),
     carriedOver: real("carried_over").notNull().default(0),
     withheld: real("withheld").notNull().default(0),
     forfeited: real("forfeited").notNull().default(0),
     held: real("held").notNull().default(0),
-    status: text("status").notNull(), // payable | withheld_probation | partially_deferred | forfeited | held | cap_review | ineligible
+    status: text("status").notNull(), // payable | withheld_probation | partially_deferred | carried_forward | forfeited | held | ineligible
     notes: text("notes", { mode: "json" }).$type<string[]>().notNull().default(sql`'[]'`),
   },
   (t) => [primaryKey({ columns: [t.runId, t.initiativeId, t.userId] }), index("bonus_lines_user_idx").on(t.userId), index("bonus_lines_initiative_idx").on(t.initiativeId)],
 );
 
-/** §6.3 high-risk deferrals and §6.1 carried-over amounts. */
+/** §9.3 high-risk deferrals (released 6–12 months after close). */
 export const deferredBonuses = sqliteTable(
   "deferred_bonuses",
   {
@@ -550,7 +578,7 @@ export const deferredBonuses = sqliteTable(
   (t) => [index("deferred_bonuses_user_idx").on(t.userId), index("deferred_bonuses_vest_idx").on(t.status, t.vestAt)],
 );
 
-/** §6.8 probation completion / forfeiture of accrued bonuses. */
+/** §11.4 probation outcome — held balance paid on confirmation or with final pay. */
 export const probationOutcomes = sqliteTable(
   "probation_outcomes",
   {
@@ -562,18 +590,19 @@ export const probationOutcomes = sqliteTable(
   (t) => [primaryKey({ columns: [t.userId, t.decidedAt] })],
 );
 
-/** §6.4 clawback cases. */
+/** §9.4 clawback cases. */
 export const clawbacks = sqliteTable(
   "clawbacks",
   {
     id: id(),
     userId: text("user_id").notNull().references(() => users.id),
     initiativeId: text("initiative_id").notNull().references(() => initiatives.id),
-    trigger: text("trigger").notNull(), // revenue_reversal | cost_overrun | misconduct | data_error
+    trigger: text("trigger").notNull(), // revenue_reversal | misconduct | data_error
     paidAt: text("paid_at").notNull(),
     originalPaid: real("original_paid").notNull(),
     recalculated: real("recalculated").notNull(),
     personallyAtFault: integer("personally_at_fault", { mode: "boolean" }).notNull().default(false),
+    writtenAgreement: integer("written_agreement", { mode: "boolean" }).notNull().default(false),
     status: text("status").notNull().default("identified"), // identified | prc_approved | disputed | recovering | closed | waived
     notifiedAt: text("notified_at"),
     months: integer("months").notNull().default(6),
@@ -585,20 +614,38 @@ export const clawbacks = sqliteTable(
   (t) => [index("clawbacks_user_idx").on(t.userId), index("clawbacks_initiative_idx").on(t.initiativeId)],
 );
 
-/** §6.5–6.6 announced revenue-share changes (≥ 30 days notice). */
-export const shareAdjustments = sqliteTable(
-  "share_adjustments",
+/** §9.5 announced changes to the revenue-share curve (≥ 30 days notice; only projects approved afterwards). */
+export const curveAdjustments = sqliteTable(
+  "curve_adjustments",
   {
     id: id(),
-    type: text("type").notNull(), // A | B | C
-    fromPct: real("from_pct").notNull(),
-    toPct: real("to_pct").notNull(),
+    fromCurve: text("from_curve", { mode: "json" }).$type<{ start: number; floor: number; decay: number }>().notNull(),
+    toCurve: text("to_curve", { mode: "json" }).$type<{ start: number; floor: number; decay: number }>().notNull(),
     proposedAt: text("proposed_at").notNull(),
     effectiveFrom: text("effective_from").notNull(),
     rationale: text("rationale").notNull().default(""),
     approvedById: text("approved_by_id").notNull().references(() => users.id),
   },
-  (t) => [index("share_adjustments_type_idx").on(t.type, t.effectiveFrom)],
+  (t) => [index("curve_adjustments_effective_idx").on(t.effectiveFrom)],
+);
+
+/** §6.8 amendments to roles and weights — majority of current members, PRC breaks ties. */
+export const teamAmendments = sqliteTable(
+  "team_amendments",
+  {
+    id: id(),
+    initiativeId: text("initiative_id").notNull().references(() => initiatives.id, { onDelete: "cascade" }),
+    proposedById: text("proposed_by_id").notNull().references(() => users.id),
+    circulatedAt: text("circulated_at").notNull(),
+    effectiveDate: text("effective_date").notNull(),
+    reason: text("reason").notNull().default(""),
+    change: text("change", { mode: "json" }).$type<TeamAmendment["change"]>().notNull(),
+    votes: text("votes", { mode: "json" }).$type<TeamAmendment["votes"]>().notNull().default(sql`'[]'`),
+    status: text("status").notNull().default("open"), // open | passed | failed | tied | blocked
+    prcDecision: text("prc_decision", { mode: "json" }).$type<TeamAmendment["prcDecision"]>(),
+    recordedAt: text("recorded_at"),
+  },
+  (t) => [index("team_amendments_initiative_idx").on(t.initiativeId, t.status)],
 );
 
 /** §9.2 record keeping — every state change in the module. */
@@ -615,3 +662,14 @@ export const auditLog = sqliteTable(
   },
   (t) => [index("audit_log_at_idx").on(t.at), index("audit_log_entity_idx").on(t.entity, t.entityId), index("audit_log_actor_idx").on(t.actorId)],
 );
+
+/* ───────────── shared workspace (drizzle/migrations/0002_workspace.sql) ───────────── */
+
+/** Whole-workspace JSON snapshot synced by the client store; `version` drives optimistic concurrency. */
+export const workspaceSnapshots = sqliteTable("workspace_snapshots", {
+  id: id(), // "default"
+  version: integer("version").notNull().default(0),
+  data: text("data").notNull().default("{}"),
+  updatedAt: text("updated_at").notNull().default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`),
+  updatedBy: text("updated_by").notNull().default(""),
+});

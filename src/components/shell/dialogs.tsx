@@ -1,17 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Building2, CalendarDays, FileText, Handshake, Kanban, Mail, Phone, Search, StickyNote, SquareCheck, Ticket, User } from "lucide-react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { Building2, CalendarDays, CircleAlert, FileText, Handshake, Kanban, Mail, Phone, Search, StickyNote, SquareCheck, Ticket, TriangleAlert, User } from "lucide-react";
 import { useCrm, useUi, type DialogState } from "@/lib/store";
-import { CAPABILITIES, ISSUE_PRIORITIES, ISSUE_STATUSES, ISSUE_TYPES, LIFECYCLE_STAGES, LINK_TYPES, type Capability, type CompanyTier, type CrmObjectType, type IssuePriority, type IssueStatus, type IssueType, type LifecycleStage, type LinkType } from "@/lib/types";
-import { issueStatusMeta, issueTypeMeta, lifecycleMeta, linkTypeMeta, priorityMeta } from "@/lib/meta";
-import { cn, formatIDR, fromDateInput, toDateInput } from "@/lib/utils";
+import { CAPABILITIES, ISSUE_PRIORITIES, ISSUE_STATUSES, ISSUE_TYPES, LIFECYCLE_STAGES, LINK_TYPES, type Capability, type CompanyTier, type CrmObjectType, type IssuePriority, type IssueStatus, type IssueType, type LifecycleStage, type LinkType, type Ticket as TicketRecord, type TicketPriority } from "@/lib/types";
+import { issueStatusMeta, issueTypeMeta, lifecycleMeta, linkTypeMeta, priorityMeta, ticketPriorityMeta } from "@/lib/meta";
+import { cn, formatDate, formatIDR, fromDateInput, toDateInput } from "@/lib/utils";
+import { defaultSlaDue, SLA_TARGETS } from "@/lib/slices/crm-extras";
+import type { Contact, Company, Deal, EmailTemplate, User as UserRecord } from "@/lib/types";
 import { Modal, Tabs } from "@/components/ui/overlays";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/misc";
-import { SHORTCUTS } from "./hotkeys";
+import { shortcutsFor } from "./hotkeys";
 
 export function GlobalDialogs() {
   const dialog = useUi((s) => s.dialog);
@@ -440,7 +443,21 @@ function CreateContactDialog({ onClose, d }: Props<"createContact">) {
     if (match) setCompanyId(match.id);
   }, [email, companies, companyId]);
 
-  const valid = firstName.trim().length > 0 && /\S+@\S+\.\S+/.test(email);
+  const contacts = useCrm((s) => s.contacts);
+  /** same email (case-insensitive) — blocks creation */
+  const emailDuplicate = useMemo(() => {
+    const needle = email.trim().toLowerCase();
+    return needle ? contacts.find((c) => c.email.trim().toLowerCase() === needle) : undefined;
+  }, [contacts, email]);
+  /** same first + last name at the same company — warning only */
+  const nameDuplicates = useMemo(() => {
+    const f = firstName.trim().toLowerCase();
+    const l = lastName.trim().toLowerCase();
+    if (!f || !companyId) return [];
+    return contacts.filter((c) => c.companyId === companyId && c.firstName.trim().toLowerCase() === f && c.lastName.trim().toLowerCase() === l && c.id !== emailDuplicate?.id);
+  }, [contacts, firstName, lastName, companyId, emailDuplicate]);
+
+  const valid = firstName.trim().length > 0 && /\S+@\S+\.\S+/.test(email) && !emailDuplicate;
   const submit = () => {
     if (!valid) return;
     const company = companies.find((c) => c.id === companyId);
@@ -488,9 +505,11 @@ function CreateContactDialog({ onClose, d }: Props<"createContact">) {
         <Field label="Last name">
           <Input value={lastName} onChange={(e) => setLastName(e.target.value)} />
         </Field>
-        <Field label="Email" className="col-span-2" hint="Company is matched automatically from the email domain.">
-          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.co.id" />
+        <Field label="Email" className="col-span-2" hint={emailDuplicate ? undefined : "Company is matched automatically from the email domain."}>
+          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.co.id" className={emailDuplicate ? "border-soft-red/60" : undefined} aria-invalid={!!emailDuplicate} />
         </Field>
+        {emailDuplicate && <DuplicateNotice tone="block" contacts={[emailDuplicate]} companies={companies} onOpen={onClose} />}
+        {nameDuplicates.length > 0 && <DuplicateNotice tone="warn" contacts={nameDuplicates} companies={companies} onOpen={onClose} />}
         <Field label="Phone">
           <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+62 …" />
         </Field>
@@ -527,6 +546,32 @@ function CreateContactDialog({ onClose, d }: Props<"createContact">) {
         </Field>
       </div>
     </Modal>
+  );
+}
+
+function DuplicateNotice({ tone, contacts, companies, onOpen }: { tone: "block" | "warn"; contacts: Contact[]; companies: Company[]; onOpen: () => void }) {
+  const block = tone === "block";
+  return (
+    <div role={block ? "alert" : "status"} className={cn("col-span-2 rounded-lg border px-3 py-2 text-xs", block ? "border-soft-red/40 bg-soft-red/10" : "border-soft-yellow/40 bg-soft-yellow/10")}>
+      <div className={cn("flex items-center gap-1.5 font-semibold", block ? "text-soft-red" : "text-soft-yellow")}>
+        {block ? <CircleAlert className="size-3.5" /> : <TriangleAlert className="size-3.5" />}
+        {block ? "A contact with this email already exists — open it instead of creating a duplicate." : "Possible duplicate: same name at the same company. You can still create this contact."}
+      </div>
+      <ul className="mt-1.5 space-y-1">
+        {contacts.map((c) => (
+          <li key={c.id} className="flex items-center gap-2">
+            <Link href={`/contacts/${c.id}`} onClick={onOpen} className="font-semibold text-sg-white hover:underline">
+              {c.firstName} {c.lastName}
+            </Link>
+            <span className="truncate text-sg-muted">
+              {c.email}
+              {c.companyId ? ` · ${companies.find((x) => x.id === c.companyId)?.name ?? ""}` : ""}
+            </span>
+            <span className="ml-auto shrink-0 text-sg-dim">{lifecycleMeta[c.lifecycleStage].label}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -641,6 +686,169 @@ function CreateCompanyDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+/* ───────────────────────── New ticket (rendered by /tickets) ───────────────────────── */
+
+const TICKET_CATEGORIES: TicketRecord["category"][] = ["Hardware Fault", "Software Defect", "Field Support", "Documentation", "Training"];
+const TICKET_PRIORITIES: TicketPriority[] = ["urgent", "high", "medium", "low"];
+const toWibLocal = (iso: string) => new Date(Date.parse(iso) + 7 * 3_600_000).toISOString().slice(0, 16);
+const fromWibLocal = (v: string) => new Date(`${v}:00+07:00`).toISOString();
+
+export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId, onCreated }: { onClose: () => void; companyId?: string; stageId?: string; onCreated?: (id: string) => void }) {
+  const router = useRouter();
+  const companies = useCrm((s) => s.companies);
+  const contacts = useCrm((s) => s.contacts);
+  const users = useCrm((s) => s.users);
+  const currentUserId = useCrm((s) => s.currentUserId);
+  const createTicket = useCrm((s) => s.createTicket);
+  const notify = useUi((s) => s.notify);
+
+  const supportLead = users.find((u) => u.team === "Service")?.id ?? currentUserId;
+  const [subject, setSubject] = useState("");
+  const [description, setDescription] = useState("");
+  const [companyId, setCompanyId] = useState(initialCompanyId ?? "");
+  const [contactId, setContactId] = useState("");
+  const [priority, setPriority] = useState<TicketPriority>("medium");
+  const [category, setCategory] = useState<TicketRecord["category"]>("Field Support");
+  const [ownerId, setOwnerId] = useState(supportLead);
+  const [slaLocal, setSlaLocal] = useState(() => toWibLocal(defaultSlaDue("medium")));
+  const [slaTouched, setSlaTouched] = useState(false);
+
+  const companyContacts = useMemo(() => contacts.filter((c) => !companyId || c.companyId === companyId).sort((a, b) => `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`)), [contacts, companyId]);
+
+  const pickPriority = (p: TicketPriority) => {
+    setPriority(p);
+    if (!slaTouched) setSlaLocal(toWibLocal(defaultSlaDue(p)));
+  };
+
+  const slaValid = !!slaLocal && !Number.isNaN(Date.parse(fromWibLocal(slaLocal)));
+  const valid = subject.trim().length > 2 && slaValid && !!ownerId;
+  const submit = () => {
+    if (!valid) return;
+    const id = createTicket({
+      subject,
+      description,
+      companyId: companyId || null,
+      contactId: contactId || null,
+      priority,
+      category,
+      ownerId,
+      stageId,
+      slaDueAt: fromWibLocal(slaLocal),
+    });
+    notify(`Ticket ${id.toUpperCase()} opened`, { label: "Open", run: () => router.push(`/tickets/${id}`) });
+    onCreated?.(id);
+    onClose();
+  };
+  useSubmitHotkey(submit, valid);
+
+  return (
+    <Modal
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title="New ticket"
+      description="Opens a Field Support ticket and logs it on the company and contact timelines."
+      footer={
+        <>
+          <SubmitHint />
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submit} disabled={!valid}>
+            Create ticket
+          </Button>
+        </>
+      }
+    >
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Subject" className="col-span-2">
+          <Input autoFocus value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="e.g. Gateway offline after power cut" />
+        </Field>
+        <Field label="Description" className="col-span-2">
+          <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Symptoms, site, serial numbers, what has been tried…" />
+        </Field>
+        <Field label="Company">
+          <Select
+            value={companyId}
+            onChange={(e) => {
+              setCompanyId(e.target.value);
+              if (contactId && !contacts.some((c) => c.id === contactId && c.companyId === e.target.value)) setContactId("");
+            }}
+          >
+            <option value="">— none —</option>
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Contact" hint={companyId ? `${companyContacts.length} at this company` : "Pick a company to narrow the list"}>
+          <Select value={contactId} onChange={(e) => setContactId(e.target.value)}>
+            <option value="">— none —</option>
+            {companyContacts.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.firstName} {c.lastName}
+                {c.jobTitle ? ` · ${c.jobTitle}` : ""}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Priority" className="col-span-2">
+          <div className="flex gap-1">
+            {TICKET_PRIORITIES.map((p) => (
+              <button key={p} type="button" onClick={() => pickPriority(p)} className={cn("h-7 rounded border px-3 text-xs font-semibold", priority === p ? "border-sg-white text-sg-white" : "border-sg-line text-sg-muted hover:text-sg-white")}>
+                {ticketPriorityMeta[p].label}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Category">
+          <Select value={category} onChange={(e) => setCategory(e.target.value as TicketRecord["category"])}>
+            {TICKET_CATEGORIES.map((c) => (
+              <option key={c}>{c}</option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Owner">
+          <Select value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name}
+                {u.team === "Service" ? " · Service" : ""}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="SLA due (WIB)" className="col-span-2" hint={slaTouched ? `Set manually · default for ${ticketPriorityMeta[priority].label.toLowerCase()} is ${SLA_TARGETS[priority]}` : `Default for ${ticketPriorityMeta[priority].label.toLowerCase()} priority: ${SLA_TARGETS[priority]} → ${slaValid ? formatDate(fromWibLocal(slaLocal), "datetime") : "—"}`}>
+          <div className="flex items-center gap-2">
+            <Input
+              type="datetime-local"
+              value={slaLocal}
+              onChange={(e) => {
+                setSlaLocal(e.target.value);
+                setSlaTouched(true);
+              }}
+              className={slaValid ? undefined : "border-soft-red/60"}
+            />
+            {slaTouched && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setSlaTouched(false);
+                  setSlaLocal(toWibLocal(defaultSlaDue(priority)));
+                }}
+              >
+                Reset
+              </Button>
+            )}
+          </div>
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
 /* ───────────────────────── Log activity ───────────────────────── */
 
 const activityTabs = [
@@ -651,11 +859,118 @@ const activityTabs = [
   { value: "task" as const, label: "Task", icon: SquareCheck },
 ];
 
+/* email template personalisation */
+
+const TEMPLATE_TOKENS = ["contact.first_name", "company.name", "deal.name", "deal.capability", "owner.first_name", "owner.meeting_link"] as const;
+const TOKEN_RE = /\{\{\s*([\w.]+)\s*\}\}/g;
+
+interface TemplateContext {
+  contact?: Contact;
+  company?: Company;
+  deal?: Deal;
+  owner?: UserRecord;
+}
+
+/** contact / company / deal / owner as seen from the record the email is logged on */
+function templateContext(
+  target: { type: CrmObjectType; id: string } | undefined,
+  data: { contacts: Contact[]; companies: Company[]; deals: Deal[]; tickets: TicketRecord[]; users: UserRecord[]; openStage: (stageId: string) => boolean },
+): TemplateContext {
+  if (!target) return {};
+  const { contacts, companies, deals, tickets, users, openStage } = data;
+  const byRecency = (a: Deal, b: Deal) => a.closeDate.localeCompare(b.closeDate);
+  const openDealFor = (pred: (d: Deal) => boolean) => deals.filter((d) => pred(d) && openStage(d.stageId)).sort(byRecency)[0] ?? deals.filter(pred).sort(byRecency)[0];
+  let contact: Contact | undefined;
+  let company: Company | undefined;
+  let deal: Deal | undefined;
+  let ownerId: string | undefined;
+  if (target.type === "contact") {
+    contact = contacts.find((c) => c.id === target.id);
+    company = companies.find((c) => c.id === contact?.companyId);
+    deal = contact ? openDealFor((d) => d.contactIds.includes(contact!.id)) : undefined;
+    ownerId = contact?.ownerId;
+  } else if (target.type === "company") {
+    company = companies.find((c) => c.id === target.id);
+    contact = contacts.filter((c) => c.companyId === target.id).sort((a, b) => b.leadScore - a.leadScore)[0];
+    deal = openDealFor((d) => d.companyId === target.id);
+    ownerId = company?.ownerId;
+  } else if (target.type === "deal") {
+    deal = deals.find((d) => d.id === target.id);
+    company = companies.find((c) => c.id === deal?.companyId);
+    contact = contacts.find((c) => c.id === deal?.contactIds[0]);
+    ownerId = deal?.ownerId;
+  } else {
+    const t = tickets.find((x) => x.id === target.id);
+    contact = contacts.find((c) => c.id === t?.contactId);
+    company = companies.find((c) => c.id === t?.companyId);
+    deal = t?.companyId ? openDealFor((d) => d.companyId === t.companyId) : undefined;
+    ownerId = t?.ownerId;
+  }
+  return { contact, company, deal, owner: users.find((u) => u.id === ownerId) };
+}
+
+function tokenValue(token: string, ctx: TemplateContext): string | undefined {
+  switch (token) {
+    case "contact.first_name":
+      return ctx.contact?.firstName || undefined;
+    case "company.name":
+      return ctx.company?.name || undefined;
+    case "deal.name":
+      return ctx.deal?.name || undefined;
+    case "deal.capability":
+      return ctx.deal?.capability || undefined;
+    case "owner.first_name":
+      return ctx.owner?.name.split(" ")[0] || undefined;
+    case "owner.meeting_link":
+      return ctx.owner ? `https://crm.spectrumgroup.id/meet/${ctx.owner.id}` : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** replace every resolvable token; unresolved ones are left as {{token}} so they stay visible */
+function renderTemplate(text: string, ctx: TemplateContext) {
+  return text.replace(TOKEN_RE, (whole, token: string) => tokenValue(token, ctx) ?? whole);
+}
+
+function unresolvedTokens(...texts: string[]) {
+  const found = new Set<string>();
+  texts.forEach((t) => {
+    for (const m of t.matchAll(TOKEN_RE)) found.add(m[1]);
+  });
+  return Array.from(found);
+}
+
+function TemplatePicker({ templates, value, onPick }: { templates: EmailTemplate[]; value: string; onPick: (t: EmailTemplate | null) => void }) {
+  const users = useCrm((s) => s.users);
+  return (
+    <Field label="Template" hint={`Tokens: ${TEMPLATE_TOKENS.map((t) => `{{${t}}}`).join(" ")}`}>
+      <Select value={value} onChange={(e) => onPick(templates.find((t) => t.id === e.target.value) ?? null)}>
+        <option value="">No template — write from scratch</option>
+        {Array.from(new Set(templates.map((t) => t.category))).map((cat) => (
+          <optgroup key={cat} label={cat}>
+            {templates
+              .filter((t) => t.category === cat)
+              .map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name} · {users.find((u) => u.id === t.ownerId)?.name.split(" ")[0] ?? ""}
+                </option>
+              ))}
+          </optgroup>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
 function LogActivityDialog({ onClose, d }: Props<"logActivity">) {
   const contacts = useCrm((s) => s.contacts);
   const companies = useCrm((s) => s.companies);
   const deals = useCrm((s) => s.deals);
   const tickets = useCrm((s) => s.tickets);
+  const users = useCrm((s) => s.users);
+  const pipelines = useCrm((s) => s.pipelines);
+  const emailTemplates = useCrm((s) => s.emailTemplates);
   const addActivity = useCrm((s) => s.addActivity);
   const notify = useUi((s) => s.notify);
 
@@ -694,9 +1009,31 @@ function LogActivityDialog({ onClose, d }: Props<"logActivity">) {
   }, [target, contacts, deals, tickets]);
 
   const label = useLinkedRecordLabel(target?.type, target?.id);
+
+  /* templates (email only) */
+  const [templateId, setTemplateId] = useState("");
+  const [confirmUnresolved, setConfirmUnresolved] = useState(false);
+  const tplCtx = useMemo(() => {
+    const closed = new Set(pipelines.flatMap((p) => p.stages.filter((st) => st.closed).map((st) => st.id)));
+    return templateContext(target, { contacts, companies, deals, tickets, users, openStage: (id) => !closed.has(id) });
+  }, [target, contacts, companies, deals, tickets, users, pipelines]);
+  const applyTemplate = (t: EmailTemplate | null) => {
+    setTemplateId(t?.id ?? "");
+    setConfirmUnresolved(false);
+    if (!t) return;
+    setSubject(renderTemplate(t.subject, tplCtx));
+    setBody(renderTemplate(t.body, tplCtx));
+  };
+  const unresolved = type === "email" ? unresolvedTokens(subject, body) : [];
+  useEffect(() => setConfirmUnresolved(false), [subject, body]);
+
   const valid = !!target && (subject.trim().length > 0 || body.trim().length > 0);
   const submit = () => {
     if (!valid) return;
+    if (unresolved.length && !confirmUnresolved) {
+      setConfirmUnresolved(true);
+      return;
+    }
     const defaultSubject = { call: `Call with ${label}`, email: `Email: ${label}`, meeting: `Meeting: ${label}`, note: "Note", task: "Follow up" }[type];
     addActivity({
       type,
@@ -726,7 +1063,7 @@ function LogActivityDialog({ onClose, d }: Props<"logActivity">) {
             Cancel
           </Button>
           <Button variant="primary" onClick={submit} disabled={!valid}>
-            {type === "task" ? "Create task" : `Log ${type}`}
+            {type === "task" ? "Create task" : confirmUnresolved && unresolved.length ? "Log with unresolved tokens" : `Log ${type}`}
           </Button>
         </>
       }
@@ -750,11 +1087,19 @@ function LogActivityDialog({ onClose, d }: Props<"logActivity">) {
               {links.companyIds.length + links.dealIds.length + links.contactIds.length + links.ticketIds.length > 1 && <span className="text-sg-dim"> + {links.companyIds.length + links.dealIds.length + links.contactIds.length + links.ticketIds.length - 1} related</span>}
             </span>
             {!d.target && (
-              <button type="button" className="text-sg-dim hover:text-sg-white" onClick={() => setTarget(undefined)}>
+              <button
+                type="button"
+                className="text-sg-dim hover:text-sg-white"
+                onClick={() => {
+                  setTarget(undefined);
+                  setTemplateId("");
+                }}
+              >
                 change
               </button>
             )}
           </div>
+          {type === "email" && emailTemplates.length > 0 && <TemplatePicker templates={emailTemplates} value={templateId} onPick={applyTemplate} />}
           {type !== "note" && <Field label={type === "task" ? "Task" : "Subject"}><Input autoFocus value={subject} onChange={(e) => setSubject(e.target.value)} /></Field>}
           {type === "call" && (
             <div className="grid grid-cols-3 gap-3">
@@ -796,9 +1141,26 @@ function LogActivityDialog({ onClose, d }: Props<"logActivity">) {
               <Input type="date" value={due} onChange={(e) => setDue(e.target.value)} />
             </Field>
           )}
-          <Field label={type === "note" ? "Note" : "Notes"}>
-            <Textarea autoFocus={type === "note"} value={body} onChange={(e) => setBody(e.target.value)} placeholder={type === "call" ? "What was discussed? Next steps?" : ""} />
+          <Field label={type === "note" ? "Note" : type === "email" ? "Body" : "Notes"}>
+            <Textarea autoFocus={type === "note"} value={body} onChange={(e) => setBody(e.target.value)} placeholder={type === "call" ? "What was discussed? Next steps?" : ""} className={type === "email" && templateId ? "min-h-[160px]" : undefined} />
           </Field>
+          {unresolved.length > 0 && (
+            <div role="alert" className={cn("rounded-lg border px-3 py-2 text-xs", confirmUnresolved ? "border-soft-red/50 bg-soft-red/10" : "border-soft-yellow/40 bg-soft-yellow/10")}>
+              <div className={cn("flex items-center gap-1.5 font-semibold", confirmUnresolved ? "text-soft-red" : "text-soft-yellow")}>
+                <TriangleAlert className="size-3.5" />
+                {unresolved.length === 1 ? "1 personalisation token could not be filled" : `${unresolved.length} personalisation tokens could not be filled`}
+              </div>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {unresolved.map((t) => (
+                  <code key={t} className="rounded-sm bg-sg-bg/70 px-1.5 py-0.5 font-mono text-2xs text-sg-white ring-1 ring-inset ring-soft-yellow/40">{`{{${t}}}`}</code>
+                ))}
+              </div>
+              <p className="mt-1.5 text-sg-muted">
+                {unresolved.some((t) => !(TEMPLATE_TOKENS as readonly string[]).includes(t)) ? "Some tokens are not supported. " : ""}
+                {`This ${label ? `record (${label})` : "record"} has no value for ${unresolved.length === 1 ? "it" : "them"} — edit the text above${confirmUnresolved ? ", or press log again to save as is." : " before saving."}`}
+              </p>
+            </div>
+          )}
         </div>
       )}
     </Modal>
@@ -1042,6 +1404,8 @@ function GenerateQuoteDialog({ onClose, d }: Props<"generateQuote">) {
 /* ───────────────────────── Shortcuts ───────────────────────── */
 
 function ShortcutsDialog({ onClose }: { onClose: () => void }) {
+  const pathname = usePathname();
+  const SHORTCUTS = shortcutsFor(pathname);
   const groups = Array.from(new Set(SHORTCUTS.map((s) => s.group)));
   return (
     <Modal open onOpenChange={(o) => !o && onClose()} title="Keyboard shortcuts" description="Everything is reachable without the mouse.">

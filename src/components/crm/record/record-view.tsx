@@ -1,17 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
-import { notFound } from "next/navigation";
-import { CalendarDays, Globe, Mail, MapPin, Network, Phone, Sparkles, SquareCheck, StickyNote, Timer } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { notFound, useRouter } from "next/navigation";
+import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Globe, Mail, MapPin, Network, Phone, Sparkles, SquareCheck, StickyNote, Timer, Trash2, TriangleAlert } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
-import { useStageMap, useUserMap } from "@/lib/selectors";
+import { useRecordSequence, useStageMap, useUserMap } from "@/lib/selectors";
+import { previewDelete } from "@/lib/slices/crm-extras";
 import { CAPABILITIES, LEAD_STATUSES, LIFECYCLE_STAGES, type CrmObjectType, type Deal, type Ticket } from "@/lib/types";
 import { leadStatusMeta, lifecycleMeta, ticketPriorityMeta } from "@/lib/meta";
 import { cn, daysFromNow, formatDate, formatIDR, formatNumber, relativeTime, softText, spectrumDot } from "@/lib/utils";
 import { PageHeader } from "@/components/shell/page-header";
 import { Avatar, Chip, RecordAvatar, ScoreRing } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
+import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger, Modal } from "@/components/ui/overlays";
 import { EditableProperty } from "./editable";
 import { Timeline } from "./timeline";
 import { AssociationsPane } from "./associations";
@@ -20,8 +22,12 @@ const crumbFor: Record<CrmObjectType, { href: string; label: string }> = {
   contact: { href: "/contacts", label: "Contacts" },
   company: { href: "/companies", label: "Companies" },
   deal: { href: "/deals", label: "Deals" },
-  ticket: { href: "/deals", label: "Service" },
+  ticket: { href: "/tickets", label: "Tickets" },
 };
+
+const hrefFor: Record<CrmObjectType, string> = { contact: "/contacts", company: "/companies", deal: "/deals", ticket: "/tickets" };
+const singular: Record<CrmObjectType, string> = { contact: "contact", company: "company", deal: "deal", ticket: "ticket" };
+const plural: Record<CrmObjectType, string> = { contact: "contacts", company: "companies", deal: "deals", ticket: "tickets" };
 
 /**
  * HubSpot-style 3-pane record:
@@ -33,11 +39,19 @@ export function RecordView({ type, id }: { type: CrmObjectType; id: string }) {
   const exists = useCrm((s) =>
     type === "contact" ? s.contacts.some((x) => x.id === id) : type === "company" ? s.companies.some((x) => x.id === id) : type === "deal" ? s.deals.some((x) => x.id === id) : s.tickets.some((x) => x.id === id),
   );
-  if (!exists) notFound();
+  /** set while this record is being deleted from its own page, so we leave instead of rendering a 404 */
+  const [leaving, setLeaving] = useState(false);
+  if (!exists) {
+    if (leaving) return null;
+    notFound();
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader title={<RecordTitle type={type} id={id} />} crumbs={[crumbFor[type]]} />
+      <PageHeader title={<RecordTitle type={type} id={id} />} crumbs={[crumbFor[type]]}>
+        <RecordNav type={type} id={id} />
+        {(type === "contact" || type === "deal") && <RecordActions type={type} id={id} onLeave={() => setLeaving(true)} />}
+      </PageHeader>
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[320px_minmax(0,1fr)_340px] lg:overflow-hidden">
         <aside className="border-sg-line lg:overflow-y-auto lg:border-r">
           <LeftPane type={type} id={id} />
@@ -50,6 +64,144 @@ export function RecordView({ type, id }: { type: CrmObjectType; id: string }) {
         </aside>
       </div>
     </div>
+  );
+}
+
+/* ───────────── previous / next (Alt+← / Alt+→) ───────────── */
+
+function RecordNav({ type, id }: { type: CrmObjectType; id: string }) {
+  const router = useRouter();
+  const seq = useRecordSequence(type);
+  const idx = seq.indexOf(id);
+  const prev = idx > 0 ? seq[idx - 1] : null;
+  const next = idx >= 0 && idx < seq.length - 1 ? seq[idx + 1] : null;
+  const base = hrefFor[type];
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey || e.metaKey || e.ctrlKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable)) return;
+      const ui = useUi.getState();
+      if (ui.dialog || ui.paletteOpen || ui.issueId || document.querySelector("[role=dialog]")) return;
+      // Alt+← / Alt+→ is browser history on Windows/Linux — take it over on record pages
+      e.preventDefault();
+      const to = e.key === "ArrowLeft" ? prev : next;
+      if (to) router.push(`${base}/${encodeURIComponent(to)}`);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [prev, next, base, router]);
+
+  if (idx < 0) return null;
+  const btn = "flex size-7 items-center justify-center rounded border border-sg-line text-sg-muted hover:border-sg-line-2 hover:text-sg-white disabled:pointer-events-none disabled:opacity-30";
+  return (
+    <div className="flex items-center gap-1.5">
+      <button type="button" className={btn} disabled={!prev} onClick={() => prev && router.push(`${base}/${encodeURIComponent(prev)}`)} aria-label={`Previous ${singular[type]}`} title={`Previous ${singular[type]} (Alt+←)`}>
+        <ChevronLeft className="size-4" />
+      </button>
+      <span className="sg-num min-w-[64px] text-center text-xs text-sg-muted" title={`Ordered like the ${plural[type]} list`}>
+        <span className="font-semibold text-sg-white">{idx + 1}</span> of {seq.length}
+      </span>
+      <button type="button" className={btn} disabled={!next} onClick={() => next && router.push(`${base}/${encodeURIComponent(next)}`)} aria-label={`Next ${singular[type]}`} title={`Next ${singular[type]} (Alt+→)`}>
+        <ChevronRight className="size-4" />
+      </button>
+    </div>
+  );
+}
+
+/* ───────────── header actions: delete with undo ───────────── */
+
+function RecordActions({ type, id, onLeave }: { type: "contact" | "deal"; id: string; onLeave: () => void }) {
+  const router = useRouter();
+  const notify = useUi((s) => s.notify);
+  const deleteContact = useCrm((s) => s.deleteContact);
+  const deleteDeal = useCrm((s) => s.deleteDeal);
+  const restoreSnapshot = useCrm((s) => s.restoreSnapshot);
+  const [confirming, setConfirming] = useState(false);
+  const [impact, setImpact] = useState<string[]>([]);
+  const label = useCrm((s) => {
+    if (type === "contact") {
+      const c = s.contacts.find((x) => x.id === id);
+      return c ? `${c.firstName} ${c.lastName}`.trim() : "";
+    }
+    return s.deals.find((x) => x.id === id)?.name ?? "";
+  });
+
+  const open = () => {
+    setImpact(previewDelete(useCrm.getState(), type, id));
+    setConfirming(true);
+  };
+
+  const confirm = () => {
+    setConfirming(false);
+    onLeave();
+    const snap = type === "contact" ? deleteContact(id) : deleteDeal(id);
+    router.push(hrefFor[type]);
+    if (!snap) return;
+    notify(`${type === "contact" ? "Contact" : "Deal"} “${snap.label}” deleted`, {
+      label: "Undo",
+      run: () => {
+        restoreSnapshot(snap);
+        notify(`${snap.label} restored`);
+        router.push(`${hrefFor[type]}/${encodeURIComponent(snap.id)}`);
+      },
+    });
+  };
+
+  return (
+    <>
+      <Menu>
+        <MenuTrigger asChild>
+          <Button variant="outline" size="sm">
+            Actions <ChevronDown />
+          </Button>
+        </MenuTrigger>
+        <MenuContent align="end">
+          <MenuLabel>{type === "contact" ? "Contact" : "Deal"}</MenuLabel>
+          <MenuItem destructive onSelect={open}>
+            <Trash2 className="size-3.5" /> Delete {singular[type]}
+          </MenuItem>
+        </MenuContent>
+      </Menu>
+      <Modal
+        open={confirming}
+        onOpenChange={setConfirming}
+        title={`Delete ${singular[type]}?`}
+        description={label}
+        footer={
+          <>
+            <span className="mr-auto hidden items-center gap-1 text-2xs text-sg-dim sm:flex">
+              You can undo from the toast for a few seconds
+            </span>
+            <Button variant="ghost" onClick={() => setConfirming(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={confirm} autoFocus>
+              <Trash2 /> Delete {singular[type]}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-sm">
+          <p className="flex items-start gap-2 text-sg-text">
+            <TriangleAlert className="mt-0.5 size-4 shrink-0 text-soft-orange" />
+            <span>
+              <span className="font-semibold text-sg-white">{label}</span> will be removed from the CRM{type === "deal" ? " together with its line items and quotes" : ""}.
+            </span>
+          </p>
+          {impact.length ? (
+            <ul className="space-y-1 rounded-lg border border-sg-line bg-sg-bg/50 px-3 py-2 text-xs text-sg-muted">
+              {impact.map((x) => (
+                <li key={x}>· {x}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-xs text-sg-dim">No other records reference this {singular[type]}.</p>
+          )}
+        </div>
+      </Modal>
+    </>
   );
 }
 

@@ -2,21 +2,27 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Building2, ChevronDown, Copy, Handshake, Link2, ListTree, MessageSquare, Plus, Ticket, Unlink, User, X } from "lucide-react";
+import { ArrowUpRight, Building2, ChevronDown, Copy, Handshake, History, Layers, Link2, ListTree, MessageSquare, Plus, Search, Target, Ticket, Unlink, User, X } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useLinksForAgile, useUserMap } from "@/lib/selectors";
 import { ISSUE_PRIORITIES, ISSUE_STATUSES, ISSUE_TYPES, type Issue } from "@/lib/types";
 import { issueStatusMeta, issueTypeMeta, linkTypeMeta, priorityMeta } from "@/lib/meta";
 import { cn, formatDate, formatIDR, fromDateInput, relativeTime, softChip, softText, spectrumDot, toDateInput } from "@/lib/utils";
-import { Sheet, SheetClose, Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger } from "@/components/ui/overlays";
-import { Avatar, Chip, Kbd } from "@/components/ui/misc";
+import { Sheet, SheetClose, Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger, Popover, PopoverContent, PopoverTrigger, Tabs } from "@/components/ui/overlays";
+import { Avatar, Kbd } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
+import { StatusChip } from "@/components/initiatives/shared";
+import type { IssueHistoryEntry } from "@/lib/slices/agile-extras";
 
 export function IssueDrawer() {
   const issueId = useUi((s) => s.issueId);
   const openIssue = useUi((s) => s.openIssue);
   const issue = useCrm((s) => (issueId ? s.issues.find((i) => i.id === issueId) : undefined));
+  // the open issue was deleted (bulk delete, undo of a clone…) — release the drawer state
+  useEffect(() => {
+    if (issueId && !issue) openIssue(null);
+  }, [issueId, issue, openIssue]);
   return (
     <Sheet open={!!issue} onOpenChange={(o) => !o && openIssue(null)} title={issue ? `${issue.key} ${issue.summary}` : "Issue"}>
       {issue ? <IssueDetail key={issue.id} issue={issue} /> : null}
@@ -25,8 +31,13 @@ export function IssueDrawer() {
 }
 
 function IssueDetail({ issue }: { issue: Issue }) {
-  const updateIssue = useCrm((s) => s.updateIssue);
+  // every field edit goes through the tracked variant so it lands in the History section
+  const updateIssue = useCrm((s) => s.updateIssueTracked);
   const createIssue = useCrm((s) => s.createIssue);
+  const deleteIssues = useCrm((s) => s.deleteIssues);
+  const noteIssueHistory = useCrm((s) => s.noteIssueHistory);
+  const history = useCrm((s) => s.issueHistory);
+  const initiatives = useCrm((s) => s.initiatives);
   const addComment = useCrm((s) => s.addComment);
   const unlink = useCrm((s) => s.unlink);
   const allIssues = useCrm((s) => s.issues);
@@ -55,6 +66,14 @@ function IssueDetail({ issue }: { issue: Issue }) {
   const [comment, setComment] = useState("");
   const [newSub, setNewSub] = useState("");
   const [labelDraft, setLabelDraft] = useState("");
+  const [tab, setTab] = useState<"comments" | "history">("comments");
+  const issueHistory = useMemo(() => history.filter((h) => h.issueId === issue.id).reverse(), [history, issue.id]);
+  const linkedInitiative = useMemo(() => {
+    const viaEpic = issue.epicId ? initiatives.find((i) => i.epicId === issue.epicId) : undefined;
+    if (viaEpic) return { initiative: viaEpic, via: "epic" as const };
+    const viaProject = initiatives.find((i) => i.jiraProjectId && i.jiraProjectId === issue.projectId);
+    return viaProject ? { initiative: viaProject, via: "project" as const } : null;
+  }, [initiatives, issue.epicId, issue.projectId]);
   useEffect(() => setSummary(issue.summary), [issue.summary]);
   useEffect(() => setDescription(issue.description), [issue.description]);
 
@@ -74,6 +93,36 @@ function IssueDetail({ issue }: { issue: Issue }) {
   }, [issue.id, updateIssue]);
 
   const stageOf = useMemo(() => new Map(pipelines.flatMap((p) => p.stages.map((s) => [s.id, s] as const))), [pipelines]);
+
+  const cloneIssue = () => {
+    const id = createIssue({
+      projectId: issue.projectId,
+      type: issue.type,
+      summary: `Clone of ${issue.summary}`,
+      description: issue.description,
+      status: issue.status === "done" ? "todo" : issue.status,
+      priority: issue.priority,
+      assigneeId: issue.assigneeId,
+      epicId: issue.epicId,
+      sprintId: issue.sprintId,
+      parentId: issue.parentId,
+      storyPoints: issue.storyPoints,
+      labels: [...issue.labels],
+      dueDate: issue.dueDate,
+    });
+    if (!id) return;
+    noteIssueHistory(id, `Cloned from ${issue.key}`);
+    const clone = useCrm.getState().issues.find((i) => i.id === id);
+    const originalId = issue.id;
+    openIssue(id);
+    notify(`Cloned ${issue.key} as ${clone?.key ?? "a new issue"}`, {
+      label: "Undo",
+      run: () => {
+        deleteIssues([id]);
+        openIssue(originalId);
+      },
+    });
+  };
 
   const copyLink = () => {
     const url = `${window.location.origin}/board?issue=${issue.key}`;
@@ -115,6 +164,10 @@ function IssueDetail({ issue }: { issue: Issue }) {
           </MenuContent>
         </Menu>
         <div className="ml-auto flex items-center gap-1">
+          <ConvertToSubtask issue={issue} allIssues={allIssues} subtaskCount={subtasks.length} onConvert={(patch) => updateIssue(issue.id, patch)} />
+          <Button size="xs" variant="ghost" onClick={cloneIssue} title="Clone issue (copies fields and labels)">
+            <Layers /> Clone
+          </Button>
           <Button size="icon-sm" variant="ghost" onClick={copyLink} aria-label="Copy link" title="Copy link">
             <Copy />
           </Button>
@@ -248,6 +301,35 @@ function IssueDetail({ issue }: { issue: Issue }) {
             </div>
           </section>
 
+          {/* initiative (policy register) via the epic */}
+          <section>
+            <div className="sg-eyebrow mb-2 flex items-center gap-1.5">
+              <Target className="size-3" /> Linked initiative
+            </div>
+            {linkedInitiative ? (
+              <Link
+                href={`/initiatives/${linkedInitiative.initiative.id}`}
+                onClick={() => openIssue(null)}
+                className="group flex items-center gap-3 rounded-md border border-sg-line bg-sg-bg/40 px-3 py-2 hover:border-sg-line-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 text-2xs text-sg-dim">
+                    <span className="font-mono font-semibold text-sg-muted">{linkedInitiative.initiative.code ?? linkedInitiative.initiative.trackingNo}</span>
+                    {!linkedInitiative.initiative.code && <span>(tracking no. — no project code yet)</span>}
+                    <span>· via {linkedInitiative.via === "epic" ? `epic ${epic?.key ?? ""}` : `project ${project?.key ?? ""}`}</span>
+                  </div>
+                  <div className="truncate text-sm font-semibold text-sg-white group-hover:underline">{linkedInitiative.initiative.title}</div>
+                </div>
+                <StatusChip status={linkedInitiative.initiative.status} />
+                <ArrowUpRight className="size-3.5 shrink-0 text-sg-dim group-hover:text-sg-white" />
+              </Link>
+            ) : (
+              <p className="rounded-md border border-dashed border-sg-line-2 px-3 py-2.5 text-xs text-sg-dim">
+                {issue.epicId ? `No initiative is linked to epic ${epic?.key ?? ""}.` : "Not under an initiative — set an epic that belongs to one."}
+              </p>
+            )}
+          </section>
+
           {/* subtasks */}
           {issue.type !== "subtask" && (
             <section>
@@ -285,11 +367,21 @@ function IssueDetail({ issue }: { issue: Issue }) {
             </section>
           )}
 
-          {/* comments */}
+          {/* comments / history */}
           <section>
-            <div className="sg-eyebrow mb-2 flex items-center gap-1.5">
-              <MessageSquare className="size-3" /> Comments ({issueComments.length})
-            </div>
+            <Tabs
+              value={tab}
+              onChange={setTab}
+              className="mb-3"
+              items={[
+                { value: "comments", label: <><MessageSquare className="size-3.5" /> Comments</>, count: issueComments.length },
+                { value: "history", label: <><History className="size-3.5" /> History</>, count: issueHistory.length },
+              ]}
+            />
+            {tab === "history" ? (
+              <HistoryList entries={issueHistory} issue={issue} />
+            ) : (
+            <>
             <div className="space-y-3">
               {issueComments.map((c) => {
                 const u = userMap.get(c.authorId);
@@ -334,6 +426,8 @@ function IssueDetail({ issue }: { issue: Issue }) {
                 </Button>
               </div>
             </div>
+            </>
+            )}
           </section>
         </div>
 
@@ -392,7 +486,11 @@ function IssueDetail({ issue }: { issue: Issue }) {
             <PickMenu
               value={issue.sprintId ?? ""}
               options={[{ value: "", label: "Backlog" }, ...sprints.filter((s) => s.projectId === issue.projectId && s.state !== "closed").map((s) => ({ value: s.id, label: `${s.name}${s.state === "active" ? " (active)" : ""}` }))]}
-              onChange={(v) => updateIssue(issue.id, { sprintId: v || null })}
+              onChange={(v) => {
+                const toActive = sprints.find((s) => s.id === v)?.state === "active";
+                // "Backlog"-status work pulled into the running sprint goes to To Do so it shows on the board
+                updateIssue(issue.id, toActive && issue.status === "backlog" ? { sprintId: v, status: "todo" } : { sprintId: v || null });
+              }}
               display={sprints.find((s) => s.id === issue.sprintId)?.name ?? <span className="text-sg-dim">Backlog</span>}
             />
           </Detail>
@@ -493,3 +591,180 @@ function RichText({ text }: { text: string }) {
   );
 }
 
+
+/** "Convert to sub-task of…" (or change parent / back to a task when already a sub-task). */
+function ConvertToSubtask({ issue, allIssues, subtaskCount, onConvert }: { issue: Issue; allIssues: Issue[]; subtaskCount: number; onConvert: (patch: Partial<Issue>) => void }) {
+  const notify = useUi((s) => s.notify);
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const isSub = issue.type === "subtask";
+  const candidates = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return allIssues
+      .filter((i) => i.projectId === issue.projectId && i.id !== issue.id && i.type !== "subtask" && i.id !== issue.parentId)
+      .filter((i) => !needle || `${i.key} ${i.summary}`.toLowerCase().includes(needle))
+      .sort((a, b) => (a.status === "done" ? 1 : 0) - (b.status === "done" ? 1 : 0) || b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, 30);
+  }, [allIssues, issue.projectId, issue.id, issue.parentId, q]);
+
+  const pick = (parent: Issue) => {
+    // a sub-task lives in its parent's sprint and epic
+    onConvert({ type: "subtask", parentId: parent.id, sprintId: parent.sprintId, epicId: parent.epicId });
+    notify(`${issue.key} is now a sub-task of ${parent.key}`);
+    setOpen(false);
+    setQ("");
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button size="xs" variant="ghost" title={isSub ? "Change parent or convert back to a task" : "Convert to sub-task of another issue"}>
+          <ListTree /> {isSub ? "Parent…" : "Convert to sub-task…"}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 p-2">
+        {subtaskCount > 0 && !isSub ? (
+          <p className="px-1 py-1 text-xs text-sg-muted">
+            {issue.key} has {subtaskCount} sub-task{subtaskCount === 1 ? "" : "s"}. Sub-tasks can't have their own sub-tasks — move or delete them first.
+          </p>
+        ) : (
+          <>
+            <div className="mb-1.5 px-1 text-2xs font-semibold uppercase tracking-[0.12em] text-sg-dim">{isSub ? "Move under another parent" : `Make ${issue.key} a sub-task of…`}</div>
+            <div className="relative mb-1">
+              <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-sg-dim" />
+              <input
+                autoFocus
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && candidates[0]) {
+                    e.preventDefault();
+                    pick(candidates[0]);
+                  }
+                }}
+                placeholder="Search issues in this project"
+                className="h-8 w-full rounded border border-sg-line bg-sg-bg/60 pl-7 pr-2 text-sm text-sg-text placeholder:text-sg-dim focus:border-sg-white/50 focus:outline-none"
+              />
+            </div>
+            <div className="max-h-64 overflow-y-auto">
+              {candidates.map((c) => {
+                const T = issueTypeMeta[c.type].icon;
+                return (
+                  <button key={c.id} type="button" onClick={() => pick(c)} className="flex w-full items-center gap-2 rounded px-1.5 py-1.5 text-left text-xs hover:bg-sg-card-3">
+                    <T className={cn("size-3.5 shrink-0", softText[issueTypeMeta[c.type].color])} />
+                    <span className="shrink-0 font-semibold text-sg-dim">{c.key}</span>
+                    <span className={cn("min-w-0 flex-1 truncate", c.status === "done" ? "text-sg-dim line-through" : "text-sg-text")}>{c.summary}</span>
+                  </button>
+                );
+              })}
+              {!candidates.length && <p className="px-1.5 py-3 text-center text-xs text-sg-dim">No other issues in this project.</p>}
+            </div>
+            {isSub && (
+              <button
+                type="button"
+                onClick={() => {
+                  onConvert({ type: "task", parentId: null });
+                  notify(`${issue.key} converted to a task`);
+                  setOpen(false);
+                }}
+                className="mt-1 w-full border-t border-sg-line px-1.5 pt-2 text-left text-xs font-semibold text-sg-muted hover:text-sg-white"
+              >
+                Convert back to a standalone task
+              </button>
+            )}
+          </>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+const FIELD_LABEL: Record<IssueHistoryEntry["field"], string> = {
+  status: "Status",
+  assigneeId: "Assignee",
+  priority: "Priority",
+  sprintId: "Sprint",
+  storyPoints: "Story points",
+  epicId: "Epic",
+  parentId: "Parent",
+  type: "Type",
+  created: "Created",
+};
+
+function HistoryList({ entries, issue }: { entries: IssueHistoryEntry[]; issue: Issue }) {
+  const userMap = useUserMap();
+  const sprints = useCrm((s) => s.sprints);
+  const epics = useCrm((s) => s.epics);
+  const issues = useCrm((s) => s.issues);
+
+  const fmt = (field: IssueHistoryEntry["field"], v: string | number | null): React.ReactNode => {
+    if (v === null || v === "") {
+      return <span className="text-sg-dim">{field === "sprintId" ? "Backlog" : field === "assigneeId" ? "Unassigned" : "None"}</span>;
+    }
+    switch (field) {
+      case "status":
+        return issueStatusMeta[v as Issue["status"]]?.label ?? String(v);
+      case "priority":
+        return priorityMeta[v as Issue["priority"]]?.label ?? String(v);
+      case "type":
+        return issueTypeMeta[v as Issue["type"]]?.label ?? String(v);
+      case "assigneeId":
+        return userMap.get(String(v))?.name ?? String(v);
+      case "sprintId":
+        return sprints.find((s) => s.id === v)?.name ?? "Deleted sprint";
+      case "epicId": {
+        const e = epics.find((x) => x.id === v);
+        return e ? `${e.key} · ${e.name}` : "Deleted epic";
+      }
+      case "parentId":
+        return issues.find((x) => x.id === v)?.key ?? "Deleted issue";
+      default:
+        return String(v);
+    }
+  };
+
+  return (
+    <ol className="space-y-2.5">
+      {entries.map((h) => {
+        const u = userMap.get(h.actorId);
+        return (
+          <li key={h.id} className="flex gap-2.5">
+            <Avatar user={u} size="xs" className="mt-0.5" />
+            <div className="min-w-0 flex-1 text-xs">
+              <div>
+                <span className="font-semibold text-sg-white">{u?.name ?? "Someone"}</span>{" "}
+                {h.field === "created" ? (
+                  <span className="text-sg-muted">{h.note}</span>
+                ) : (
+                  <span className="text-sg-muted">
+                    changed <span className="font-semibold text-sg-text">{FIELD_LABEL[h.field]}</span>
+                  </span>
+                )}
+                <span className="ml-1.5 text-sg-dim" title={formatDate(h.at, "datetime")}>
+                  {relativeTime(h.at)}
+                </span>
+              </div>
+              {h.field !== "created" && (
+                <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-sg-muted">
+                  <span className="rounded-sm bg-sg-card-3 px-1.5 py-0.5 line-through decoration-sg-dim">{fmt(h.field, h.from)}</span>
+                  <span className="text-sg-dim">→</span>
+                  <span className="rounded-sm bg-sg-card-3 px-1.5 py-0.5 text-sg-text">{fmt(h.field, h.to)}</span>
+                </div>
+              )}
+            </div>
+          </li>
+        );
+      })}
+      <li className="flex gap-2.5">
+        <Avatar user={userMap.get(issue.reporterId)} size="xs" className="mt-0.5" />
+        <div className="text-xs">
+          <span className="font-semibold text-sg-white">{userMap.get(issue.reporterId)?.name ?? "Someone"}</span> <span className="text-sg-muted">created the issue</span>{" "}
+          <span className="text-sg-dim" title={formatDate(issue.createdAt, "datetime")}>
+            {relativeTime(issue.createdAt)}
+          </span>
+        </div>
+      </li>
+      {!entries.length && <li className="text-2xs text-sg-dim">Changes to status, assignee, priority, sprint, points, epic, parent and type are recorded here from now on (stored in this browser).</li>}
+    </ol>
+  );
+}

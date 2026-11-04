@@ -1,11 +1,12 @@
 /*
- * Demo data for the Project Initiative & Compensation module (Policy v3.0). All figures IDR, all people fictional.
+ * Demo data for the Project Initiative & Compensation module (Policy v4.0). All figures IDR, all demo people fictional.
+ * Projects approved before v4.0 keep their v3.0 flat share (§15.1); everything else uses the v4.0 curve.
  * Bonus runs are produced by the pure engine so stored runs are exactly what the UI would compute.
  * Must not import ../seed (that module imports this one).
  */
-import type { AuditEntry, BonusRun, Clawback, DeferredBonus, EmployeeProfile, Initiative, InitiativeMember, ProbationOutcome, ProjectRole, RevenueEntry, ShareAdjustment } from "./types";
-import { addMonths, clawbackSchedule, computeRun, memberWeight, netRevenue, paymentDate } from "./engine";
-import { POLICY, PROJECT_TYPE_META } from "./policy";
+import type { AuditEntry, BonusRun, Clawback, CurveAdjustment, DeferredBonus, EmployeeProfile, Initiative, InitiativeMember, ProbationOutcome, ProjectRole, RevenueEntry, TeamAmendment } from "./types";
+import { carriedForward, clawbackAmount, clawbackSchedule, computeRun, deferralVestDate, paymentDate, projectCycles } from "./engine";
+import { ongoingProjects } from "./ongoing";
 
 /* ───────────────────────── time & money helpers ───────────────────────── */
 
@@ -19,10 +20,8 @@ const wib = (date: string, hour = 9, minute = 0) => new Date(`${date}T${pad(hour
 
 const M = 1_000_000;
 const B = 1_000_000_000;
-/** Group EBITDA used for the §6.2 pool cap in every demo run. */
-const EBITDA = 4 * B;
 
-/* ───────────────────────── HR records (§1.2, §2.1, §4.5) ───────────────────────── */
+/* ───────────────────────── HR records (§3, §10, §11) ───────────────────────── */
 
 const ACK = wib("2026-04-10", 10);
 
@@ -68,10 +67,10 @@ export const employeeProfiles: EmployeeProfile[] = [
   profile("u-dina", "2022-05-09", 480 * M, "u-ben", { governanceRoles: ["hr"] }),
   profile("u-lia", "2024-08-05", 300 * M, "u-fajar", { acknowledgmentSignedAt: null }),
   profile("u-rafi", "2026-09-01", 216 * M, "u-fajar", { employmentType: "probationary", probationEndDate: wib("2026-12-01", 17), acknowledgmentSignedAt: wib("2026-09-02", 10) }),
-  profile("u-tomi", "2026-03-16", 180 * M, "u-fajar", { employmentType: "fixed_term_contract" }),
+  profile("u-tomi", "2026-03-16", 180 * M, "u-fajar", { employmentType: "fixed_term_contract", contractEndDate: wib("2027-03-15", 17) }),
 ];
 
-/* ───────────────────────── initiatives (§2–§3) ───────────────────────── */
+/* ───────────────────────── initiatives (§4–§5) ───────────────────────── */
 
 const defaults: Omit<Initiative, "id" | "title" | "type" | "status" | "initiatorId"> = {
   trackingNo: "",
@@ -97,7 +96,8 @@ const defaults: Omit<Initiative, "id" | "title" | "type" | "status" | "initiator
   warranty: false,
   deferralMonths: 6,
   lockedSharePct: null,
-  capException: false,
+  policyVersion: "4.0",
+  origination: "personal",
   submittedAt: null,
   acknowledgedAt: null,
   primaryReviewerId: null,
@@ -112,7 +112,7 @@ const defaults: Omit<Initiative, "id" | "title" | "type" | "status" | "initiator
 };
 const mk = (o: Partial<Initiative> & Pick<Initiative, "id" | "title" | "type" | "status" | "initiatorId">): Initiative => ({ ...defaults, ...o });
 
-export const initiatives: Initiative[] = [
+const demoInitiatives: Initiative[] = [
   mk({
     id: "ini-sbs-pdm",
     trackingNo: "PRC-2026-006",
@@ -147,7 +147,8 @@ export const initiatives: Initiative[] = [
       { id: "rk-sbs-3", category: "financial", description: "Sensor prices exposed to USD movements.", mitigation: "Supplier quotes fixed in IDR for the first two batches; 10 % contingency.", level: "low" },
     ],
     deferralMonths: 6,
-    lockedSharePct: PROJECT_TYPE_META.B.share,
+    lockedSharePct: 0.3, // v3.0 flat Type B share kept (§15.1)
+    policyVersion: "3.0",
     submittedAt: wib("2026-10-06", 14),
     acknowledgedAt: wib("2026-10-07", 10),
     primaryReviewerId: "u-fajar",
@@ -190,7 +191,8 @@ export const initiatives: Initiative[] = [
       { id: "rk-spl-2", category: "schedule", description: "Crane access windows depend on vessel schedules.", mitigation: "Weekly access plan agreed with terminal ops; two crews on call.", level: "medium" },
       { id: "rk-spl-3", category: "reputation", description: "Failed gateways after power cuts (GW-14) visible to client management.", mitigation: "Hardware watchdog + remote reboot path; field support SLA 12 h.", level: "medium" },
     ],
-    lockedSharePct: PROJECT_TYPE_META.B.share,
+    lockedSharePct: 0.3, // v3.0 flat Type B share kept (§15.1)
+    policyVersion: "3.0",
     submittedAt: wib("2026-09-15", 13),
     acknowledgedAt: wib("2026-09-16", 10),
     primaryReviewerId: "u-maria",
@@ -232,7 +234,8 @@ export const initiatives: Initiative[] = [
       { id: "rk-cam-1", category: "schedule", description: "Regulator review queue could push approval past contract end.", mitigation: "Early informal review of the manual skeleton with the regulator.", level: "medium" },
       { id: "rk-cam-2", category: "technical", description: "OEM torque tables conflict with legacy procedures.", mitigation: "Single source-of-truth table signed off by client engineering (ticket t-1004).", level: "low" },
     ],
-    lockedSharePct: PROJECT_TYPE_META.A.share,
+    lockedSharePct: 0.5, // v3.0 flat Type A share kept (§15.1)
+    policyVersion: "3.0",
     submittedAt: wib("2026-07-08", 11),
     acknowledgedAt: wib("2026-07-09", 9),
     primaryReviewerId: "u-fajar",
@@ -276,7 +279,8 @@ export const initiatives: Initiative[] = [
       { id: "rk-nhs-3", category: "operational", description: "Labelling depends on NHS hydrographer availability.", mitigation: "Labelling sprints booked in advance; vendor pre-labelling for review.", level: "low" },
     ],
     deferralMonths: 6,
-    lockedSharePct: PROJECT_TYPE_META.A.share,
+    lockedSharePct: 0.5, // v3.0 flat Type A share kept (§15.1)
+    policyVersion: "3.0",
     submittedAt: wib("2026-06-24", 14),
     acknowledgedAt: wib("2026-06-25", 9),
     primaryReviewerId: "u-maria",
@@ -293,6 +297,7 @@ export const initiatives: Initiative[] = [
     title: "NHS Autonomous Survey Vessel Retrofit",
     type: "C",
     status: "evaluation",
+    standardBonus: 2_500_000, // proposed in the Role and Weight Agreement (§8.6)
     initiatorId: "u-sinta",
     summary: "Build and fit our autonomy retrofit kit v2 — autopilot, perception stack and remote-operations link — to two 9 m Nusantara Hydrographic survey launches, with a 12-month manufacturing warranty.",
     valueProposition: "First production order for the vessel autonomy kit; turns our R&D into a product with a warranty-backed reference customer and a path to fleet-wide orders.",
@@ -371,6 +376,8 @@ export const initiatives: Initiative[] = [
     title: "TWU Non-Revenue Water Analytics",
     type: "A",
     status: "conditional",
+    lockedSharePct: 0.5, // decided under v3.0 — flat Type A share kept (§15.1)
+    policyVersion: "3.0",
     initiatorId: "u-nadia",
     summary: "Fuse pressure and flow data across six district metered areas at Tirta Water to localise leaks and rank pipe segments for repair, cutting non-revenue water in the pilot DMAs.",
     valueProposition: "Opens the water-utility vertical; analytics IP reusable across municipal concessions; the leak-localisation POC (SWD-306) already shows promising results on DMA-3.",
@@ -499,6 +506,9 @@ export const initiatives: Initiative[] = [
   }),
 ];
 
+/** Demo samples are flagged so the ongoing-projects register shows real projects only. */
+export const initiatives: Initiative[] = [...demoInitiatives.map((d) => ({ ...d, demo: true })), ...ongoingProjects];
+
 /* ───────────────────────── teams (§4, §7) ───────────────────────── */
 
 const mem = (id: string, initiativeId: string, userId: string, roles: ProjectRole[], joinedAt: string, extra: Partial<InitiativeMember> = {}): InitiativeMember => ({
@@ -516,6 +526,8 @@ const mem = (id: string, initiativeId: string, userId: string, roles: ProjectRol
   joinedAt,
   leftAt: null,
   removal: { stage: "none", updatedAt: null, note: "" },
+  allocationFactor: 1,
+  authority: "Role and Weight Agreement (Annex D Part 1)",
   ...extra,
 });
 const pendingTeam = { prcApproved: false } as const;
@@ -526,8 +538,8 @@ export const initiativeMembers: InitiativeMember[] = [
   mem("im-sbs-dimas", "ini-sbs-pdm", "u-dimas", ["project_lead"], wib("2026-09-29", 11), { allocationPct: 40 }),
   mem("im-sbs-kevin", "ini-sbs-pdm", "u-kevin", ["technical_lead"], wib("2026-09-29", 11), { allocationPct: 30 }),
   mem("im-sbs-nadia", "ini-sbs-pdm", "u-nadia", ["engineer"], wib("2026-09-29", 11), { allocationPct: 25 }),
-  mem("im-sbs-rafi", "ini-sbs-pdm", "u-rafi", ["engineer"], wib("2026-10-01", 10), { allocationPct: 60 }),
-  mem("im-sbs-lia", "ini-sbs-pdm", "u-lia", ["secretary"], wib("2026-09-29", 11), { allocationPct: 20 }),
+  mem("im-sbs-rafi", "ini-sbs-pdm", "u-rafi", ["engineer"], wib("2026-10-01", 0), { allocationPct: 60, application: true, authority: "Amendment am-sbs-1 (passed 4 of 5)" }),
+  mem("im-sbs-lia", "ini-sbs-pdm", "u-lia", ["secretary"], wib("2026-09-29", 11), { allocationPct: 20, allocationFactor: 0.5, weightNote: "Secretary for two projects at once — half the usual time (§6.4)" }),
   // SPL
   mem("im-spl-rani", "ini-spl-crane", "u-rani", ["initiator"], wib("2026-09-08", 10), { allocationPct: 10 }),
   mem("im-spl-fajar", "ini-spl-crane", "u-fajar", ["project_lead"], wib("2026-09-08", 10), { allocationPct: 25 }),
@@ -538,7 +550,7 @@ export const initiativeMembers: InitiativeMember[] = [
   mem("im-cam-sinta", "ini-cam-uas", "u-sinta", ["initiator", "project_lead"], wib("2026-07-01", 10), { allocationPct: 30 }),
   mem("im-cam-bima", "ini-cam-uas", "u-bima", ["technical_lead"], wib("2026-07-01", 10), { allocationPct: 40 }),
   mem("im-cam-ayu", "ini-cam-uas", "u-ayu", ["engineer"], wib("2026-07-01", 10), { allocationPct: 25 }),
-  mem("im-cam-lia", "ini-cam-uas", "u-lia", ["secretary"], wib("2026-07-01", 10), { allocationPct: 20 }),
+  mem("im-cam-lia", "ini-cam-uas", "u-lia", ["secretary"], wib("2026-07-01", 10), { allocationPct: 20, allocationFactor: 0.5, weightNote: "Shared with SBS document control (§6.4)" }),
   // NHS seabed — Kevin holds both leadership roles (counts once for capacity)
   mem("im-nhs-sinta", "ini-nhs-seabed", "u-sinta", ["initiator"], wib("2026-06-15", 10), { allocationPct: 10 }),
   mem("im-nhs-kevin", "ini-nhs-seabed", "u-kevin", ["project_lead", "technical_lead"], wib("2026-06-15", 10), { allocationPct: 40 }),
@@ -563,43 +575,69 @@ export const initiativeMembers: InitiativeMember[] = [
   mem("im-acd-ben", "ini-academy", "u-ben", ["initiator", "project_lead"], wib("2026-10-26", 20), { ...pendingTeam, allocationPct: 10 }),
 ];
 
-/* ───────────────────────── revenue (§4.4) ───────────────────────── */
+/* ───────────────────────── client payments (§8.1) ───────────────────────── */
+
+/** Payment entry: `collectedAt` sets the salary cycle (cut-off on the 20th, §8.2); the work period defaults to the billed month. */
+const pay = (id: string, initiativeId: string, workMonth: string, revenue: number, directCosts: number, basis: RevenueEntry["basis"], collected: string | null, note: string, cycle?: string): RevenueEntry => ({
+  id,
+  initiativeId,
+  month: cycle ?? (collected ? (Number(collected.slice(8, 10)) <= 20 ? collected.slice(0, 7) : nextMonthKey(collected.slice(0, 7))) : workMonth),
+  revenue,
+  directCosts,
+  basis,
+  received: collected != null,
+  collectedAt: collected ? wib(collected, 10) : null,
+  workPeriodStart: wib(`${workMonth}-01`, 0),
+  workPeriodEnd: lastDay(workMonth),
+  note,
+});
+function nextMonthKey(m: string) {
+  const [y, mo] = m.split("-").map(Number);
+  return new Date(Date.UTC(y, mo, 1)).toISOString().slice(0, 7);
+}
+function lastDay(m: string) {
+  const [y, mo] = m.split("-").map(Number);
+  return new Date(Date.UTC(y, mo, 1) - 7 * 3_600_000 - 1).toISOString();
+}
 
 export const revenueEntries: RevenueEntry[] = [
-  { id: "rev-cam-2026-08", initiativeId: "ini-cam-uas", month: "2026-08", revenue: 460 * M, directCosts: 40 * M, basis: "recognized", received: true, note: "Gap analysis & manual skeleton" },
-  { id: "rev-cam-2026-09", initiativeId: "ini-cam-uas", month: "2026-09", revenue: 620 * M, directCosts: 55 * M, basis: "recognized", received: true, note: "Manual rev B + task cards" },
-  { id: "rev-cam-2026-10", initiativeId: "ini-cam-uas", month: "2026-10", revenue: 300 * M, directCosts: 25 * M, basis: "recognized", received: true, note: "Mock audit & submission — project completed" },
-  { id: "rev-nhs-2026-08", initiativeId: "ini-nhs-seabed", month: "2026-08", revenue: 700 * M, directCosts: 60 * M, basis: "milestone", received: true, note: "Milestone 1 — baseline model (paid)" },
-  { id: "rev-nhs-2026-10", initiativeId: "ini-nhs-seabed", month: "2026-10", revenue: 500 * M, directCosts: 30 * M, basis: "milestone", received: false, note: "Milestone 2 — invoice outstanding (120-day terms); bonus distributes on receipt" },
-  { id: "rev-spl-2026-10", initiativeId: "ini-spl-crane", month: "2026-10", revenue: 1_100 * M, directCosts: 420 * M, basis: "recognized", received: true, note: "Batch 1 — RTG-01 to RTG-06" },
-  { id: "rev-spl-2026-11", initiativeId: "ini-spl-crane", month: "2026-11", revenue: 950 * M, directCosts: 380 * M, basis: "recognized", received: false, note: "Batch 2 — percentage of completion (forecast)" },
-  { id: "rev-sbs-2026-10", initiativeId: "ini-sbs-pdm", month: "2026-10", revenue: 1_400 * M, directCosts: 650 * M, basis: "recognized", received: true, note: "BF-2 cooling & blower assets" },
-  { id: "rev-sbs-2026-11", initiativeId: "ini-sbs-pdm", month: "2026-11", revenue: 1_200 * M, directCosts: 520 * M, basis: "recognized", received: false, note: "BF-1 & stoves — percentage of completion (forecast)" },
+  pay("rev-cam-2026-08", "ini-cam-uas", "2026-07", 460 * M, 40 * M, "recognized", "2026-08-14", "Gap analysis & manual skeleton — billed July, collected 14 Aug"),
+  pay("rev-cam-2026-09", "ini-cam-uas", "2026-08", 620 * M, 55 * M, "recognized", "2026-09-11", "Manual rev B + task cards — billed August, collected 11 Sep"),
+  pay("rev-cam-2026-10", "ini-cam-uas", "2026-09", 300 * M, 25 * M, "recognized", "2026-10-16", "Mock audit & submission — collected 16 Oct; project completed"),
+  { ...pay("rev-nhs-2026-08", "ini-nhs-seabed", "2026-07", 700 * M, 60 * M, "milestone", "2026-08-19", "Milestone 1 — baseline model accepted, collected 19 Aug"), workPeriodStart: wib("2026-07-13", 0), workPeriodEnd: wib("2026-08-07", 17) },
+  { ...pay("rev-nhs-2026-10", "ini-nhs-seabed", "2026-10", 500 * M, 30 * M, "milestone", null, "Milestone 2 — accepted, invoice outstanding (120-day terms); bonus follows collection (§8.1)"), workPeriodStart: wib("2026-08-08", 0), workPeriodEnd: wib("2026-10-09", 17) },
+  pay("rev-spl-2026-10", "ini-spl-crane", "2026-10", 1_100 * M, 420 * M, "recognized", "2026-10-20", "Batch 1 — RTG-01 to RTG-06, collected 20 Oct (inside the cut-off)"),
+  pay("rev-spl-2026-11", "ini-spl-crane", "2026-11", 950 * M, 380 * M, "recognized", null, "Batch 2 — billed on completion; not yet collected"),
+  pay("rev-sbs-2026-10", "ini-sbs-pdm", "2026-10", 1_400 * M, 650 * M, "recognized", "2026-10-15", "BF-2 cooling & blower assets — 20% advance counted once the work was delivered (§8.1)"),
+  pay("rev-sbs-2026-11", "ini-sbs-pdm", "2026-11", 1_200 * M, 520 * M, "recognized", null, "BF-1 & stoves — billed on completion; not yet collected"),
 ];
 
-/* ───────────────────────── monthly runs (§6.1) — computed by the engine ───────────────────────── */
+/* ───────────────────────── monthly cycles (§8.2, §9.1) — computed by the engine ───────────────────────── */
 
-const RUN_PLAN: { month: string; overheads: number; certifiedAt: string; releasedAt: string | null }[] = [
-  { month: "2026-08", overheads: 250 * M, certifiedAt: wib("2026-08-24", 16), releasedAt: wib("2026-08-25", 11) },
-  // 220 M (not 300 M): with only CAM revenue in September a 300 M overhead fails break-even (−59.3 M).
-  { month: "2026-09", overheads: 220 * M, certifiedAt: wib("2026-09-24", 16), releasedAt: wib("2026-09-25", 11) },
-  { month: "2026-10", overheads: 700 * M, certifiedAt: wib("2026-10-24", 16), releasedAt: null },
+/** Finance's rolling three-month company figures, cash and fixed costs for each cycle (§9.1). */
+const RUN_PLAN: { month: string; companyRevenue: number; directCosts: number; overheads: number; cash: number; fixedCostsMonthly: number; certifiedAt: string; releasedAt: string | null }[] = [
+  { month: "2026-08", companyRevenue: 6_100 * M, directCosts: 1_250 * M, overheads: 3_900 * M, cash: 5_200 * M, fixedCostsMonthly: 1_300 * M, certifiedAt: wib("2026-08-21", 16), releasedAt: wib("2026-08-24", 11) },
+  { month: "2026-09", companyRevenue: 6_400 * M, directCosts: 1_300 * M, overheads: 3_950 * M, cash: 5_050 * M, fixedCostsMonthly: 1_300 * M, certifiedAt: wib("2026-09-23", 16), releasedAt: wib("2026-09-24", 11) },
+  { month: "2026-10", companyRevenue: 7_200 * M, directCosts: 1_900 * M, overheads: 4_000 * M, cash: 5_400 * M, fixedCostsMonthly: 1_350 * M, certifiedAt: wib("2026-10-23", 16), releasedAt: null },
 ];
 
 export const bonusRuns: BonusRun[] = (() => {
   const runs: BonusRun[] = [];
-  const paidYtd = new Map<string, number>();
   for (const plan of RUN_PLAN) {
-    const r = computeRun({ month: plan.month, initiatives, members: initiativeMembers, entries: revenueEntries, profiles: employeeProfiles, adjustments: [], overheads: plan.overheads, ebitda: EBITDA, paidYtd: new Map(paidYtd) });
+    const r = computeRun({ ...plan, initiatives, members: initiativeMembers, entries: revenueEntries, profiles: employeeProfiles, adjustments: [], carriedIn: carriedForward(runs, plan.month) });
     runs.push({
       id: `run-${plan.month}`,
       month: plan.month,
       status: plan.releasedAt ? "released" : "certified",
+      policyVersion: "4.0",
+      companyRevenue: plan.companyRevenue,
+      directCosts: plan.directCosts,
       overheads: plan.overheads,
-      ebitda: EBITDA,
-      shareOverrides: {},
-      partialDeferralPct: 0,
+      cash: plan.cash,
+      fixedCostsMonthly: plan.fixedCostsMonthly,
       operatingResult: r.operatingResult,
+      cashAfter: r.cashAfter,
+      payoutPct: r.payoutPct,
       totals: r.totals,
       lines: r.lines,
       certifiedById: "u-maria",
@@ -607,12 +645,11 @@ export const bonusRuns: BonusRun[] = (() => {
       releasedById: plan.releasedAt ? "u-ben" : null,
       releasedAt: plan.releasedAt,
     });
-    for (const l of r.lines) paidYtd.set(l.userId, (paidYtd.get(l.userId) ?? 0) + l.payable);
   }
   return runs;
 })();
 
-/* ───────────────────────── ledgers (§6.3, §6.4, §6.8) ───────────────────────── */
+/* ───────────────────────── ledgers (§9.3, §9.4, §11) ───────────────────────── */
 
 export const deferredBonuses: DeferredBonus[] = bonusRuns
   .filter((r) => r.status === "released")
@@ -625,60 +662,85 @@ export const deferredBonuses: DeferredBonus[] = bonusRuns
         initiativeId: l.initiativeId,
         userId: l.userId,
         amount: l.deferred,
-        vestAt: addMonths(paymentDate(r.month), initiatives.find((i) => i.id === l.initiativeId)?.deferralMonths ?? POLICY.deferral.minMonths),
+        vestAt: deferralVestDate(initiatives.find((i) => i.id === l.initiativeId)!),
         status: "pending" as const,
         releasedAmount: 0,
-        note: "High-risk deferral (§6.3)",
+        note: "High-risk deferral, released 6–12 months after project close (§9.3)",
       })),
   );
 
 export const probationOutcomes: ProbationOutcome[] = [];
 
-/** CAM disputed Rp 120 M of the September invoice → September net revenue restated at 500 M (costs unchanged). */
+/** CAM disputed Rp 120 M of the September invoice → credit note; September payment restated at Rp 500 M (costs unchanged). */
 export const clawbacks: Clawback[] = (() => {
-  const sep = bonusRuns.find((r) => r.month === "2026-09");
-  const line = sep?.lines.find((l) => l.initiativeId === "ini-cam-uas" && l.userId === "u-sinta");
   const cam = initiatives.find((i) => i.id === "ini-cam-uas")!;
-  const team = initiativeMembers.filter((m) => m.initiativeId === cam.id && m.consent === "accepted" && m.prcApproved);
-  const sinta = team.find((m) => m.userId === "u-sinta")!;
-  const { net } = netRevenue(500 * M, 55 * M);
-  const cap = Math.min(EBITDA * POLICY.poolCapEbitdaPct, POLICY.poolCapAbsolute);
-  const pool = Math.min(Math.max(0, net) * (cam.lockedSharePct ?? PROJECT_TYPE_META.A.share), cap);
-  const recalculated = (pool * memberWeight(sinta)) / team.reduce((s, m) => s + memberWeight(m), 0);
-  const originalPaid = line?.payable ?? 0;
+  const restated = revenueEntries.map((e) => (e.id === "rev-cam-2026-09" ? { ...e, revenue: 500 * M } : e));
+  const ctx = (entries: RevenueEntry[]) => ({ members: initiativeMembers, entries, profiles: employeeProfiles });
+  const share = (entries: RevenueEntry[]) => projectCycles(cam, ctx(entries), "2026-09").find((c) => c.month === "2026-09")?.members.find((m) => m.userId === "u-sinta")?.revShare ?? 0;
+  // the bonus allocated to Sinta for that cycle (paid now + deferred) vs the bonus on corrected figures (§9.4 "Amount")
+  const originalPaid = bonusRuns.find((r) => r.month === "2026-09")?.lines.find((l) => l.initiativeId === cam.id && l.userId === "u-sinta")?.gross ?? share(revenueEntries);
+  const recalculated = share(restated);
   const salary = employeeProfiles.find((p) => p.userId === "u-sinta")!.annualBaseSalary;
-  const schedule = clawbackSchedule(Math.max(0, originalPaid - recalculated), salary);
+  const base = { trigger: "revenue_reversal" as const, originalPaid, recalculated, personallyAtFault: false };
+  const schedule = clawbackSchedule(clawbackAmount(base), salary);
   return [
     {
       id: "cb-1",
       userId: "u-sinta",
       initiativeId: cam.id,
-      trigger: "revenue_reversal",
+      ...base,
       paidAt: paymentDate("2026-09"),
-      originalPaid,
-      recalculated,
-      personallyAtFault: false,
+      writtenAgreement: false,
       status: "identified",
       notifiedAt: null,
       months: schedule.months,
       monthlyDeduction: schedule.monthly,
       recovered: 0,
-      notes: "CAM disputed Rp 120 M of the September invoice (task cards outside the agreed scope) and a credit note was issued. September revenue restated from Rp 620 M to Rp 500 M with costs unchanged; the project pool falls from the 5 % EBITDA cap to the uncapped 50 % share, and Sinta's 2.5 / 6.5 share is recalculated. Other team members' differences are pending Finance review.",
+      notes: "CAM disputed Rp 120 M of the September invoice (task cards outside the agreed scope) and a credit note was issued — a revenue reversal (§9.4). The September payment is restated from Rp 620 M to Rp 500 M with costs unchanged; Sinta's 2.5 / 6.5 share of that cycle's pool is recalculated. Recovery order: deferred and carried-forward amounts, then future project bonuses, and only then salary with her written agreement. Other team members' differences are pending Finance review.",
       createdAt: wib("2026-11-03", 15),
     },
   ];
 })();
 
-export const shareAdjustments: ShareAdjustment[] = [
+/** §9.5 curve changes — none announced; the curve in force is 40 % → 10 % at Rp1.5 billion. */
+export const curveAdjustments: CurveAdjustment[] = [];
+
+/* ───────────────────────── team amendments (§6.8) ───────────────────────── */
+
+export const teamAmendments: TeamAmendment[] = [
   {
-    id: "sa-1",
-    type: "A",
-    fromPct: 0.5,
-    toPct: 0.45,
-    proposedAt: wib("2026-11-02", 16),
-    effectiveFrom: wib("2026-12-03", 0),
-    rationale: "Q4 margin pressure — three months of declining consulting profitability (§6.5)",
-    approvedById: "u-ben",
+    id: "am-sbs-1",
+    initiativeId: "ini-sbs-pdm",
+    proposedById: "u-dimas",
+    circulatedAt: wib("2026-09-29", 15),
+    effectiveDate: wib("2026-10-01", 0),
+    reason: "Vibration data labelling for BF-2 needs a second engineer; Rafi has the signal-processing background.",
+    change: { kind: "add", userId: "u-rafi", roles: ["engineer"], specialistWeight: null, weightOverride: null, allocationFactor: 1, consent: true },
+    votes: [
+      { userId: "u-dimas", vote: "for", at: wib("2026-09-29", 15) },
+      { userId: "u-arif", vote: "for", at: wib("2026-09-29", 16) },
+      { userId: "u-kevin", vote: "for", at: wib("2026-09-30", 9) },
+      { userId: "u-nadia", vote: "for", at: wib("2026-09-30", 10) },
+    ],
+    status: "passed",
+    prcDecision: null,
+    recordedAt: wib("2026-09-30", 14),
+  },
+  {
+    id: "am-spl-1",
+    initiativeId: "ini-spl-crane",
+    proposedById: "u-fajar",
+    circulatedAt: wib("2026-11-02", 10),
+    effectiveDate: wib("2026-11-20", 17),
+    reason: "Bima's last working day is 20 Nov (resignation). His procurement specialist role ends that day; payments for work before then are still his (§6.5, §10).",
+    change: { kind: "remove", memberId: "im-spl-bima" },
+    votes: [
+      { userId: "u-fajar", vote: "for", at: wib("2026-11-02", 10) },
+      { userId: "u-rani", vote: "for", at: wib("2026-11-03", 11) },
+    ],
+    status: "open",
+    prcDecision: null,
+    recordedAt: null,
   },
 ];
 
@@ -691,34 +753,34 @@ export const auditLog: AuditEntry[] = (
   [
     [wib("2026-06-24", 14), "u-sinta", "initiative", "ini-nhs-seabed", "submitted to PRC", "PRC-2026-001"],
     [wib("2026-06-25", 9), "u-maria", "initiative", "ini-nhs-seabed", "acknowledged & screened", "Primary reviewer assigned"],
-    [wib("2026-07-10", 15), "u-ben", "initiative", "ini-nhs-seabed", "PRC decision: approved", "Project code PRJ-2026-001 · 30 % deferral (payment terms 120 days)"],
+    [wib("2026-07-10", 15), "u-ben", "initiative", "ini-nhs-seabed", "PRC decision: approved", "Project code PRJ-2026-001 · 30 % deferral (payment terms 120 days, §9.3)"],
     [wib("2026-07-08", 11), "u-sinta", "initiative", "ini-cam-uas", "submitted to PRC", "PRC-2026-002"],
     [wib("2026-07-24", 15), "u-ben", "initiative", "ini-cam-uas", "PRC decision: approved", "Project code PRJ-2026-002"],
-    [wib("2026-08-24", 16), "u-maria", "run", "run-2026-08", "break-even test passed — certified by CFO (2026-08)", `Operating result ${rp(run("2026-08").operatingResult)}`],
-    [wib("2026-08-25", 11), "u-ben", "run", "run-2026-08", "PRC authorised release for 2026-08 — payment 2026-09-05", `${deferredBonuses.filter((d) => d.month === "2026-08").length} deferred entries created`],
-    [wib("2026-09-02", 10), "u-dina", "employee", "u-rafi", "HR record created — probationary hire", "Probation ends 2026-12-01; acknowledgment form signed (§6.8)"],
+    [wib("2026-08-24", 16), "u-maria", "run", "run-2026-08", "break-even test passed — certified by CFO (2026-08)", `Rolling three-month operating result ${rp(run("2026-08").operatingResult)}; cash floor met`],
+    [wib("2026-08-25", 11), "u-ben", "run", "run-2026-08", "PRC authorised release for 2026-08 — paid with the 25 Aug salary", `${deferredBonuses.filter((d) => d.month === "2026-08").length} deferred entries created`],
+    [wib("2026-09-02", 10), "u-dina", "employee", "u-rafi", "HR record created — probationary hire", "Probation ends 2026-12-01; Annex B and Annex C signed (§11.2)"],
     [wib("2026-09-15", 13), "u-rani", "initiative", "ini-spl-crane", "submitted to PRC", "PRC-2026-004"],
-    [wib("2026-09-24", 16), "u-maria", "run", "run-2026-09", "break-even test passed — certified by CFO (2026-09)", `Operating result ${rp(run("2026-09").operatingResult)}`],
-    [wib("2026-09-25", 11), "u-ben", "run", "run-2026-09", "PRC authorised release for 2026-09 — payment 2026-10-05", `${deferredBonuses.filter((d) => d.month === "2026-09").length} deferred entries created`],
+    [wib("2026-09-24", 16), "u-maria", "run", "run-2026-09", "break-even test passed — certified by CFO (2026-09)", `Rolling three-month operating result ${rp(run("2026-09").operatingResult)}; cash floor met`],
+    [wib("2026-09-25", 11), "u-ben", "run", "run-2026-09", "PRC authorised release for 2026-09 — paid with the 25 Sep salary", `${deferredBonuses.filter((d) => d.month === "2026-09").length} deferred entries created`],
     [wib("2026-09-28", 15), "u-ben", "initiative", "ini-spl-crane", "PRC decision: approved", "Project code PRJ-2026-003 · Rani and Fajar recused"],
     [wib("2026-10-01", 9), "u-fajar", "initiative", "ini-spl-crane", "kicked off — project active"],
-    [wib("2026-10-01", 10), "u-dimas", "member", "im-sbs-rafi", "proposed for team", "Engineer — probationary employee, bonuses accrue until probation ends (§6.8)"],
+    [wib("2026-10-01", 10), "u-dimas", "member", "im-sbs-rafi", "proposed for team", "Engineer by team amendment (§6.8) — probationary, bonuses held until probation ends (§11)"],
     [wib("2026-10-06", 14), "u-arif", "initiative", "ini-sbs-pdm", "submitted to PRC", "PRC-2026-006"],
     [wib("2026-10-14", 11), "u-nadia", "initiative", "ini-twu-nrw", "submitted to PRC", "PRC-2026-007"],
-    [wib("2026-10-20", 10), "u-dina", "employee", "u-bima", "separation recorded: resignation", "Notice 2026-10-20, effective 2026-11-20 — unpaid bonuses forfeited from notice date (§4.5)"],
-    [wib("2026-10-20", 15), "u-ben", "initiative", "ini-sbs-pdm", "PRC decision: approved", "Project code PRJ-2026-004 · 30 % deferral (net revenue above US$200k)"],
+    [wib("2026-10-20", 10), "u-dina", "employee", "u-bima", "separation recorded: resignation", "Notice 2026-10-20, last working day 2026-11-20 — no new roles; bonuses on revenue collected up to the last working day are paid (§10)"],
+    [wib("2026-10-20", 15), "u-ben", "initiative", "ini-sbs-pdm", "PRC decision: approved", "Project code PRJ-2026-004 · 30 % deferral (projected net revenue over Rp1 billion, §9.3)"],
     [wib("2026-10-21", 9), "u-dimas", "initiative", "ini-sbs-pdm", "kicked off — project active"],
     [wib("2026-10-21", 13), "u-dimas", "initiative", "ini-mcd-light", "submitted to PRC", "PRC-2026-010"],
-    [wib("2026-10-24", 16), "u-maria", "run", "run-2026-10", "break-even test passed — certified by CFO (2026-10)", `Operating result ${rp(run("2026-10").operatingResult)}`],
+    [wib("2026-10-24", 16), "u-maria", "run", "run-2026-10", "break-even test passed — certified by CFO (2026-10)", `Rolling three-month operating result ${rp(run("2026-10").operatingResult)}; cash floor met`],
     [wib("2026-10-28", 15), "u-ben", "initiative", "ini-mcd-light", "PRC decision: rejected", "Discovery-stage client without LOI; margin below threshold (1–3)"],
     [wib("2026-10-30", 15), "u-ben", "initiative", "ini-twu-nrw", "PRC decision: conditional", "Raise contingency to 15% and add a QA/QC specialist before kickoff (3–1)"],
     [wib("2026-10-31", 11), "u-dimas", "initiative", "ini-mcd-light", "appeal filed with Executive Committee", "Client LOI with 20 % advance expected in November"],
-    [wib("2026-10-31", 16), "u-sinta", "initiative", "ini-cam-uas", "completed — final reconciliation due within 30 days (§4.4)"],
+    [wib("2026-10-31", 16), "u-sinta", "initiative", "ini-cam-uas", "completed — final reconciliation due within 30 days (§8.3)"],
     [wib("2026-11-02", 10), "u-sinta", "initiative", "ini-nhs-asv", "submitted to PRC", "PRC-2026-011"],
-    [wib("2026-11-02", 16), "u-ben", "policy", "A", "revenue share Type A: 50% → 45% from 2026-12-03", "Q4 margin pressure — three months of declining consulting profitability (§6.5)"],
+    [wib("2026-10-29", 17), "u-ben", "policy", "4.0", "Policy v4.0 draft circulated for approval", "Regressive revenue-share curve, UMKM tax, Team Allocation Ledger, Type C minimum; pilot from 1 Jan 2027 (§15.2)"],
     [wib("2026-11-03", 9, 30), "u-fajar", "initiative", "ini-nhs-asv", "acknowledged & screened", "Primary reviewer assigned"],
-    [wib("2026-11-03", 14), "u-fajar", "initiative", "ini-nhs-asv", "detailed evaluation started", "Type C with warranty — 12-month deferral proposed"],
-    [wib("2026-11-03", 15), "u-maria", "clawback", "cb-1", "clawback trigger identified by Finance (§6.4)", `revenue_reversal — ${rp(clawbacks[0].originalPaid - clawbacks[0].recalculated)} over ${clawbacks[0].months} months`],
+    [wib("2026-11-03", 14), "u-fajar", "initiative", "ini-nhs-asv", "detailed evaluation started", "Type C with warranty — Tier 3 review, 12-month deferral proposed; standard bonus Rp2.5 M a month proposed (§8.6)"],
+    [wib("2026-11-03", 15), "u-maria", "clawback", "cb-1", "clawback trigger identified by Finance (§9.4)", `revenue_reversal — ${rp(clawbackAmount(clawbacks[0]))}; recovery from deferred / future bonuses first`],
     [at(0, 8), "u-kevin", "initiative", "ini-ptt-insp", "submitted to PRC", "PRC-2026-012"],
   ] as [string, string, AuditEntry["entity"], string, string, string?][]
 )
@@ -734,6 +796,7 @@ export const initiativeSeed = {
   deferredBonuses,
   probationOutcomes,
   clawbacks,
-  shareAdjustments,
+  curveAdjustments,
+  teamAmendments,
   auditLog,
 };
