@@ -43,7 +43,7 @@ function LeadershipCapacity({ ini }: { ini: Initiative }) {
   }, [ini.id, initiatives, members]);
 
   return (
-    <Card title="Leadership capacity" icon={Layers} cite="5.1" bodyClassName="p-0">
+    <Card title="Leadership capacity" icon={Layers} cite="7.3" bodyClassName="p-0">
       {leads.length === 0 ? (
         <p className="px-4 py-6 text-center text-xs text-sg-dim">No Project Lead or Technical Lead on this project yet.</p>
       ) : (
@@ -122,7 +122,7 @@ function LeadershipCapacity({ ini }: { ini: Initiative }) {
         </div>
       )}
       <p className="border-t border-sg-line px-4 py-2 text-2xs text-sg-dim">
-        Capacity factors: Type A 0.25 · Type B 0.5 · Type C 1.0. Holding both lead roles on one project counts once. Includes projects awaiting PRC review.
+        Capacity factors: Type A 0.25 · Type B 0.5 · Type C 1.0; the total may not exceed 2.0 at any time. Holding both lead roles on one project counts once. Includes projects awaiting PRC review. Lead roles also count toward the time agreed with the line manager (§7.1).
       </p>
     </Card>
   );

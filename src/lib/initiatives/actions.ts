@@ -81,12 +81,15 @@ export interface InitiativeActions {
   deleteRevenueEntry: (id: string) => void;
 
   /* monthly cycle (§8.2, §9.1–9.2) */
-  recordRun: (result: RunResult, inputs: Pick<BonusRun, "companyRevenue" | "directCosts" | "overheads" | "cash" | "fixedCostsMonthly">, status: "draft" | "failed" | "certified") => string;
+  /** `certifiedById` records the CFO when someone else enters her certification (audit shows who recorded it). */
+  recordRun: (result: RunResult, inputs: Pick<BonusRun, "companyRevenue" | "directCosts" | "overheads" | "cash" | "fixedCostsMonthly">, status: "draft" | "failed" | "certified", opts?: { certifiedById?: string }) => string;
   releaseRun: (id: string) => void;
 
   /* ledgers (§9.3, §9.4, §11) */
   releaseDeferred: (id: string, amount?: number, note?: string) => void;
   forfeitDeferred: (id: string, note: string) => void;
+  /** §9.3 reduce a pending deferred amount (warranty/rework costs, written-off invoice, misstated forecast) or offset a clawback (§9.4) without paying it. */
+  reduceDeferred: (id: string, amount: number, note: string) => void;
   completeProbation: (userId: string) => void;
   failProbation: (userId: string) => void;
   createClawback: (input: Omit<Clawback, "id" | "createdAt" | "recovered" | "status" | "notifiedAt">) => string;
@@ -443,7 +446,7 @@ export function createInitiativeActions<S extends CoreState>(set: SetFn<S>, get:
     },
     deleteRevenueEntry: (id) => set((s) => ({ revenueEntries: s.revenueEntries.filter((e) => e.id !== id) }) as Partial<S>),
 
-    recordRun: (result, inputs, status) => {
+    recordRun: (result, inputs, status, opts = {}) => {
       const existing = get().bonusRuns.find((r) => r.month === result.month);
       if (existing && existing.status === "released") return existing.id;
       const id = existing?.id ?? uid("run");
@@ -459,14 +462,15 @@ export function createInitiativeActions<S extends CoreState>(set: SetFn<S>, get:
         payoutPct: result.payoutPct,
         totals: result.totals,
         lines: result.lines,
-        certifiedById: status === "certified" ? get().currentUserId : null,
+        certifiedById: status === "certified" ? opts.certifiedById ?? get().currentUserId : null,
         certifiedAt: status === "certified" ? ts : null,
         releasedById: null,
         releasedAt: null,
       };
       set((s) => ({ bonusRuns: existing ? s.bonusRuns.map((r) => (r.id === id ? run : r)) : [...s.bonusRuns, run] }) as Partial<S>);
       const verdict = result.passed ? "break-even test and cash check passed" : `checks failed — ${(result.payoutPct * 100).toFixed(2)}% pro rata, rest carried forward (§9.2)`;
-      log([audit("run", id, status === "certified" ? `${verdict} — certified by CFO (${result.month})` : status === "failed" ? `checks failed (${result.month})` : `provisional bonuses saved (${result.month})`, `Operating result ${Math.round(result.operatingResult)} · cash after ${Math.round(result.cashAfter)}`)]);
+      const onBehalf = status === "certified" && opts.certifiedById && opts.certifiedById !== get().currentUserId ? ` — recorded by ${userName(get().currentUserId)} for ${userName(opts.certifiedById)}` : "";
+      log([audit("run", id, status === "certified" ? `${verdict} — certified by CFO (${result.month})${onBehalf}` : status === "failed" ? `checks failed (${result.month})` : `provisional bonuses saved (${result.month})`, `Operating result ${Math.round(result.operatingResult)} · cash after ${Math.round(result.cashAfter)}`)]);
       return id;
     },
     releaseRun: (id) => {
@@ -491,6 +495,14 @@ export function createInitiativeActions<S extends CoreState>(set: SetFn<S>, get:
     forfeitDeferred: (id, note) => {
       set((s) => ({ deferredBonuses: s.deferredBonuses.map((d) => (d.id === id ? { ...d, status: "forfeited", note } : d)) }) as Partial<S>);
       log([audit("deferred", id, "deferred bonus reduced / forfeited", note)]);
+    },
+    reduceDeferred: (id, amount, note) => {
+      const d = get().deferredBonuses.find((x) => x.id === id);
+      if (!d || d.status !== "pending") return;
+      const cut = Math.min(d.amount, Math.max(0, amount));
+      const left = d.amount - cut;
+      set((s) => ({ deferredBonuses: s.deferredBonuses.map((x) => (x.id === id ? { ...x, amount: left, status: left <= 0 ? ("forfeited" as const) : x.status, note: `${x.note} · reduced Rp${Math.round(cut).toLocaleString("en-US")}: ${note}` } : x)) }) as Partial<S>);
+      log([audit("deferred", id, `deferred bonus reduced by Rp${Math.round(cut).toLocaleString("en-US")}`, note)]);
     },
     completeProbation: (userId) => {
       const amount = probationBalance(userId, get().bonusRuns) - get().probationOutcomes.filter((o) => o.userId === userId).reduce((s, o) => s + o.amount, 0);

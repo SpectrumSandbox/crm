@@ -4,7 +4,7 @@
  * examples (§16) by scripts/verify-policy.ts.
  */
 import type { BonusLine, BonusRun, Clawback, CurveAdjustment, DeferredBonus, EmployeeProfile, Initiative, InitiativeMember, ProjectRole, ProjectType, RevenueEntry } from "./types";
-import { CURVE, EMPLOYMENT_META, POLICY, PROJECT_TYPE_META, ROLE_META, SPECIALIST_RANGE, type ApprovalTier, type Curve } from "./policy";
+import { CURVE, EMPLOYMENT_META, POLICY, POLICY_DATED, POLICY_EFFECTIVE, PROJECT_TYPE_META, ROLE_META, SPECIALIST_RANGE, type ApprovalTier, type Curve } from "./policy";
 
 const DAY = 86_400_000;
 const WIB = 7 * 3_600_000;
@@ -328,6 +328,7 @@ export function participationEligibility(p: EmployeeProfile | undefined, atIso =
   if (p.unpaidLeaveDays > POLICY.unpaidLeaveMaxDays) blockers.push(`Unpaid leave over ${POLICY.unpaidLeaveMaxDays} consecutive days (§3.2)`);
   if (p.employmentType === "fixed_term_contract" && p.contractEndDate && Date.parse(p.contractEndDate) <= at) blockers.push("Fixed-term contract has ended (§3.1)");
   if (!p.acknowledgmentSignedAt) warnings.push("Project Participation Agreement (Annex B) not signed — required to join and before any payment (§3.1, §15.1)");
+  else if (Date.parse(p.acknowledgmentSignedAt) < Date.parse(`${POLICY_DATED}T00:00:00+07:00`)) warnings.push("Annex B signed under Version 3.0 — sign the updated agreement before the first v4.0 payment (§15.1)");
   if (p.employmentType === "probationary") warnings.push("Probationary — bonuses are calculated normally but held until probation ends; signs Annex C (§11)");
   if (p.employmentType === "part_time") warnings.push(`Part-time — allocation factor capped at ${maxAllocationFactor(p)} (§3.1)`);
   if (p.employmentType === "fixed_term_contract") warnings.push(p.contractEndDate ? `Fixed-term — roles only for work periods up to ${p.contractEndDate.slice(0, 10)} (§3.1)` : "Fixed-term — record the contract end date (§3.1)");
@@ -345,6 +346,9 @@ export function paymentOutcome(p: EmployeeProfile | undefined, payIso: string, c
   if (!p) return { kind: "hold", reason: "No HR record — Finance re-checks status before payment (§3.5)" };
   if (!EMPLOYMENT_META[p.employmentType].eligible) return { kind: "forfeit", reason: `${EMPLOYMENT_META[p.employmentType].label} — not eligible (§3.2)` };
   if (!p.acknowledgmentSignedAt) return { kind: "hold", reason: "Annex B Project Participation Agreement not signed — paid once signed (§15.1)" };
+  // §15.1 every participant signs the updated (v4.0) agreement before the first payment under Version 4.0
+  if (Date.parse(payIso) >= Date.parse(`${POLICY_EFFECTIVE}T00:00:00+07:00`) && Date.parse(p.acknowledgmentSignedAt) < Date.parse(`${POLICY_DATED}T00:00:00+07:00`))
+    return { kind: "hold", reason: "Annex B signed before Version 4.0 — sign the updated agreement before the first v4.0 payment (§15.1)" };
   const sep = p.separation;
   if (sep && Date.parse(sep.effectiveAt) <= Date.parse(payIso)) {
     const last = Date.parse(sep.effectiveAt);

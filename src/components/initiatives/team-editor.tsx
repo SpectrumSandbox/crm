@@ -1,17 +1,22 @@
 "use client";
 
 /*
- * Reusable team editor for an initiative (§4 roles & weights, §5.1 capacity, §5.3 removal, §7 team changes).
- * Used by the proposal form (mode "proposal") and the initiative detail page (mode "live").
+ * Team editor for an initiative — Policy v4.0.
+ *  · proposal mode: the Role and Weight Agreement (§6.7, Annex D Part 1) is edited directly: roles (weights add up, §6.3),
+ *    specialist weight (§6.2), allocation factor (§6.4), agreed non-standard weight with a reason, line manager agreement (§3.1)
+ *    and signature; eligibility (§3), leadership capacity (§7.3) and concurrent non-lead roles (§7.1) are checked inline.
+ *  · live mode (after approval): changes go through §6.8 amendments voted by the current team (Annex D Part 2); a passed
+ *    amendment updates the Team Allocation Ledger (Annex D Part 3), which is shown with its closed rows.
+ *    A live project with no ledger yet (e.g. an ongoing project registered retroactively) is set up directly (§15.1).
  */
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, BadgeCheck, Ban, Check, ChevronDown, ChevronRight, CircleAlert, Info, Lock, Pencil, Plus, Scale, ShieldCheck, Trash2, TriangleAlert, UserCheck, UserMinus, UserPlus, Users, X } from "lucide-react";
+import { BadgeCheck, Ban, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Gavel, History, Info, Lock, Pencil, Plus, Scale, Send, ShieldCheck, Trash2, TriangleAlert, UserCheck, UserMinus, UserPlus, Users, X } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
-import { PROJECT_ROLES, type Initiative, type InitiativeMember, type ProjectRole } from "@/lib/initiatives/types";
-import { capacityCheck, concurrentMemberships, memberWeight, participationEligibility, proposalEconomics, splitBonus } from "@/lib/initiatives/engine";
-import { POLICY, PROJECT_TYPE_META, ROLE_META, SPECIALIST_RANGE } from "@/lib/initiatives/policy";
-import { cn, formatDate, formatIDR, relativeTime, spectrumDot } from "@/lib/utils";
+import { PROJECT_ROLES, type EmployeeProfile, type Initiative, type InitiativeMember, type ProjectRole, type TeamAmendment } from "@/lib/initiatives/types";
+import { addBusinessDays, capacityCheck, concurrentNonLeadRoles, effectiveWeight, maxAllocationFactor, memberWeight, participationEligibility, proposalEconomics, splitBonus } from "@/lib/initiatives/engine";
+import { ALLOCATION_FACTORS, POLICY, PROJECT_TYPE_META, ROLE_META, SPECIALIST_GUIDE, SPECIALIST_RANGE } from "@/lib/initiatives/policy";
+import { cn, formatDate, formatIDR, relativeTime, spectrumDot, toDateInput } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Select, Textarea } from "@/components/ui/input";
 import { Avatar, Chip, EmptyState } from "@/components/ui/misc";
@@ -19,44 +24,61 @@ import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger, Modal, Popover, Po
 import { CapacityMeter, Cite, EligibilityBadge, Money, Pct, RoleChips } from "./shared";
 
 type Mode = "proposal" | "live";
-type Dialog = { kind: "override"; memberId: string } | { kind: "removal"; memberId: string } | { kind: "transfer" } | { kind: "apply" } | null;
+type Dialog = { kind: "override"; memberId: string } | { kind: "removal"; memberId: string } | { kind: "amend"; preset?: Partial<AmendDraft> } | null;
 
 const DAY = 86_400_000;
 const SPECIALIST_OPTIONS = Array.from({ length: Math.round((SPECIALIST_RANGE[1] - SPECIALIST_RANGE[0]) * 10) + 1 }, (_, i) => Math.round((SPECIALIST_RANGE[0] + i * 0.1) * 10) / 10);
 const ASSIGNABLE_ROLES = PROJECT_ROLES.filter((r) => r !== "initiator");
+const NON_LEAD: ProjectRole[] = ["engineer", "secretary", "specialist"];
+/** WIB midnight of a yyyy-mm-dd date — amendments take effect from the start of their effective date. */
+const startOfDay = (d: string) => new Date(`${d}T00:00:00+07:00`).toISOString();
+const todayInput = () => toDateInput(new Date().toISOString());
 
-/* ───────────────────────── candidate checks (§2.1, §5.1, §6.8) ───────────────────────── */
+const isOpenRow = (m: InitiativeMember, now = Date.now()) => !m.leftAt || Date.parse(m.leftAt) > now;
+const hasStarted = (m: InitiativeMember, now = Date.now()) => Date.parse(m.joinedAt) <= now;
+
+/* ───────────────────────── candidate checks (§3, §7.1, §7.3) ───────────────────────── */
 
 interface CandidateCheck {
   blockers: string[];
   warnings: string[];
   probationary: boolean;
   leadership: boolean;
-  concurrent: number;
+  nonLead: number;
+  maxA: number;
   capacity: ReturnType<typeof capacityCheck>;
 }
 
-function useCandidateCheck(userId: string, roles: ProjectRole[], initiative: Initiative | undefined): CandidateCheck | null {
+function candidateCheck(userId: string, roles: ProjectRole[], allocationFactor: number, initiative: Initiative, ctx: { initiatives: Initiative[]; members: InitiativeMember[]; profiles: EmployeeProfile[] }, effectiveIso?: string): CandidateCheck {
+  const profile = ctx.profiles.find((p) => p.userId === userId);
+  const elig = participationEligibility(profile, effectiveIso);
+  const leadership = roles.some((r) => ROLE_META[r].leadership);
+  const capacity = capacityCheck(userId, initiative, roles, ctx.initiatives, ctx.members);
+  const nonLead = concurrentNonLeadRoles(userId, ctx.initiatives, ctx.members, initiative.id);
+  const maxA = maxAllocationFactor(profile);
+  const blockers = [...elig.blockers];
+  if (leadership && !capacity.ok)
+    blockers.push(`Leadership capacity would reach ${capacity.after.toFixed(2)} of ${POLICY.leadershipCapacity.toFixed(1)} (${capacity.before.toFixed(2)} used + ${capacity.adds.toFixed(2)} for a Type ${initiative.type} lead role) — §7.3`);
+  if (allocationFactor > maxA + 1e-9) blockers.push(`Part-time — allocation factor may not exceed ${maxA} (contracted hours ÷ full-time, §3.1)`);
+  const warnings = elig.warnings.filter((w) => !w.startsWith("Probationary") && !w.startsWith("Part-time") && !w.startsWith("Fixed-term —"));
+  if (profile?.employmentType === "fixed_term_contract" && profile.contractEndDate)
+    warnings.push(
+      Date.parse(profile.contractEndDate) < Date.parse(initiative.endDate)
+        ? `Fixed-term contract ends ${formatDate(profile.contractEndDate, "medium")}, before the contracted end — the ledger row must end then (§3.1)`
+        : `Fixed-term (PKWT) until ${formatDate(profile.contractEndDate, "medium")} — roles only for work periods within the contract (§3.1)`,
+    );
+  else if (profile?.employmentType === "fixed_term_contract") warnings.push("Fixed-term — record the contract end date (§3.1)");
+  if (profile?.employmentType === "part_time") warnings.push(`Part-time — allocation factor capped at ${maxA} (§3.1)`);
+  if (roles.some((r) => NON_LEAD.includes(r)) && nonLead >= POLICY.maxConcurrentNonLeadRoles)
+    warnings.push(`Already holds non-lead roles on ${nonLead} live project${nonLead === 1 ? "" : "s"} — a ${nonLead + 1}th needs line manager and PRC approval (max ${POLICY.maxConcurrentNonLeadRoles}, §7.1)`);
+  return { blockers, warnings: [...new Set(warnings)], probationary: profile?.employmentType === "probationary", leadership, nonLead, maxA, capacity };
+}
+
+function useCandidateCheck(userId: string, roles: ProjectRole[], allocationFactor: number, initiative: Initiative | undefined, effectiveIso?: string): CandidateCheck | null {
   const initiatives = useCrm((s) => s.initiatives);
   const members = useCrm((s) => s.initiativeMembers);
   const profiles = useCrm((s) => s.employeeProfiles);
-  return useMemo(() => {
-    if (!userId || !initiative) return null;
-    const profile = profiles.find((p) => p.userId === userId);
-    const elig = participationEligibility(profile);
-    const leadership = roles.some((r) => ROLE_META[r].leadership);
-    const capacity = capacityCheck(userId, initiative, roles, initiatives, members);
-    const concurrent = concurrentMemberships(userId, initiatives, members, initiative.id);
-    const blockers = [...elig.blockers];
-    if (leadership && !capacity.ok)
-      blockers.push(
-        `Leadership capacity would reach ${capacity.after.toFixed(2)} of ${POLICY.leadershipCapacity.toFixed(1)} (${capacity.before.toFixed(2)} already used + ${capacity.adds.toFixed(2)} for a Type ${initiative.type} lead role). Project/Technical Lead roles count 0.25 (A), 0.5 (B) or 1.0 (C) each and must not exceed 2.0 (§5.1).`,
-      );
-    const warnings = elig.warnings.filter((w) => !w.startsWith("Probationary"));
-    if (concurrent >= POLICY.maxConcurrentMemberships)
-      warnings.push(`Already on ${concurrent} live project${concurrent === 1 ? "" : "s"} — the policy recommends no more than ${POLICY.maxConcurrentMemberships} concurrent memberships (§5.1). Allowed, but confirm workload with the direct manager.`);
-    return { blockers, warnings, probationary: profile?.employmentType === "probationary", leadership, concurrent, capacity };
-  }, [userId, roles, initiative, initiatives, members, profiles]);
+  return useMemo(() => (userId && initiative ? candidateCheck(userId, roles, allocationFactor, initiative, { initiatives, members, profiles }, effectiveIso) : null), [userId, roles, allocationFactor, initiative, initiatives, members, profiles, effectiveIso]);
 }
 
 function CandidateNotices({ check, ack, onAck }: { check: CandidateCheck | null; ack: boolean; onAck: (v: boolean) => void }) {
@@ -66,8 +88,8 @@ function CandidateNotices({ check, ack, onAck }: { check: CandidateCheck | null;
       {check.blockers.length > 0 && (
         <div className="rounded-lg border border-soft-red/40 bg-soft-red/10 p-2.5 text-xs text-soft-red">
           <div className="mb-1 flex items-center gap-1.5 font-semibold">
-            <Ban className="size-3.5" /> Cannot be added
-            <Cite s="2.1" />
+            <Ban className="size-3.5" /> Cannot take this role
+            <Cite s="3.2" />
           </div>
           <ul className="list-disc space-y-0.5 pl-5">
             {check.blockers.map((b) => (
@@ -90,31 +112,29 @@ function CandidateNotices({ check, ack, onAck }: { check: CandidateCheck | null;
       {check.probationary && check.blockers.length === 0 && (
         <div className="rounded-lg border border-soft-orange/40 bg-soft-orange/10 p-2.5 text-xs text-soft-orange">
           <div className="mb-1 flex items-center gap-1.5 font-semibold">
-            <CircleAlert className="size-3.5" /> Probationary employee — bonus withholding
-            <Cite s="6.8" />
+            <CircleAlert className="size-3.5" /> Probationary employee — bonuses held until probation ends
+            <Cite s="11.3" />
           </div>
           <p className="text-sg-text">
-            Bonuses earned during probation are calculated monthly but withheld, and paid as a Probation Completion Bonus within 30 days of successfully completing probation. If probation is not completed (resignation, termination or failed probation), the accumulated amount is forfeited in full.
+            Bonuses are calculated normally but held, then paid as a Probation Completion Bonus within 30 days of confirmation. If employment ends in probation the held balance is paid with final pay, unless dismissed for a serious violation. In a Type C month with a top-up, the share is paid with salary (§8.6). The employee signs Annex C.
           </p>
           <label className="mt-2 flex cursor-pointer items-center gap-2 font-semibold text-sg-white">
             <input type="checkbox" checked={ack} onChange={(e) => onAck(e.target.checked)} className="size-3.5 accent-sg-white" />
-            The employee has been informed and acknowledges the withholding
+            Annex C probationary acknowledgment signed
           </label>
         </div>
       )}
       {check.leadership && check.blockers.length === 0 && (
         <div className="flex items-center gap-2 text-2xs text-sg-dim">
           Leadership capacity after this role: <span className="sg-num font-semibold text-sg-muted">{check.capacity.after.toFixed(2)}</span> / {POLICY.leadershipCapacity.toFixed(1)}
-          <Cite s="5.1" />
+          <Cite s="7.3" />
         </div>
       )}
     </div>
   );
 }
 
-function canProceed(check: CandidateCheck | null, ack: boolean) {
-  return !!check && check.blockers.length === 0 && (!check.probationary || ack);
-}
+const canProceed = (check: CandidateCheck | null, ack: boolean) => !!check && check.blockers.length === 0 && (!check.probationary || ack);
 
 function RoleToggles({ value, onChange, roles, disabledRoles = {} }: { value: ProjectRole[]; onChange: (v: ProjectRole[]) => void; roles: readonly ProjectRole[]; disabledRoles?: Partial<Record<ProjectRole, string>> }) {
   return (
@@ -144,12 +164,44 @@ function RoleToggles({ value, onChange, roles, disabledRoles = {} }: { value: Pr
   );
 }
 
+/** §6.2 specialist weight with the guide's anchors labelled. */
+function SpecialistSelect({ value, onChange, className }: { value: number; onChange: (v: number) => void; className?: string }) {
+  return (
+    <Select aria-label="Specialist weight" value={value.toFixed(1)} onChange={(e) => onChange(Number(e.target.value))} wrapperClassName={cn("w-[210px]", className)} className="h-6 px-1.5 pr-6 text-2xs" title="Specialist weight 1.5–2.5, agreed by the team (§6.2)">
+      {SPECIALIST_OPTIONS.map((w) => {
+        const guide = SPECIALIST_GUIDE.find((g) => Math.abs(g.weight - w) < 1e-9);
+        return (
+          <option key={w} value={w.toFixed(1)}>
+            {w.toFixed(1)}
+            {guide ? ` — ${guide.label}` : ""}
+          </option>
+        );
+      })}
+    </Select>
+  );
+}
+
+/** §6.4 allocation factor, capped for part-time staff (§3.1). */
+function AllocationSelect({ value, max, onChange, disabled }: { value: number; max: number; onChange: (v: number) => void; disabled?: boolean }) {
+  return (
+    <Select aria-label="Allocation factor" value={String(value)} disabled={disabled} onChange={(e) => onChange(Number(e.target.value))} wrapperClassName="w-[74px]" className={cn("h-6 px-1.5 pr-6 text-2xs", value > max + 1e-9 && "border-soft-red/60 text-soft-red")} title={`Allocation factor (§6.4)${max < 1 ? ` — part-time, at most ${max}` : ""}`}>
+      {ALLOCATION_FACTORS.map((a) => (
+        <option key={a} value={String(a)} disabled={a > max + 1e-9}>
+          {a.toFixed(2)}
+        </option>
+      ))}
+    </Select>
+  );
+}
+
 /* ───────────────────────── main component ───────────────────────── */
 
-export function TeamEditor({ initiativeId, mode }: { initiativeId: string; mode: "proposal" | "live" }) {
+export function TeamEditor({ initiativeId, mode }: { initiativeId: string; mode: Mode }) {
   const initiatives = useCrm((s) => s.initiatives);
   const allMembers = useCrm((s) => s.initiativeMembers);
-  const adjustments = useCrm((s) => s.shareAdjustments);
+  const amendments = useCrm((s) => s.teamAmendments);
+  const adjustments = useCrm((s) => s.curveAdjustments);
+  const profiles = useCrm((s) => s.employeeProfiles);
   const currentUserId = useCrm((s) => s.currentUserId);
   const approveMembers = useCrm((s) => s.approveMembers);
   const notify = useUi((s) => s.notify);
@@ -157,216 +209,269 @@ export function TeamEditor({ initiativeId, mode }: { initiativeId: string; mode:
   const initiative = initiatives.find((i) => i.id === initiativeId);
 
   const [dialog, setDialog] = useState<Dialog>(null);
-  const [showFormer, setShowFormer] = useState(false);
+  const [now] = useState(() => Date.now());
 
-  const { current, former } = useMemo(() => {
-    const mine = allMembers.filter((m) => m.initiativeId === initiativeId);
-    const rank = (m: InitiativeMember) => (m.roles.includes("initiator") ? 0 : m.roles.includes("project_lead") ? 1 : m.roles.includes("technical_lead") ? 2 : 3);
+  const rows = useMemo(() => allMembers.filter((m) => m.initiativeId === initiativeId), [allMembers, initiativeId]);
+  const ledgerExists = rows.some((m) => m.consent === "accepted" && m.prcApproved);
+  /** setup: a live project whose ledger has not been built yet is set up directly, as at proposal stage (§15.1) */
+  const direct = mode === "proposal" || !ledgerExists;
+
+  const { current, upcoming } = useMemo(() => {
+    const rank = (m: InitiativeMember) => (m.roles.includes("project_lead") ? 0 : m.roles.includes("initiator") ? 1 : m.roles.includes("technical_lead") ? 2 : 3);
+    const open = rows.filter((m) => isOpenRow(m, now));
+    const cur = direct ? open : open.filter((m) => hasStarted(m, now));
     return {
-      current: mine.filter((m) => !m.leftAt).sort((a, b) => rank(a) - rank(b) || a.joinedAt.localeCompare(b.joinedAt)),
-      former: mine.filter((m) => m.leftAt).sort((a, b) => (b.leftAt ?? "").localeCompare(a.leftAt ?? "")),
+      current: cur.sort((a, b) => rank(a) - rank(b) || a.joinedAt.localeCompare(b.joinedAt)),
+      upcoming: direct ? [] : open.filter((m) => !hasStarted(m, now)).sort((a, b) => a.joinedAt.localeCompare(b.joinedAt)),
     };
-  }, [allMembers, initiativeId]);
+  }, [rows, direct, now]);
 
   const econ = useMemo(() => (initiative ? proposalEconomics(initiative, adjustments) : null), [initiative, adjustments]);
   const counted = useMemo(() => current.filter((m) => m.consent !== "declined"), [current]);
-  const split = useMemo(() => splitBonus(counted.map((m) => ({ userId: m.userId, weight: memberWeight(m) })), econ?.share ?? 0, econ?.expected.net ?? 0), [counted, econ]);
-  const bonusByUser = useMemo(() => new Map(split.shares.map((s) => [s.userId, s.bonus] as const)), [split]);
+  const split = useMemo(() => splitBonus(counted.map((m) => ({ userId: m.userId, weight: effectiveWeight(m) })), econ?.rate.rate ?? 0, econ?.expected.net ?? 0), [counted, econ]);
+  const bonusByUser = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of split.shares) map.set(s.userId, (map.get(s.userId) ?? 0) + s.bonus);
+    return map;
+  }, [split]);
+  const myAmendments = useMemo(() => amendments.filter((a) => a.initiativeId === initiativeId).sort((a, b) => Number(b.status === "open" || b.status === "tied") - Number(a.status === "open" || a.status === "tied") || b.circulatedAt.localeCompare(a.circulatedAt)), [amendments, initiativeId]);
 
   if (!initiative || !econ) return <EmptyState icon={Users} title="Initiative not found">Save the proposal first so a team can be attached.</EmptyState>;
 
-  const lead = current.find((m) => m.roles.includes("project_lead"));
   const unapproved = current.filter((m) => m.consent === "accepted" && !m.prcApproved);
-  const pendingConsent = current.filter((m) => m.consent === "pending");
-  const onTeam = current.some((m) => m.userId === currentUserId);
-  const me = userMap.get(currentUserId);
+  const pendingSign = current.filter((m) => m.consent === "pending");
+  const pendingManager = current.filter((m) => m.consent !== "declined" && !m.managerApproved);
+  const overrides = current.filter((m) => m.weightOverride != null && m.consent !== "declined");
   const dialogMember = dialog && "memberId" in dialog ? allMembers.find((m) => m.id === dialog.memberId) : undefined;
+  const onTeam = current.some((m) => m.userId === currentUserId && m.consent !== "declined");
+  const v3 = initiative.policyVersion === "3.0";
 
   return (
-    <div className="rounded-xl border border-sg-line bg-sg-card">
-      {/* header */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-sg-line px-4 py-3">
-        <div className="flex items-center gap-2">
-          <Users className="size-4 text-sg-muted" />
-          <span className="font-display text-sm font-extrabold text-sg-white">Team</span>
-          <span className="rounded-sm bg-sg-card-3 px-1.5 text-2xs font-semibold text-sg-muted">{current.length}</span>
-        </div>
-        <div className="text-2xs text-sg-dim">
-          Total weight <span className="sg-num font-semibold text-sg-white">{split.total.toFixed(2)}</span>
-          <Cite s="4.1" />
-        </div>
-        {pendingConsent.length > 0 && <Chip color="yellow">{pendingConsent.length} awaiting consent</Chip>}
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {mode === "live" && unapproved.length > 0 && (
-            <Button
-              size="sm"
-              variant="primary"
-              title={`${unapproved.length} accepted member(s) not yet PRC-approved. Recorded by ${me?.name ?? "current user"} as PRC (§7.1 step 2).`}
-              onClick={() => {
-                approveMembers(initiativeId);
-                notify(`Team approved by PRC — ${unapproved.length} member${unapproved.length === 1 ? "" : "s"}`);
-              }}
-            >
-              <ShieldCheck /> Approve team (PRC)
-            </Button>
-          )}
-          {mode === "live" && (
-            <Button size="sm" variant="outline" onClick={() => setDialog({ kind: "transfer" })}>
-              <ArrowRight /> Transfer Project Lead
-            </Button>
-          )}
-          {mode === "live" && !onTeam && (
-            <Button size="sm" variant="outline" onClick={() => setDialog({ kind: "apply" })}>
-              <UserPlus /> Apply to join
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {mode === "live" && unapproved.length > 0 && (
-        <div className="flex items-start gap-2 border-b border-sg-line bg-soft-yellow/5 px-4 py-2 text-2xs text-soft-yellow">
-          <Info className="mt-0.5 size-3.5 shrink-0" />
-          <span>
-            {unapproved.map((m) => userMap.get(m.userId)?.name ?? m.userId).join(", ")} accepted but {unapproved.length === 1 ? "is" : "are"} not yet PRC-approved — members only share in the pool once approved. PRC reviews team changes within {POLICY.sla.applicationBusinessDays} business days
-            <Cite s="7.1" />
-          </span>
-        </div>
-      )}
-
-      {/* members */}
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[1080px] text-sm">
-          <thead>
-            <tr className="border-b border-sg-line text-left text-2xs uppercase tracking-[0.1em] text-sg-dim">
-              <th className="px-4 py-2 font-semibold">Member</th>
-              <th className="px-2 py-2 font-semibold">Roles</th>
-              <th className="px-2 py-2 font-semibold">Weight</th>
-              <th className="px-2 py-2 font-semibold">Alloc.</th>
-              <th className="px-2 py-2 font-semibold">Consent</th>
-              <th className="px-2 py-2 font-semibold">PRC</th>
-              <th className="px-2 py-2 font-semibold">Eligibility</th>
-              <th className="px-2 py-2 font-semibold">Lead capacity</th>
-              <th className="px-2 py-2 text-right font-semibold">Share</th>
-              <th className="px-2 py-2 text-right font-semibold">Exp. bonus</th>
-              <th className="px-4 py-2" />
-            </tr>
-          </thead>
-          <tbody>
-            {current.map((m) => (
-              <MemberRow
-                key={m.id}
-                member={m}
-                initiative={initiative}
-                mode={mode}
-                totalWeight={split.total}
-                bonus={bonusByUser.get(m.userId) ?? 0}
-                onOverride={() => setDialog({ kind: "override", memberId: m.id })}
-                onRemoval={() => setDialog({ kind: "removal", memberId: m.id })}
-              />
-            ))}
-            {!current.length && (
-              <tr>
-                <td colSpan={11} className="px-4 py-6 text-center text-xs text-sg-dim">
-                  No team members yet.
-                </td>
-              </tr>
+    <div className="space-y-4">
+      <div className="rounded-xl border border-sg-line bg-sg-card">
+        {/* header */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-sg-line px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Users className="size-4 text-sg-muted" />
+            <span className="font-display text-sm font-extrabold text-sg-white">{direct ? "Role and Weight Agreement" : "Team"}</span>
+            <Cite s={direct ? "6.7" : "6.5"} />
+            <span className="rounded-sm bg-sg-card-3 px-1.5 text-2xs font-semibold text-sg-muted">{counted.length}</span>
+          </div>
+          <div className="text-2xs text-sg-dim">
+            Σ W×A <span className="sg-num font-semibold text-sg-white">{split.total.toFixed(2)}</span>
+            <Cite s="6.6" />
+          </div>
+          {pendingSign.length > 0 && <Chip color="yellow">{pendingSign.length} to sign</Chip>}
+          {pendingManager.length > 0 && <Chip color="orange">{pendingManager.length} without line manager agreement</Chip>}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {mode === "live" && unapproved.length > 0 && (
+              <Button
+                size="sm"
+                variant="primary"
+                title={`${unapproved.length} signed row(s) not yet PRC-checked. Recorded by ${userMap.get(currentUserId)?.name ?? "current user"} as PRC (§6.7).`}
+                onClick={() => {
+                  approveMembers(initiativeId);
+                  notify(`PRC check recorded — ${unapproved.length} ledger row${unapproved.length === 1 ? "" : "s"} confirmed`);
+                }}
+              >
+                <ShieldCheck /> PRC check
+              </Button>
             )}
-          </tbody>
-        </table>
-      </div>
-
-      <AddMemberPanel initiative={initiative} mode={mode} current={current} />
-
-      {/* bonus split preview */}
-      <div className="border-t border-sg-line px-4 py-3">
-        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-          <span className="sg-eyebrow">
-            Bonus-split preview
-            <Cite s="4.2" />
-          </span>
-          <span className="text-2xs text-sg-dim">
-            Expected net revenue <Money value={econ.expected.net} className="font-semibold text-sg-muted" /> × <Pct value={econ.share} /> share = pool <Money value={split.pool} className="font-semibold text-sg-white" />, split by weight ÷ {split.total.toFixed(2)}
-          </span>
+            {!direct && (
+              <Button size="sm" variant="primary" onClick={() => setDialog({ kind: "amend", preset: onTeam ? undefined : { kind: "add", userId: currentUserId } })}>
+                <Send /> Propose amendment
+              </Button>
+            )}
+          </div>
         </div>
-        {split.pool > 0 && split.total > 0 ? (
-          <>
-            <div className="mt-2 flex h-2 overflow-hidden rounded-full bg-sg-card-3">
-              {split.shares.map((s) => {
-                const u = userMap.get(s.userId);
-                return <span key={s.userId} title={`${u?.name ?? s.userId}: ${formatIDR(s.bonus)} (${((s.weight / split.total) * 100).toFixed(1)}%)`} className={cn("h-full border-r border-sg-card last:border-r-0", u ? spectrumDot[u.color] : "bg-sg-dim")} style={{ width: `${(s.weight / split.total) * 100}%` }} />;
-              })}
-            </div>
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
-              {split.shares.map((s) => {
-                const u = userMap.get(s.userId);
-                return (
-                  <span key={s.userId} className="flex items-center gap-1.5 text-2xs text-sg-muted">
-                    <span className={cn("size-2 rounded-full", u ? spectrumDot[u.color] : "bg-sg-dim")} />
-                    {u?.name.split(" ")[0] ?? s.userId} <Money value={s.bonus} className="font-semibold text-sg-white" />
-                  </span>
-                );
-              })}
-            </div>
-            <p className="mt-1.5 text-2xs text-sg-dim">Projection over the project&apos;s life at the expected scenario, assuming pending members accept. Actual bonuses are computed monthly on recognised revenue after the break-even test (§6.1){econ.expected.net > POLICY.deferral.netRevenueThreshold ? "; 30% may be deferred (§6.3)" : ""}.</p>
-          </>
-        ) : (
-          <p className="mt-1 text-2xs text-sg-dim">Enter a revenue forecast above direct costs to preview the split.</p>
-        )}
-      </div>
 
-      {/* former members */}
-      {former.length > 0 && (
-        <div className="border-t border-sg-line">
-          <button type="button" onClick={() => setShowFormer((v) => !v)} className="flex w-full items-center gap-1.5 px-4 py-2 text-left text-xs font-semibold text-sg-muted hover:text-sg-white">
-            {showFormer ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-            Former members
-            <span className="rounded-sm bg-sg-card-3 px-1 text-[10px] text-sg-muted">{former.length}</span>
-          </button>
-          {showFormer && (
-            <ul className="divide-y divide-sg-line border-t border-sg-line">
-              {former.map((m) => {
-                const u = userMap.get(m.userId);
-                return (
-                  <li key={m.id} className="flex flex-wrap items-center gap-3 px-4 py-2 text-xs">
-                    <Avatar user={u} size="xs" />
-                    <span className="font-semibold text-sg-muted">{u?.name ?? m.userId}</span>
-                    <RoleChips roles={m.roles} />
-                    <span className="text-sg-dim">
-                      {formatDate(m.joinedAt, "short")} → {formatDate(m.leftAt, "medium")}
+        {mode === "live" && !ledgerExists ? (
+          <div className="flex items-start gap-2 border-b border-sg-line bg-soft-cyan/5 px-4 py-2 text-2xs text-sg-text">
+            <Info className="mt-0.5 size-3.5 shrink-0 text-soft-cyan" />
+            <span>
+              No Team Allocation Ledger yet. The PMO builds it from the existing team records, confirmed by the Project Lead{initiative.registeredRetroactively ? " — this project was registered after it started, so the PRC ratifies the ledger" : ""}
+              <Cite s="15.1" />. Add the members below, then record the PRC check; later changes go through amendments<Cite s="6.8" />.
+            </span>
+          </div>
+        ) : null}
+        {v3 ? (
+          <div className="flex items-start gap-2 border-b border-sg-line px-4 py-2 text-2xs text-sg-muted">
+            <Lock className="mt-0.5 size-3.5 shrink-0" /> Approved under Version 3.0 — the project keeps its type, flat share and team weights<Cite s="15.1" />.
+          </div>
+        ) : null}
+        {overrides.length > 0 ? (
+          <div className="flex items-start gap-2 border-b border-sg-line bg-soft-yellow/5 px-4 py-2 text-2xs text-soft-yellow">
+            <Scale className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              Non-standard weight for {overrides.map((m) => userMap.get(m.userId)?.name ?? m.userId).join(", ")} — every initial member signs and the reason is recorded<Cite s="6.7" />.
+            </span>
+          </div>
+        ) : null}
+
+        {/* members */}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1180px] text-sm">
+            <thead>
+              <tr className="border-b border-sg-line text-left text-2xs uppercase tracking-[0.1em] text-sg-dim">
+                <th className="px-4 py-2 font-semibold">Member</th>
+                <th className="px-2 py-2 font-semibold">Role(s)</th>
+                <th className="px-2 py-2 text-right font-semibold" title="Standard weight (§6.1–6.3)">Std W</th>
+                <th className="px-2 py-2 font-semibold" title="Agreed weight W">Agreed W</th>
+                <th className="px-2 py-2 font-semibold" title="Allocation factor A (§6.4)">A</th>
+                <th className="px-2 py-2 text-right font-semibold" title="Effective weight W × A (§6.6)">W×A</th>
+                <th className="px-2 py-2 text-right font-semibold">Pool share</th>
+                <th className="px-2 py-2 text-right font-semibold">Exp. bonus</th>
+                <th className="px-2 py-2 font-semibold">Line mgr</th>
+                <th className="px-2 py-2 font-semibold">Signed</th>
+                <th className="px-2 py-2 font-semibold">Checks</th>
+                <th className="px-4 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {current.map((m) => (
+                <MemberRow
+                  key={m.id}
+                  member={m}
+                  initiative={initiative}
+                  direct={direct}
+                  live={mode === "live"}
+                  totalWeight={split.total}
+                  bonus={bonusByUser.get(m.userId) ?? 0}
+                  profile={profiles.find((p) => p.userId === m.userId)}
+                  onOverride={() => setDialog({ kind: "override", memberId: m.id })}
+                  onRemoval={() => setDialog({ kind: "removal", memberId: m.id })}
+                  onAmend={() => setDialog({ kind: "amend", preset: { kind: "change", memberId: m.id } })}
+                />
+              ))}
+              {upcoming.map((m) => (
+                <tr key={m.id} className="border-b border-sg-line bg-sg-bg/30 text-xs">
+                  <td className="px-4 py-2">
+                    <span className="flex items-center gap-2">
+                      <Avatar user={userMap.get(m.userId)} size="xs" />
+                      <span className="font-semibold text-sg-muted">{userMap.get(m.userId)?.name ?? m.userId}</span>
+                      <Chip color="blue">from {formatDate(m.joinedAt, "medium")}</Chip>
                     </span>
-                    {m.removal.stage === "removed" ? <Chip color="red">Removed (§5.3)</Chip> : <Chip color="blue">Left</Chip>}
-                    {m.removal.note ? <span className="truncate text-sg-dim">“{m.removal.note}”</span> : null}
-                  </li>
-                );
-              })}
-            </ul>
+                  </td>
+                  <td className="px-2 py-2">
+                    <RoleChips roles={m.roles} />
+                  </td>
+                  <td className="sg-num px-2 py-2 text-right text-sg-dim">{memberWeight({ ...m, weightOverride: null }).toFixed(2)}</td>
+                  <td className="sg-num px-2 py-2 text-sg-muted">{memberWeight(m).toFixed(2)}</td>
+                  <td className="sg-num px-2 py-2 text-sg-muted">{(m.allocationFactor ?? 1).toFixed(2)}</td>
+                  <td className="sg-num px-2 py-2 text-right text-sg-muted">{effectiveWeight(m).toFixed(2)}</td>
+                  <td colSpan={6} className="px-2 py-2 text-2xs text-sg-dim">
+                    Upcoming ledger row — {m.authority ?? "amendment"}
+                  </td>
+                </tr>
+              ))}
+              {!current.length && !upcoming.length && (
+                <tr>
+                  <td colSpan={12} className="px-4 py-6 text-center text-xs text-sg-dim">
+                    No team members yet. Every project needs a Project Lead<Cite s="6.1" />.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {direct ? <AddMemberPanel initiative={initiative} current={current} setup={mode === "live"} /> : null}
+
+        {/* bonus split preview */}
+        <div className="border-t border-sg-line px-4 py-3">
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+            <span className="sg-eyebrow">
+              Bonus-split preview
+              <Cite s="6.6" />
+            </span>
+            <span className="text-2xs text-sg-dim">
+              Expected net revenue <Money value={econ.expected.net} className="font-semibold text-sg-muted" /> × {(econ.rate.rate * 100).toFixed(3)}% = pool <Money value={split.pool} className="font-semibold text-sg-white" />, shared by W×A ÷ {split.total.toFixed(2)}
+            </span>
+          </div>
+          {split.pool > 0 && split.total > 0 ? (
+            <>
+              <div className="mt-2 flex h-2 overflow-hidden rounded-full bg-sg-card-3">
+                {split.shares.map((s, i) => {
+                  const u = userMap.get(s.userId);
+                  return <span key={`${s.userId}-${i}`} title={`${u?.name ?? s.userId}: ${formatIDR(s.bonus)} (${((s.weight / split.total) * 100).toFixed(1)}%)`} className={cn("h-full border-r-2 border-sg-card last:border-r-0", u ? spectrumDot[u.color] : "bg-sg-dim")} style={{ width: `${(s.weight / split.total) * 100}%` }} />;
+                })}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                {split.shares.map((s, i) => {
+                  const u = userMap.get(s.userId);
+                  return (
+                    <span key={`${s.userId}-${i}`} className="flex items-center gap-1.5 text-2xs text-sg-muted">
+                      <span className={cn("size-2 rounded-full", u ? spectrumDot[u.color] : "bg-sg-dim")} />
+                      {u?.name.split(" ")[0] ?? s.userId} <Money value={s.bonus} className="font-semibold text-sg-white" />
+                    </span>
+                  );
+                })}
+              </div>
+              <p className="mt-1.5 text-2xs text-sg-dim">
+                Projection over the project&apos;s life at the expected case, with everyone on the team throughout. Actual bonuses follow collected cash, shared by effective weight-days in each payment&apos;s work period (§6.5, §8.1), after the monthly break-even test and cash check (§9.1).
+              </p>
+            </>
+          ) : (
+            <p className="mt-1 text-2xs text-sg-dim">Enter an expected case with revenue above direct costs to preview the split.</p>
           )}
         </div>
-      )}
+      </div>
+
+      {!direct || myAmendments.length ? <AmendmentsCard initiative={initiative} amendments={myAmendments} onPropose={() => setDialog({ kind: "amend" })} canPropose={!direct} /> : null}
+      <LedgerCard initiative={initiative} rows={rows} defaultOpen={mode === "live"} />
 
       {dialog?.kind === "override" && dialogMember && <OverrideModal member={dialogMember} onClose={() => setDialog(null)} />}
       {dialog?.kind === "removal" && dialogMember && <RemovalModal member={dialogMember} onClose={() => setDialog(null)} />}
-      {dialog?.kind === "transfer" && <TransferModal initiative={initiative} current={current} lead={lead} onClose={() => setDialog(null)} />}
-      {dialog?.kind === "apply" && <ApplyModal initiative={initiative} onClose={() => setDialog(null)} />}
+      {dialog?.kind === "amend" && <AmendmentModal initiative={initiative} current={current} preset={dialog.preset} onClose={() => setDialog(null)} />}
     </div>
   );
 }
 
 /* ───────────────────────── member row ───────────────────────── */
 
-function MemberRow({ member: m, initiative, mode, totalWeight, bonus, onOverride, onRemoval }: { member: InitiativeMember; initiative: Initiative; mode: Mode; totalWeight: number; bonus: number; onOverride: () => void; onRemoval: () => void }) {
+function MemberRow({
+  member: m,
+  initiative,
+  direct,
+  live,
+  totalWeight,
+  bonus,
+  profile,
+  onOverride,
+  onRemoval,
+  onAmend,
+}: {
+  member: InitiativeMember;
+  initiative: Initiative;
+  direct: boolean;
+  live: boolean;
+  totalWeight: number;
+  bonus: number;
+  profile: EmployeeProfile | undefined;
+  onOverride: () => void;
+  onRemoval: () => void;
+  onAmend: () => void;
+}) {
   const userMap = useUserMap();
+  const initiatives = useCrm((s) => s.initiatives);
+  const members = useCrm((s) => s.initiativeMembers);
   const updateMember = useCrm((s) => s.updateMember);
   const setConsent = useCrm((s) => s.setConsent);
   const removeMember = useCrm((s) => s.removeMember);
   const notify = useUi((s) => s.notify);
   const u = userMap.get(m.userId);
+  const std = memberWeight({ ...m, weightOverride: null });
   const weight = memberWeight(m);
-  const isInitiator = m.roles.includes("initiator");
+  const a = m.allocationFactor ?? 1;
+  const eff = effectiveWeight(m);
+  const maxA = maxAllocationFactor(profile);
   const leadership = m.roles.some((r) => ROLE_META[r].leadership);
   const declined = m.consent === "declined";
-  const sharePct = !declined && totalWeight > 0 ? weight / totalWeight : 0;
+  const sharePct = !declined && totalWeight > 0 ? eff / totalWeight : 0;
   const warningDays = m.removal.stage === "verbal" ? POLICY.removalWarningDays.verbal : m.removal.stage === "written" ? POLICY.removalWarningDays.written : 0;
+  const nonLead = useMemo(() => concurrentNonLeadRoles(m.userId, initiatives, members, initiative.id), [m.userId, initiatives, members, initiative.id]);
+  const holdsNonLead = m.roles.some((r) => NON_LEAD.includes(r));
+  const isProposer = m.userId === initiative.initiatorId && m.roles.includes("initiator");
 
   return (
     <tr className={cn("border-b border-sg-line align-middle", declined && "opacity-55")}>
@@ -376,12 +481,19 @@ function MemberRow({ member: m, initiative, mode, totalWeight, bonus, onOverride
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 truncate font-semibold text-sg-white">
               {u?.name ?? m.userId}
-              {m.application ? <span className="rounded-sm bg-sg-card-3 px-1 text-[9px] font-semibold uppercase text-sg-muted" title="Joined via employee application (§7.1)">applied</span> : null}
+              {m.application ? (
+                <span className="rounded-sm bg-sg-card-3 px-1 text-[9px] font-semibold uppercase text-sg-muted" title={`Joined by amendment (§6.8) — ${m.authority ?? ""}`}>
+                  amendment
+                </span>
+              ) : null}
             </div>
-            <div className="truncate text-2xs text-sg-dim">{u?.title ?? "—"}</div>
+            <div className="truncate text-2xs text-sg-dim">
+              {u?.title ?? "—"}
+              {live ? ` · since ${formatDate(m.joinedAt, "medium")}` : ""}
+            </div>
             {m.removal.stage !== "none" && m.removal.stage !== "removed" && (
               <div className="mt-0.5 text-2xs font-semibold text-soft-orange" title={m.removal.note}>
-                {m.removal.stage === "verbal" ? "Verbal warning" : "Written warning"} · {relativeTime(m.removal.updatedAt)}
+                {m.removal.stage === "verbal" ? "Verbal project warning" : "Written project warning"} · {relativeTime(m.removal.updatedAt)}
                 {m.removal.updatedAt ? ` · improve by ${formatDate(new Date(Date.parse(m.removal.updatedAt) + warningDays * DAY).toISOString(), "short")}` : ""}
               </div>
             )}
@@ -391,165 +503,162 @@ function MemberRow({ member: m, initiative, mode, totalWeight, bonus, onOverride
       <td className="px-2 py-2">
         <div className="flex items-center gap-1">
           <RoleChips roles={m.roles} />
-          <RoleEditor member={m} initiative={initiative} mode={mode} />
+          {direct ? <RoleEditor member={m} initiative={initiative} /> : null}
         </div>
+        {m.roles.includes("specialist") && direct && m.weightOverride == null ? (
+          <div className="mt-1">
+            <SpecialistSelect value={m.specialistWeight ?? ROLE_META.specialist.weight} onChange={(v) => updateMember(m.id, { specialistWeight: v })} />
+          </div>
+        ) : null}
       </td>
+      <td className="sg-num px-2 py-2 text-right text-xs text-sg-muted">{std.toFixed(2)}</td>
       <td className="px-2 py-2">
         <div className="flex items-center gap-1.5">
-          <span className={cn("sg-num font-semibold", m.weightOverride != null ? "text-soft-yellow" : "text-sg-white")} title={m.weightOverride != null ? `Consensus override (§4.1) — standard ${memberWeight({ ...m, weightOverride: null }).toFixed(2)}` : "Σ role weights (§4.3)"}>
+          <span className={cn("sg-num font-semibold", m.weightOverride != null ? "text-soft-yellow" : "text-sg-white")} title={m.weightOverride != null ? `Agreed non-standard weight — standard ${std.toFixed(2)}${m.weightNote ? `\nReason: ${m.weightNote}` : ""}` : "Standard weights add up across roles (§6.3)"}>
             {weight.toFixed(2)}
           </span>
-          {m.roles.includes("specialist") && m.weightOverride == null && (
-            <Select
-              aria-label="Specialist weight"
-              value={(m.specialistWeight ?? ROLE_META.specialist.weight).toFixed(1)}
-              onChange={(e) => updateMember(m.id, { specialistWeight: Number(e.target.value) })}
-              wrapperClassName="w-[68px]"
-              className="h-6 px-1.5 pr-6 text-2xs"
-              title="Specialist weight 1.5–2.5 (§4.1)"
-            >
-              {SPECIALIST_OPTIONS.map((w) => (
-                <option key={w} value={w.toFixed(1)}>
-                  {w.toFixed(1)}
-                </option>
-              ))}
-            </Select>
-          )}
-          <button type="button" onClick={onOverride} title="Consensus weight override (§4.1)" className="rounded p-0.5 text-sg-dim hover:bg-sg-card-2 hover:text-sg-white">
-            <Scale className="size-3.5" />
-          </button>
+          {direct ? (
+            <button type="button" onClick={onOverride} title="Agree a non-standard weight (§6.7)" className="rounded p-0.5 text-sg-dim hover:bg-sg-card-2 hover:text-sg-white">
+              <Scale className="size-3.5" />
+            </button>
+          ) : null}
         </div>
+        {m.weightOverride != null && m.weightNote ? (
+          <div className="max-w-[160px] truncate text-2xs text-sg-dim" title={m.weightNote}>
+            {m.weightNote}
+          </div>
+        ) : null}
       </td>
       <td className="px-2 py-2">
-        <AllocationInput value={m.allocationPct} onCommit={(v) => updateMember(m.id, { allocationPct: v })} />
+        {direct ? <AllocationSelect value={a} max={maxA} onChange={(v) => updateMember(m.id, { allocationFactor: v })} /> : <span className="sg-num text-xs text-sg-white">{a.toFixed(2)}</span>}
+        {a > maxA + 1e-9 ? <div className="text-2xs font-semibold text-soft-red">max {maxA} (§3.1)</div> : null}
       </td>
+      <td className="sg-num px-2 py-2 text-right text-xs font-semibold text-sg-white">{declined ? "—" : eff.toFixed(2)}</td>
+      <td className="sg-num px-2 py-2 text-right text-xs font-semibold text-sg-white">{declined ? "—" : <Pct value={sharePct} />}</td>
+      <td className="px-2 py-2 text-right text-xs">{declined ? <span className="text-sg-dim">—</span> : <Money value={bonus} className="font-semibold text-sg-white" />}</td>
       <td className="px-2 py-2">
-        {isInitiator ? (
-          <Chip color="green" className="cursor-default">
-            <Lock className="size-3" /> Initiator
-          </Chip>
+        {direct ? (
+          <label className="flex cursor-pointer items-center gap-1.5 text-2xs text-sg-muted" title="Line manager's written agreement to the time (§3.1, §7.1)">
+            <input type="checkbox" checked={m.managerApproved} onChange={(e) => updateMember(m.id, { managerApproved: e.target.checked })} className="size-3.5 accent-sg-white" />
+            {m.managerApproved ? "Agreed" : "Pending"}
+          </label>
+        ) : m.managerApproved ? (
+          <span className="text-2xs font-semibold text-soft-green">Agreed</span>
         ) : (
+          <span className="text-2xs font-semibold text-soft-orange">Missing</span>
+        )}
+      </td>
+      <td className="px-2 py-2">
+        {direct ? (
           <Menu>
             <MenuTrigger asChild>
-              <button type="button" className="inline-flex items-center gap-1" title="Record consent (§7.1 step 1)">
+              <button type="button" className="inline-flex items-center gap-1" title="Signature on the Role and Weight Agreement (Annex D)">
                 <ConsentChip consent={m.consent} />
                 <ChevronDown className="size-3 text-sg-dim" />
               </button>
             </MenuTrigger>
             <MenuContent>
-              <MenuLabel>Record consent · §7.1</MenuLabel>
-              <MenuItem active={m.consent === "accepted"} onSelect={() => (setConsent(m.id, "accepted"), notify(`${u?.name ?? "Member"} accepted`))}>
-                <UserCheck className="size-3.5 text-soft-green" /> Accepted
-              </MenuItem>
-              <MenuItem active={m.consent === "declined"} onSelect={() => (setConsent(m.id, "declined"), notify(`${u?.name ?? "Member"} declined`))}>
-                <X className="size-3.5 text-soft-red" /> Declined
+              <MenuLabel>Role and Weight Agreement · Annex D</MenuLabel>
+              <MenuItem active={m.consent === "accepted"} onSelect={() => (setConsent(m.id, "accepted"), notify(`${u?.name ?? "Member"} signed the agreement`))}>
+                <UserCheck className="size-3.5 text-soft-green" /> Signed
               </MenuItem>
               <MenuItem active={m.consent === "pending"} onSelect={() => setConsent(m.id, "pending")}>
-                <CircleAlert className="size-3.5 text-soft-yellow" /> Pending
+                <CircleAlert className="size-3.5 text-soft-yellow" /> Not yet signed
               </MenuItem>
+              {!isProposer ? (
+                <MenuItem active={m.consent === "declined"} onSelect={() => (setConsent(m.id, "declined"), notify(`${u?.name ?? "Member"} declined`))}>
+                  <X className="size-3.5 text-soft-red" /> Declined
+                </MenuItem>
+              ) : null}
             </MenuContent>
           </Menu>
-        )}
-      </td>
-      <td className="px-2 py-2">
-        {m.prcApproved ? (
-          <span className="inline-flex items-center gap-1 text-2xs font-semibold text-soft-green" title="Team membership approved by PRC (§7.1 step 2)">
-            <BadgeCheck className="size-3.5" /> Approved
-          </span>
         ) : (
-          <span className="text-2xs text-sg-dim" title={mode === "proposal" ? "Approved together with the proposal" : "Awaiting PRC approval"}>
-            {mode === "proposal" ? "With proposal" : "Pending"}
+          <span className="flex flex-col gap-0.5">
+            <ConsentChip consent={m.consent} />
+            {m.prcApproved ? (
+              <span className="inline-flex items-center gap-1 text-2xs font-semibold text-soft-green" title="Checked by the PRC (§6.7)">
+                <BadgeCheck className="size-3" /> PRC checked
+              </span>
+            ) : (
+              <span className="text-2xs text-sg-dim">PRC check pending</span>
+            )}
           </span>
         )}
       </td>
       <td className="px-2 py-2">
-        <EligibilityBadge userId={m.userId} />
+        <div className="flex flex-col gap-1">
+          <EligibilityBadge userId={m.userId} />
+          {leadership ? <CapacityMeter userId={m.userId} /> : null}
+          {holdsNonLead && nonLead >= POLICY.maxConcurrentNonLeadRoles ? (
+            <span className="text-2xs font-semibold text-soft-yellow" title="More than 3 concurrent non-lead roles need line manager and PRC approval (§7.1)">
+              {nonLead + 1} non-lead roles
+            </span>
+          ) : null}
+        </div>
       </td>
-      <td className="px-2 py-2">{leadership ? <CapacityMeter userId={m.userId} /> : <span className="text-2xs text-sg-dim">—</span>}</td>
-      <td className="sg-num px-2 py-2 text-right text-xs font-semibold text-sg-white">{declined ? "—" : <Pct value={sharePct} />}</td>
-      <td className="px-2 py-2 text-right text-xs">{declined ? <span className="text-sg-dim">—</span> : <Money value={bonus} className="font-semibold text-sg-white" />}</td>
       <td className="px-4 py-2 text-right">
-        {!isInitiator &&
-          (mode === "proposal" || m.consent !== "accepted" ? (
+        {direct ? (
+          !isProposer ? (
             <Button
               size="icon-sm"
               variant="ghost"
-              title={mode === "proposal" ? "Remove from proposal" : "Withdraw (not yet accepted)"}
+              title="Remove from the agreement"
               onClick={() => {
                 removeMember(m.id);
-                notify(`${u?.name ?? "Member"} removed from the team`);
+                notify(`${u?.name ?? "Member"} removed from the Role and Weight Agreement`);
               }}
             >
               <Trash2 />
             </Button>
           ) : (
-            <Button size="xs" variant="ghost" title="Removal protocol (§5.3)" onClick={onRemoval}>
+            <span className="text-2xs text-sg-dim" title="The proposer stays on the agreement; delegate the Project Lead role by moving it to another member (§4.9)">
+              <Lock className="inline size-3" />
+            </span>
+          )
+        ) : (
+          <div className="flex justify-end gap-1">
+            <Button size="xs" variant="ghost" title="Propose an amendment to this member's roles, weight or allocation (§6.8)" onClick={onAmend}>
+              <Pencil /> Amend
+            </Button>
+            <Button size="xs" variant="ghost" title="Removal for poor performance (§7.5)" onClick={onRemoval}>
               <UserMinus /> {m.removal.stage === "none" ? "Remove…" : m.removal.stage === "verbal" ? "Step 2" : "Step 3"}
             </Button>
-          ))}
+          </div>
+        )}
       </td>
     </tr>
   );
 }
 
 function ConsentChip({ consent }: { consent: InitiativeMember["consent"] }) {
-  if (consent === "accepted") return <Chip color="green">Accepted</Chip>;
+  if (consent === "accepted") return <Chip color="green">Signed</Chip>;
   if (consent === "declined") return <Chip color="red">Declined</Chip>;
-  return <Chip color="yellow">Pending</Chip>;
+  return <Chip color="yellow">To sign</Chip>;
 }
 
-function AllocationInput({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
-  const [text, setText] = useState(String(value));
-  useEffect(() => setText(String(value)), [value]);
-  const commit = () => {
-    const n = Math.max(0, Math.min(100, Math.round(Number(text.replace(/[^\d.]/g, "")) || 0)));
-    setText(String(n));
-    if (n !== value) onCommit(n);
-  };
-  return (
-    <span className="inline-flex items-center gap-0.5">
-      <input
-        aria-label="Allocation percent"
-        inputMode="numeric"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            commit();
-          }
-        }}
-        className="sg-num h-6 w-11 rounded border border-sg-line bg-sg-bg/60 px-1.5 text-right text-xs text-sg-text focus:border-sg-white/60 focus:outline-none"
-      />
-      <span className="text-2xs text-sg-dim">%</span>
-    </span>
-  );
-}
+/* ───────────────────────── role editor (agreement stage) ───────────────────────── */
 
-/* ───────────────────────── role editor (existing member) ───────────────────────── */
-
-function RoleEditor({ member, initiative, mode }: { member: InitiativeMember; initiative: Initiative; mode: Mode }) {
+function RoleEditor({ member, initiative }: { member: InitiativeMember; initiative: Initiative }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const initiatives = useCrm((s) => s.initiatives);
   const members = useCrm((s) => s.initiativeMembers);
   const updateMember = useCrm((s) => s.updateMember);
   const userMap = useUserMap();
-  const currentLead = members.find((m) => m.initiativeId === initiative.id && !m.leftAt && m.id !== member.id && m.roles.includes("project_lead"));
-  const disabled: Partial<Record<ProjectRole, string>> = {};
-  if (mode === "live") disabled.project_lead = "Project Lead changes use “Transfer Project Lead” (§7.2)";
+  const currentLead = members.find((m) => m.initiativeId === initiative.id && isOpenRow(m) && m.id !== member.id && m.roles.includes("project_lead"));
+  const company = initiative.origination === "company";
 
   const apply = (next: ProjectRole[]) => {
     setError(null);
-    const roles = [...(member.roles.includes("initiator") ? (["initiator"] as ProjectRole[]) : []), ...next.filter((r) => r !== "initiator")];
+    const keepInitiator = member.roles.includes("initiator") && !company;
+    const roles = [...(keepInitiator ? (["initiator"] as ProjectRole[]) : []), ...next.filter((r) => r !== "initiator")];
     if (!roles.length) return setError("A member needs at least one role.");
     const addsLeadership = roles.some((r) => ROLE_META[r].leadership) && !member.roles.some((r) => ROLE_META[r].leadership);
     if (addsLeadership) {
       const cap = capacityCheck(member.userId, initiative, roles, initiatives, members);
-      if (!cap.ok) return setError(`Blocked: leadership capacity would reach ${cap.after.toFixed(2)} / ${POLICY.leadershipCapacity.toFixed(1)} (§5.1).`);
+      if (!cap.ok) return setError(`Blocked: leadership capacity would reach ${cap.after.toFixed(2)} / ${POLICY.leadershipCapacity.toFixed(1)} (§7.3).`);
     }
-    // §2.4 a project has a single Project Lead — moving the role in a proposal takes it from the current holder
+    // one Project Lead per project — moving the role takes it from the current holder (§4.9 delegation; the Initiator keeps 0.5, §6.3)
     if (roles.includes("project_lead") && !member.roles.includes("project_lead") && currentLead) {
       const rest = currentLead.roles.filter((r) => r !== "project_lead");
       if (!rest.length) return setError(`${userMap.get(currentLead.userId)?.name ?? "The current lead"} holds only the Project Lead role — give them another role first.`);
@@ -565,28 +674,29 @@ function RoleEditor({ member, initiative, mode }: { member: InitiativeMember; in
           <Pencil className="size-3" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-[340px]">
+      <PopoverContent className="w-[360px]">
         <div className="sg-eyebrow mb-2">
-          Roles — weights are cumulative
-          <Cite s="4.3" />
+          Roles — weights add up
+          <Cite s="6.3" />
         </div>
         {member.roles.includes("initiator") && (
           <div className="mb-2 flex items-center gap-1.5 text-2xs text-sg-dim">
-            <Lock className="size-3" /> Project Initiator (0.5) is automatic for the proposer and can&apos;t be changed.
+            <Lock className="size-3" /> Project Initiator (0.5) follows the origination (§4.1) and can&apos;t be toggled here.
           </div>
         )}
-        <RoleToggles value={member.roles.filter((r) => r !== "initiator")} onChange={apply} roles={ASSIGNABLE_ROLES} disabledRoles={disabled} />
-        {mode === "proposal" && currentLead && !member.roles.includes("project_lead") && <p className="mt-2 text-2xs text-sg-dim">Choosing Project Lead moves it from {userMap.get(currentLead.userId)?.name}.</p>}
+        <RoleToggles value={member.roles.filter((r) => r !== "initiator")} onChange={apply} roles={ASSIGNABLE_ROLES} />
+        {currentLead && !member.roles.includes("project_lead") && <p className="mt-2 text-2xs text-sg-dim">Choosing Project Lead delegates it from {userMap.get(currentLead.userId)?.name} (§4.9).</p>}
         {error && <p className="mt-2 text-2xs font-semibold text-soft-red">{error}</p>}
       </PopoverContent>
     </Popover>
   );
 }
 
-/* ───────────────────────── add member ───────────────────────── */
+/* ───────────────────────── add member (agreement stage / ledger setup) ───────────────────────── */
 
-function AddMemberPanel({ initiative, mode, current }: { initiative: Initiative; mode: Mode; current: InitiativeMember[] }) {
+function AddMemberPanel({ initiative, current, setup }: { initiative: Initiative; current: InitiativeMember[]; setup: boolean }) {
   const users = useCrm((s) => s.users);
+  const profiles = useCrm((s) => s.employeeProfiles);
   const currentUserId = useCrm((s) => s.currentUserId);
   const addMember = useCrm((s) => s.addMember);
   const updateMember = useCrm((s) => s.updateMember);
@@ -596,20 +706,26 @@ function AddMemberPanel({ initiative, mode, current }: { initiative: Initiative;
   const [userId, setUserId] = useState("");
   const [roles, setRoles] = useState<ProjectRole[]>(["engineer"]);
   const [specialistWeight, setSpecialistWeight] = useState(ROLE_META.specialist.weight);
-  const [allocation, setAllocation] = useState("20");
+  const [allocationFactor, setAllocationFactor] = useState(1);
+  const [manager, setManager] = useState(false);
+  const [signed, setSigned] = useState(false);
   const [ack, setAck] = useState(false);
-  const check = useCandidateCheck(userId, roles, initiative);
+  const maxA = maxAllocationFactor(profiles.find((p) => p.userId === userId));
+  useEffect(() => {
+    if (allocationFactor > maxA) setAllocationFactor(maxA);
+  }, [maxA, allocationFactor]);
+  const check = useCandidateCheck(userId, roles, allocationFactor, initiative);
 
-  const available = useMemo(() => users.filter((u) => !current.some((m) => m.userId === u.id)), [users, current]);
+  const available = useMemo(() => users.filter((u) => !current.some((m) => m.userId === u.id && m.consent !== "declined")), [users, current]);
   const lead = current.find((m) => m.roles.includes("project_lead"));
-  const disabled: Partial<Record<ProjectRole, string>> = {};
-  if (mode === "live") disabled.project_lead = "Use “Transfer Project Lead” (§7.2)";
   const ok = canProceed(check, ack) && roles.length > 0;
 
   const reset = () => {
     setUserId("");
     setRoles(["engineer"]);
-    setAllocation("20");
+    setAllocationFactor(1);
+    setManager(false);
+    setSigned(false);
     setAck(false);
   };
 
@@ -621,10 +737,13 @@ function AddMemberPanel({ initiative, mode, current }: { initiative: Initiative;
     }
     addMember(initiative.id, userId, roles, {
       specialistWeight: roles.includes("specialist") ? specialistWeight : null,
-      allocationPct: Math.max(0, Math.min(100, Number(allocation) || 0)),
-      consent: userId === currentUserId ? "accepted" : "pending",
+      allocationFactor,
+      managerApproved: manager,
+      consent: signed || userId === currentUserId ? "accepted" : "pending",
+      joinedAt: setup ? initiative.startDate : undefined,
+      authority: setup ? "Ledger built from existing team records (§15.1)" : "Role and Weight Agreement (Annex D Part 1)",
     });
-    notify(`${userMap.get(userId)?.name ?? "Member"} added — ${userId === currentUserId ? "consent recorded" : "awaiting consent (§7.1)"}`);
+    notify(`${userMap.get(userId)?.name ?? "Member"} added${signed || userId === currentUserId ? "" : " — awaiting signature"}`);
     reset();
   };
 
@@ -632,7 +751,7 @@ function AddMemberPanel({ initiative, mode, current }: { initiative: Initiative;
     return (
       <div className="border-t border-sg-line px-4 py-2">
         <Button size="sm" variant="ghost" onClick={() => setOpen(true)}>
-          <Plus /> {mode === "live" ? "Propose a team member" : "Add team member"}
+          <Plus /> Add team member
         </Button>
       </div>
     );
@@ -641,14 +760,14 @@ function AddMemberPanel({ initiative, mode, current }: { initiative: Initiative;
     <div className="space-y-3 border-t border-sg-line bg-sg-bg/30 px-4 py-3">
       <div className="flex items-center justify-between">
         <span className="sg-eyebrow">
-          Add team member
-          <Cite s="7.1" />
+          Add to the {setup ? "Team Allocation Ledger" : "Role and Weight Agreement"}
+          <Cite s={setup ? "15.1" : "6.7"} />
         </span>
         <Button size="icon-sm" variant="ghost" aria-label="Close" onClick={() => (setOpen(false), reset())}>
           <X />
         </Button>
       </div>
-      <div className="grid gap-3 md:grid-cols-[240px_minmax(0,1fr)_90px]">
+      <div className="grid gap-3 md:grid-cols-[240px_minmax(0,1fr)_100px]">
         <div>
           <Label>Employee</Label>
           <Select value={userId} onChange={(e) => (setUserId(e.target.value), setAck(false))}>
@@ -661,46 +780,588 @@ function AddMemberPanel({ initiative, mode, current }: { initiative: Initiative;
           </Select>
         </div>
         <div>
-          <Label>Roles</Label>
-          <RoleToggles value={roles} onChange={setRoles} roles={ASSIGNABLE_ROLES} disabledRoles={disabled} />
+          <Label>Role(s)</Label>
+          <RoleToggles value={roles} onChange={setRoles} roles={ASSIGNABLE_ROLES} />
           {roles.includes("specialist") && (
             <div className="mt-1.5 flex items-center gap-2 text-2xs text-sg-dim">
               Specialist weight
-              <Select value={specialistWeight.toFixed(1)} onChange={(e) => setSpecialistWeight(Number(e.target.value))} wrapperClassName="w-[68px]" className="h-6 px-1.5 pr-6 text-2xs">
-                {SPECIALIST_OPTIONS.map((w) => (
-                  <option key={w} value={w.toFixed(1)}>
-                    {w.toFixed(1)}
-                  </option>
-                ))}
-              </Select>
-              <Cite s="4.1" />
+              <SpecialistSelect value={specialistWeight} onChange={setSpecialistWeight} />
+              <Cite s="6.2" />
             </div>
           )}
-          {roles.includes("project_lead") && lead && mode === "proposal" && <p className="mt-1 text-2xs text-sg-dim">Replaces {userMap.get(lead.userId)?.name} as Project Lead.</p>}
+          {roles.includes("project_lead") && lead && <p className="mt-1 text-2xs text-sg-dim">Takes over Project Lead from {userMap.get(lead.userId)?.name}.</p>}
         </div>
         <div>
-          <Label>Allocation %</Label>
-          <Input inputMode="numeric" value={allocation} onChange={(e) => setAllocation(e.target.value.replace(/\D/g, ""))} className="sg-num" />
+          <Label>Allocation A</Label>
+          <AllocationSelect value={allocationFactor} max={maxA} onChange={setAllocationFactor} />
+          <p className="mt-0.5 text-2xs text-sg-dim">default 1.0</p>
         </div>
       </div>
-      {userId && (
-        <div className="flex items-center gap-3 text-2xs text-sg-dim">
-          <EligibilityBadge userId={userId} />
-          {check?.leadership && <CapacityMeter userId={userId} adding={check.capacity.adds} />}
-          <span>
-            Live projects: <span className="sg-num font-semibold text-sg-muted">{check?.concurrent ?? 0}</span>
+      <div className="flex flex-wrap items-center gap-4 text-xs text-sg-text">
+        <label className="flex cursor-pointer items-center gap-2">
+          <input type="checkbox" checked={manager} onChange={(e) => setManager(e.target.checked)} className="size-3.5 accent-sg-white" />
+          Line manager agreed the time<Cite s="3.1" />
+        </label>
+        <label className="flex cursor-pointer items-center gap-2">
+          <input type="checkbox" checked={signed || userId === currentUserId} disabled={userId === currentUserId} onChange={(e) => setSigned(e.target.checked)} className="size-3.5 accent-sg-white" />
+          Signed the Role and Weight Agreement
+        </label>
+        {userId ? (
+          <span className="flex items-center gap-3 text-2xs text-sg-dim">
+            <EligibilityBadge userId={userId} />
+            {check?.leadership && <CapacityMeter userId={userId} adding={check.capacity.adds} />}
+            <span>
+              Non-lead roles elsewhere: <span className="sg-num font-semibold text-sg-muted">{check?.nonLead ?? 0}</span> / {POLICY.maxConcurrentNonLeadRoles}
+            </span>
           </span>
-        </div>
-      )}
+        ) : null}
+      </div>
       <CandidateNotices check={check} ack={ack} onAck={setAck} />
       <div className="flex items-center gap-2">
         <Button size="sm" variant="primary" disabled={!ok} onClick={submit}>
           <UserPlus /> Add to team
         </Button>
         {!roles.length && <span className="text-2xs text-soft-red">Pick at least one role.</span>}
-        {mode === "live" && <span className="text-2xs text-sg-dim">Needs member consent, then PRC approval within {POLICY.sla.applicationBusinessDays} business days (§7.1).</span>}
+        <span className="text-2xs text-sg-dim">Weight {memberWeight({ roles, specialistWeight: roles.includes("specialist") ? specialistWeight : null, weightOverride: null }).toFixed(2)} × A {allocationFactor.toFixed(2)} = {(memberWeight({ roles, specialistWeight: roles.includes("specialist") ? specialistWeight : null, weightOverride: null }) * allocationFactor).toFixed(2)}</span>
       </div>
     </div>
+  );
+}
+
+/* ───────────────────────── §6.8 amendments ───────────────────────── */
+
+interface AmendDraft {
+  kind: "add" | "remove" | "change";
+  userId: string;
+  memberId: string;
+  roles: ProjectRole[];
+  specialistWeight: number;
+  override: string;
+  allocationFactor: number;
+  consent: boolean;
+  effective: string;
+  reason: string;
+}
+
+/** Distinct people with a live, signed, PRC-checked ledger row — each has one vote (§6.8). */
+function currentVoters(rows: InitiativeMember[], initiativeId: string, excludeUserId?: string, now = Date.now()) {
+  return [...new Set(rows.filter((m) => m.initiativeId === initiativeId && m.consent === "accepted" && m.prcApproved && isOpenRow(m, now)).map((m) => m.userId))].filter((u) => u !== excludeUserId);
+}
+
+/** Where an amendment would break the policy — the only grounds on which the PRC may block it (§6.8 step 5). */
+function amendmentIssues(a: Pick<TeamAmendment, "change" | "effectiveDate">, initiative: Initiative, ctx: { initiatives: Initiative[]; members: InitiativeMember[]; profiles: EmployeeProfile[] }) {
+  const issues: string[] = [];
+  const c = a.change;
+  if (c.kind === "remove") {
+    const m = ctx.members.find((x) => x.id === c.memberId);
+    if (m?.roles.includes("project_lead") && !ctx.members.some((x) => x.initiativeId === initiative.id && x.id !== m.id && isOpenRow(x) && x.roles.includes("project_lead"))) issues.push("Leaves the project without a Project Lead (§6.1)");
+    return issues;
+  }
+  const userId = c.kind === "add" ? c.userId : ctx.members.find((x) => x.id === c.memberId)?.userId ?? "";
+  const others = ctx.members.filter((x) => !(c.kind === "change" && x.id === c.memberId));
+  const check = candidateCheck(userId, c.roles, c.allocationFactor, initiative, { ...ctx, members: others }, a.effectiveDate);
+  issues.push(...check.blockers);
+  if (c.roles.some((r) => NON_LEAD.includes(r)) && check.nonLead >= POLICY.maxConcurrentNonLeadRoles) issues.push(`More than ${POLICY.maxConcurrentNonLeadRoles} concurrent non-lead roles without line manager and PRC approval (§7.1)`);
+  if (c.kind === "add" && !c.consent) issues.push("The joining member has not consented to their role, weight and allocation factor (§6.8 step 4)");
+  if (!c.roles.length) issues.push("No role");
+  return issues;
+}
+
+function describeChange(a: TeamAmendment, members: InitiativeMember[], name: (id: string) => string) {
+  const c = a.change;
+  const roles = (r: ProjectRole[]) => r.map((x) => ROLE_META[x].label).join(" + ");
+  const w = (r: ProjectRole[], sw: number | null, o: number | null) => memberWeight({ roles: r, specialistWeight: sw, weightOverride: o }).toFixed(2);
+  if (c.kind === "add") return `Add ${name(c.userId)} as ${roles(c.roles)} · W ${w(c.roles, c.specialistWeight, c.weightOverride)} × A ${c.allocationFactor.toFixed(2)}`;
+  const m = members.find((x) => x.id === c.memberId);
+  if (c.kind === "remove") return `Remove ${m ? name(m.userId) : "member"}${m ? ` (${roles(m.roles)})` : ""} from the team`;
+  return `Change ${m ? name(m.userId) : "member"} to ${roles(c.roles)} · W ${w(c.roles, c.specialistWeight, c.weightOverride)} × A ${c.allocationFactor.toFixed(2)}${m ? ` (was ${roles(m.roles)} · W ${memberWeight(m).toFixed(2)} × A ${(m.allocationFactor ?? 1).toFixed(2)})` : ""}`;
+}
+
+const AMEND_STATUS: Record<TeamAmendment["status"], { label: string; color: "yellow" | "green" | "red" | "orange" | "magenta" }> = {
+  open: { label: "Voting", color: "yellow" },
+  passed: { label: "Passed", color: "green" },
+  failed: { label: "Failed", color: "red" },
+  tied: { label: "Tied — PRC decides", color: "orange" },
+  blocked: { label: "Blocked by PRC", color: "magenta" },
+};
+
+function AmendmentsCard({ initiative, amendments, onPropose, canPropose }: { initiative: Initiative; amendments: TeamAmendment[]; onPropose: () => void; canPropose: boolean }) {
+  return (
+    <section className="rounded-xl border border-sg-line bg-sg-card">
+      <header className="flex flex-wrap items-center gap-2 border-b border-sg-line px-4 py-2.5">
+        <ClipboardList className="size-4 text-sg-muted" />
+        <h3 className="font-display text-sm font-extrabold text-sg-white">Amendments to roles and weights</h3>
+        <Cite s="6.8" />
+        <Cite s="Annex D" />
+        <span className="text-2xs text-sg-dim">Passes with more than half of all current members voting for it within {POLICY.sla.amendmentVoteBusinessDays} business days; exactly half → the PRC decides. Applies from its effective date, never to past work.</span>
+        {canPropose ? (
+          <Button size="sm" variant="outline" className="ml-auto" onClick={onPropose}>
+            <Plus /> Propose amendment
+          </Button>
+        ) : null}
+      </header>
+      {amendments.length === 0 ? (
+        <p className="px-4 py-5 text-center text-xs text-sg-dim">No amendments yet. Use one to add or remove a member, change a role, weight or allocation factor, or delegate the Project Lead role.</p>
+      ) : (
+        <ul className="divide-y divide-sg-line">
+          {amendments.map((a) => (
+            <AmendmentItem key={a.id} a={a} initiative={initiative} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function AmendmentItem({ a, initiative }: { a: TeamAmendment; initiative: Initiative }) {
+  const members = useCrm((s) => s.initiativeMembers);
+  const initiatives = useCrm((s) => s.initiatives);
+  const profiles = useCrm((s) => s.employeeProfiles);
+  const currentUserId = useCrm((s) => s.currentUserId);
+  const voteAmendment = useCrm((s) => s.voteAmendment);
+  const prcDecideAmendment = useCrm((s) => s.prcDecideAmendment);
+  const notify = useUi((s) => s.notify);
+  const userMap = useUserMap();
+  const [note, setNote] = useState("");
+  const [expanded, setExpanded] = useState(a.status === "open" || a.status === "tied");
+  const name = (id: string) => userMap.get(id)?.name ?? id;
+  const live = a.status === "open" || a.status === "tied";
+  const joining = a.change.kind === "add" ? a.change.userId : undefined;
+  // closed amendments show the votes as cast; open ones show the current team
+  const voters = useMemo(() => (live ? currentVoters(members, initiative.id, joining) : [...new Set(a.votes.map((v) => v.userId))]), [live, members, initiative.id, joining, a.votes]);
+  const vote = (u: string) => a.votes.find((v) => v.userId === u)?.vote;
+  const yes = voters.filter((u) => vote(u) === "for").length;
+  const no = voters.filter((u) => vote(u) === "against").length;
+  const n = voters.length;
+  const need = Math.floor(n / 2) + 1;
+  const issues = useMemo(() => amendmentIssues(a, initiative, { initiatives, members, profiles }), [a, initiative, initiatives, members, profiles]);
+  const voteDue = addBusinessDays(a.circulatedAt, POLICY.sla.amendmentVoteBusinessDays);
+  const st = AMEND_STATUS[a.status];
+
+  const decide = (outcome: "passed" | "failed" | "blocked") => {
+    if (outcome === "blocked" && (!issues.length || note.trim().length < 5)) return;
+    prcDecideAmendment(a.id, outcome, note.trim() || (outcome === "passed" ? "PRC deciding vote for" : "PRC deciding vote against"));
+    setNote("");
+    notify(outcome === "blocked" ? "Amendment blocked by the PRC — breaks the policy" : outcome === "passed" ? "PRC passed the amendment — ledger updated" : "PRC rejected the amendment");
+  };
+
+  return (
+    <li className="px-4 py-3">
+      <button type="button" onClick={() => setExpanded((v) => !v)} className="flex w-full flex-wrap items-center gap-2 text-left">
+        {expanded ? <ChevronDown className="size-3.5 text-sg-dim" /> : <ChevronRight className="size-3.5 text-sg-dim" />}
+        <Chip color={st.color} dot>
+          {st.label}
+        </Chip>
+        <span className="min-w-0 flex-1 text-sm font-semibold text-sg-white">{describeChange(a, members, name)}</span>
+        <span className="sg-num text-2xs text-sg-muted">
+          for {yes} · against {no} · not voted {Math.max(0, n - yes - no)} of {n}
+        </span>
+        <span className="text-2xs text-sg-dim">effective {formatDate(a.effectiveDate, "medium")}</span>
+      </button>
+      {expanded ? (
+        <div className="mt-2 space-y-3 pl-5">
+          <div className="grid gap-x-6 gap-y-1 text-2xs text-sg-muted sm:grid-cols-2">
+            <span>
+              Proposed by <span className="text-sg-text">{name(a.proposedById)}</span> · circulated {formatDate(a.circulatedAt, "datetime")}
+            </span>
+            <span>
+              Reason: <span className="text-sg-text">{a.reason}</span>
+            </span>
+            {a.change.kind === "add" ? (
+              <span>
+                New member&apos;s consent: {a.change.consent ? <span className="text-soft-green">given</span> : <span className="text-soft-red">missing</span>} · joining member does not vote on their own admission
+              </span>
+            ) : null}
+            {live ? (
+              <span>
+                Vote closes {formatDate(voteDue, "medium")} · needs {need} of {n} for
+              </span>
+            ) : null}
+          </div>
+
+          {/* votes */}
+          <table className="w-full max-w-[560px] text-xs">
+            <thead>
+              <tr className="text-left">
+                <th className="sg-eyebrow py-1 font-semibold">Current member</th>
+                <th className="sg-eyebrow py-1 font-semibold">Vote</th>
+                <th className="sg-eyebrow py-1 text-right font-semibold">{live ? "Record vote" : "Date"}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {voters.map((u) => {
+                const v = a.votes.find((x) => x.userId === u);
+                return (
+                  <tr key={u} className="border-t border-sg-line/60">
+                    <td className="py-1.5">
+                      <span className="flex items-center gap-1.5">
+                        <Avatar user={userMap.get(u)} size="xs" /> {name(u)}
+                        {u === currentUserId ? <span className="text-2xs text-sg-dim">(you)</span> : null}
+                      </span>
+                    </td>
+                    <td className="py-1.5">{v ? <Chip color={v.vote === "for" ? "green" : "red"}>{v.vote === "for" ? "For" : "Against"}</Chip> : <span className="text-2xs text-sg-dim">Not voted</span>}</td>
+                    <td className="py-1.5 text-right">
+                      {a.status === "open" ? (
+                        <span className="inline-flex gap-1">
+                          <Button size="xs" variant={v?.vote === "for" ? "primary" : "ghost"} onClick={() => (voteAmendment(a.id, "for", u), notify(`${name(u)} voted for`))}>
+                            For
+                          </Button>
+                          <Button size="xs" variant={v?.vote === "against" ? "danger" : "ghost"} onClick={() => (voteAmendment(a.id, "against", u), notify(`${name(u)} voted against`))}>
+                            Against
+                          </Button>
+                        </span>
+                      ) : (
+                        <span className="text-2xs text-sg-dim">{v ? formatDate(v.at, "short") : "—"}</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {!voters.length ? (
+                <tr>
+                  <td colSpan={3} className="py-2 text-2xs text-sg-dim">
+                    No current members on the ledger to vote — the PRC decides.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+          {a.status === "open" ? <p className="text-2xs text-sg-dim">Votes are recorded on each member&apos;s behalf from their signed amendment form; one vote each, regardless of weight.</p> : null}
+
+          {/* PRC */}
+          {issues.length ? (
+            <div className="rounded-md border border-soft-red/40 bg-soft-red/10 p-2 text-2xs text-soft-red">
+              <div className="mb-0.5 flex items-center gap-1.5 font-semibold">
+                <Ban className="size-3" /> Policy issues — grounds for a PRC block
+              </div>
+              <ul className="list-disc pl-4">
+                {issues.map((i) => (
+                  <li key={i}>{i}</li>
+                ))}
+              </ul>
+            </div>
+          ) : live ? (
+            <p className="flex items-center gap-1.5 text-2xs text-soft-green">
+              <ShieldCheck className="size-3.5" /> Complies with the policy — eligibility, leadership capacity and allocation limits; the PRC may not block it.
+            </p>
+          ) : null}
+          {live ? (
+            <div className="flex flex-wrap items-end gap-2 rounded-md border border-sg-line p-2">
+              <div className="min-w-[220px] flex-1">
+                <Label>PRC note{a.status === "tied" ? " (deciding vote)" : " (required to block)"}</Label>
+                <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder={a.status === "tied" ? "Reason for the deciding vote" : "Which rule the amendment breaks"} className="h-7 text-xs" />
+              </div>
+              {a.status === "tied" ? (
+                <>
+                  <Button size="sm" variant="primary" onClick={() => decide("passed")}>
+                    <Gavel /> PRC: pass
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => decide("failed")}>
+                    PRC: reject
+                  </Button>
+                </>
+              ) : null}
+              <Button size="sm" variant="danger" disabled={!issues.length || note.trim().length < 5} title={issues.length ? "Block — the amendment breaks the policy" : "The PRC may block only an amendment that breaks the policy (§6.8)"} onClick={() => decide("blocked")}>
+                <Ban /> Block
+              </Button>
+            </div>
+          ) : null}
+          {a.prcDecision ? (
+            <p className="text-2xs text-sg-muted">
+              PRC {a.prcDecision.outcome} · {name(a.prcDecision.byId)} · {formatDate(a.prcDecision.at, "medium")} — “{a.prcDecision.note}”
+            </p>
+          ) : null}
+          {a.recordedAt ? (
+            <p className="flex items-center gap-1.5 text-2xs text-soft-green">
+              <Check className="size-3" /> Recorded in the Team Allocation Ledger {formatDate(a.recordedAt, "datetime")}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function AmendmentModal({ initiative, current, preset, onClose }: { initiative: Initiative; current: InitiativeMember[]; preset?: Partial<AmendDraft>; onClose: () => void }) {
+  const users = useCrm((s) => s.users);
+  const members = useCrm((s) => s.initiativeMembers);
+  const profiles = useCrm((s) => s.employeeProfiles);
+  const initiatives = useCrm((s) => s.initiatives);
+  const proposeAmendment = useCrm((s) => s.proposeAmendment);
+  const notify = useUi((s) => s.notify);
+  const userMap = useUserMap();
+  const live = useMemo(() => current.filter((m) => m.consent !== "declined"), [current]);
+  const fromMember = (memberId: string): Partial<AmendDraft> => {
+    const m = members.find((x) => x.id === memberId);
+    return m ? { memberId, roles: m.roles.filter((r) => r !== "initiator" || initiative.origination !== "company"), specialistWeight: m.specialistWeight ?? ROLE_META.specialist.weight, override: m.weightOverride != null ? String(m.weightOverride) : "", allocationFactor: m.allocationFactor ?? 1 } : { memberId };
+  };
+  const [d, setD] = useState<AmendDraft>(() => ({
+    kind: "add",
+    userId: "",
+    memberId: "",
+    roles: ["engineer"],
+    specialistWeight: ROLE_META.specialist.weight,
+    override: "",
+    allocationFactor: 1,
+    consent: false,
+    effective: todayInput(),
+    reason: "",
+    ...preset,
+    ...(preset?.kind === "change" && preset.memberId ? fromMember(preset.memberId) : {}),
+  }));
+  const set = (p: Partial<AmendDraft>) => setD((x) => ({ ...x, ...p }));
+  const subjectUser = d.kind === "add" ? d.userId : members.find((m) => m.id === d.memberId)?.userId ?? "";
+  const override = d.override.trim() ? Number(d.override) : null;
+  const overrideValid = override == null || (Number.isFinite(override) && override > 0 && override <= 10);
+  const change: TeamAmendment["change"] | null =
+    d.kind === "add"
+      ? d.userId
+        ? { kind: "add", userId: d.userId, roles: d.roles, specialistWeight: d.roles.includes("specialist") ? d.specialistWeight : null, weightOverride: override, allocationFactor: d.allocationFactor, consent: d.consent }
+        : null
+      : d.kind === "remove"
+        ? d.memberId
+          ? { kind: "remove", memberId: d.memberId }
+          : null
+        : d.memberId
+          ? { kind: "change", memberId: d.memberId, roles: d.roles, specialistWeight: d.roles.includes("specialist") ? d.specialistWeight : null, weightOverride: override, allocationFactor: d.allocationFactor }
+          : null;
+  const effectiveIso = d.effective ? startOfDay(d.effective) : "";
+  const issues = useMemo(() => (change && effectiveIso ? amendmentIssues({ change, effectiveDate: effectiveIso }, initiative, { initiatives, members, profiles }) : []), [change, effectiveIso, initiative, initiatives, members, profiles]);
+  const maxA = maxAllocationFactor(profiles.find((p) => p.userId === subjectUser));
+  const past = !!d.effective && d.effective < todayInput();
+  const errors: string[] = [];
+  if (!change) errors.push(d.kind === "add" ? "Choose who joins" : "Choose the member");
+  if (d.kind !== "remove" && !d.roles.length) errors.push("Pick at least one role");
+  if (!overrideValid) errors.push("Agreed weight must be between 0 and 10");
+  if (d.kind === "add" && !d.consent) errors.push("The joining member must consent to their role, weight and allocation factor");
+  if (!d.effective) errors.push("Set the effective date");
+  if (past) errors.push("Amendments apply from their effective date forward — never to past work (§6.8 step 6)");
+  if (d.reason.trim().length < 5) errors.push("State the reason");
+  const voters = currentVoters(members, initiative.id, d.kind === "add" ? d.userId : undefined);
+
+  const submit = () => {
+    if (errors.length || !change) return;
+    const id = proposeAmendment(initiative.id, change, effectiveIso, d.reason.trim());
+    const status = useCrm.getState().teamAmendments.find((a) => a.id === id)?.status;
+    notify(status === "passed" ? "Amendment passed — Team Allocation Ledger updated" : status === "tied" ? "Amendment circulated — no voting members, the PRC decides" : `Amendment circulated to ${voters.length} member${voters.length === 1 ? "" : "s"} — vote within ${POLICY.sla.amendmentVoteBusinessDays} business days`);
+    onClose();
+  };
+
+  return (
+    <Modal
+      open
+      onOpenChange={(v) => !v && onClose()}
+      title="Propose an amendment"
+      description="Annex D Part 2 — circulated in writing to the whole team (§6.8)"
+      className="max-w-2xl"
+      footer={
+        <>
+          <span className="mr-auto text-2xs text-sg-dim">{voters.length} current member{voters.length === 1 ? "" : "s"} vote · passes with {Math.floor(voters.length / 2) + 1}</span>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={errors.length > 0} onClick={submit} title={errors.join("\n")}>
+            <Send /> Circulate to the team
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <div className="flex rounded border border-sg-line p-0.5" role="radiogroup" aria-label="Change">
+          {(
+            [
+              ["add", "Add a member"],
+              ["change", "Change role / weight / allocation"],
+              ["remove", "Remove a member"],
+            ] as const
+          ).map(([k, l]) => (
+            <button key={k} type="button" role="radio" aria-checked={d.kind === k} onClick={() => set({ kind: k, ...(k === "add" ? { roles: ["engineer"] as ProjectRole[], override: "", allocationFactor: 1 } : {}) })} className={cn("h-7 flex-1 rounded-sm px-2 text-xs font-semibold", d.kind === k ? "bg-sg-card-3 text-sg-white" : "text-sg-dim hover:text-sg-white")}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {d.kind === "add" ? (
+          <div>
+            <Label>Joining member</Label>
+            <Select value={d.userId} onChange={(e) => set({ userId: e.target.value, consent: false })}>
+              <option value="">Choose…</option>
+              {users
+                .filter((u) => !live.some((m) => m.userId === u.id))
+                .map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name} — {u.title}
+                  </option>
+                ))}
+            </Select>
+          </div>
+        ) : (
+          <div>
+            <Label>Member</Label>
+            <Select value={d.memberId} onChange={(e) => set(d.kind === "change" ? fromMember(e.target.value) : { memberId: e.target.value })}>
+              <option value="">Choose…</option>
+              {live.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {userMap.get(m.userId)?.name ?? m.userId} — {m.roles.map((r) => ROLE_META[r].label).join(" + ")} · W {memberWeight(m).toFixed(2)} × A {(m.allocationFactor ?? 1).toFixed(2)}
+                </option>
+              ))}
+            </Select>
+          </div>
+        )}
+
+        {d.kind !== "remove" ? (
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_110px_110px]">
+            <div>
+              <Label>Role(s)</Label>
+              <RoleToggles value={d.roles.filter((r) => r !== "initiator")} onChange={(v) => set({ roles: [...(d.roles.includes("initiator") ? (["initiator"] as ProjectRole[]) : []), ...v] })} roles={ASSIGNABLE_ROLES} />
+              {d.roles.includes("specialist") ? (
+                <div className="mt-1.5">
+                  <SpecialistSelect value={d.specialistWeight} onChange={(v) => set({ specialistWeight: v })} />
+                </div>
+              ) : null}
+              {d.roles.includes("initiator") ? <p className="mt-1 text-2xs text-sg-dim">Keeps the Initiator weight 0.5 (§6.3).</p> : null}
+            </div>
+            <div>
+              <Label>Allocation A</Label>
+              <AllocationSelect value={d.allocationFactor} max={maxA} onChange={(v) => set({ allocationFactor: v })} />
+            </div>
+            <div>
+              <Label>Agreed W (optional)</Label>
+              <Input inputMode="decimal" value={d.override} placeholder={memberWeight({ roles: d.roles, specialistWeight: d.specialistWeight, weightOverride: null }).toFixed(2)} onChange={(e) => set({ override: e.target.value.replace(/[^\d.]/g, "") })} className="sg-num h-8" />
+            </div>
+          </div>
+        ) : null}
+
+        <div className="grid gap-3 sm:grid-cols-[160px_minmax(0,1fr)]">
+          <div>
+            <Label>Effective date</Label>
+            <Input type="date" min={todayInput()} value={d.effective} onChange={(e) => set({ effective: e.target.value })} />
+          </div>
+          <div>
+            <Label>Reason</Label>
+            <Textarea value={d.reason} onChange={(e) => set({ reason: e.target.value })} placeholder={d.kind === "remove" ? "e.g. Moves to another project at the end of the design phase" : "Why the change reflects actual responsibilities"} className="min-h-[56px]" />
+          </div>
+        </div>
+
+        {d.kind === "add" && d.userId ? (
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-sg-text">
+            <input type="checkbox" checked={d.consent} onChange={(e) => set({ consent: e.target.checked })} className="size-3.5 accent-sg-white" />
+            {userMap.get(d.userId)?.name} consents to the role, weight and allocation factor (does not vote on their own admission)
+          </label>
+        ) : null}
+
+        {issues.length ? (
+          <div className="rounded-lg border border-soft-red/40 bg-soft-red/10 p-2.5 text-xs text-soft-red">
+            <div className="mb-1 flex items-center gap-1.5 font-semibold">
+              <TriangleAlert className="size-3.5" /> The PRC may block this amendment
+              <Cite s="6.8" />
+            </div>
+            <ul className="list-disc space-y-0.5 pl-5">
+              {issues.map((i) => (
+                <li key={i}>{i}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {errors.length && (d.reason || d.userId || d.memberId) ? (
+          <ul className="space-y-0.5 text-2xs text-soft-yellow">
+            {errors.map((e) => (
+              <li key={e}>• {e}</li>
+            ))}
+          </ul>
+        ) : null}
+        <p className="text-2xs text-sg-dim">
+          A member whose role is removed or weight reduced by an amendment they voted against may appeal to the PRC (§14). Removal for poor performance follows §7.5 instead. Type {initiative.type} lead roles count {PROJECT_TYPE_META[initiative.type].capacityFactor} toward the 2.0 leadership capacity (§7.3).
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
+/* ───────────────────────── Annex D Part 3 ledger ───────────────────────── */
+
+function LedgerCard({ initiative, rows, defaultOpen }: { initiative: Initiative; rows: InitiativeMember[]; defaultOpen: boolean }) {
+  const userMap = useUserMap();
+  const [open, setOpen] = useState(defaultOpen);
+  const [now] = useState(() => Date.now());
+  const sorted = useMemo(
+    () => [...rows].filter((m) => m.consent !== "declined").sort((a, b) => (userMap.get(a.userId)?.name ?? a.userId).localeCompare(userMap.get(b.userId)?.name ?? b.userId) || a.joinedAt.localeCompare(b.joinedAt)),
+    [rows, userMap],
+  );
+  const closed = sorted.filter((m) => !isOpenRow(m, now)).length;
+  if (!sorted.length) return null;
+  return (
+    <section className="rounded-xl border border-sg-line bg-sg-card">
+      <button type="button" onClick={() => setOpen((v) => !v)} className="flex w-full flex-wrap items-center gap-2 border-b border-sg-line px-4 py-2.5 text-left">
+        {open ? <ChevronDown className="size-3.5 text-sg-dim" /> : <ChevronRight className="size-3.5 text-sg-dim" />}
+        <History className="size-4 text-sg-muted" />
+        <span className="font-display text-sm font-extrabold text-sg-white">Team Allocation Ledger</span>
+        <Cite s="Annex D" />
+        <span className="text-2xs text-sg-dim">
+          {sorted.length} row{sorted.length === 1 ? "" : "s"} · {closed} closed — one row per member per period of unchanged role, weight and allocation; each amendment closes rows and opens new ones (§6.5)
+        </span>
+      </button>
+      {open ? (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px] text-xs">
+            <thead>
+              <tr className="border-b border-sg-line text-left text-2xs uppercase tracking-[0.1em] text-sg-dim">
+                <th className="px-4 py-2 font-semibold">Member</th>
+                <th className="px-2 py-2 font-semibold">Role(s)</th>
+                <th className="px-2 py-2 text-right font-semibold">Weight W</th>
+                <th className="px-2 py-2 text-right font-semibold">Allocation A</th>
+                <th className="px-2 py-2 font-semibold">Start on team</th>
+                <th className="px-2 py-2 font-semibold">End on team</th>
+                <th className="px-2 py-2 font-semibold">Authority</th>
+                <th className="px-4 py-2 font-semibold">State</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((m) => {
+                const isClosed = !isOpenRow(m, now);
+                const future = !hasStarted(m, now) && initiative.status !== "draft";
+                return (
+                  <tr key={m.id} className={cn("border-b border-sg-line/60 last:border-0", isClosed && "text-sg-dim")}>
+                    <td className="px-4 py-1.5">
+                      <span className="flex items-center gap-1.5">
+                        <Avatar user={userMap.get(m.userId)} size="xs" />
+                        <span className={isClosed ? "text-sg-muted" : "text-sg-white"}>{userMap.get(m.userId)?.name ?? m.userId}</span>
+                      </span>
+                    </td>
+                    <td className="px-2 py-1.5">{m.roles.map((r) => ROLE_META[r].label).join(" + ")}</td>
+                    <td className="sg-num px-2 py-1.5 text-right">
+                      {memberWeight(m).toFixed(2)}
+                      {m.weightOverride != null ? <span className="text-soft-yellow" title={m.weightNote || "Agreed non-standard weight"}> *</span> : null}
+                    </td>
+                    <td className="sg-num px-2 py-1.5 text-right">{(m.allocationFactor ?? 1).toFixed(2)}</td>
+                    <td className="sg-num px-2 py-1.5">{formatDate(m.joinedAt, "medium")}</td>
+                    <td className="sg-num px-2 py-1.5">{m.leftAt ? formatDate(m.leftAt, "medium") : "—"}</td>
+                    <td className="max-w-[240px] truncate px-2 py-1.5" title={m.authority ?? ""}>
+                      {m.authority ?? "Role and Weight Agreement"}
+                    </td>
+                    <td className="px-4 py-1.5">
+                      {m.removal.stage === "removed" ? (
+                        <Chip color="red">Removed (§7.5)</Chip>
+                      ) : isClosed ? (
+                        <Chip color="blue">Closed</Chip>
+                      ) : future ? (
+                        <Chip color="cyan">Upcoming</Chip>
+                      ) : m.consent !== "accepted" ? (
+                        <Chip color="yellow">Not signed</Chip>
+                      ) : m.prcApproved ? (
+                        <Chip color="green">Open</Chip>
+                      ) : (
+                        <Chip color="orange">PRC check</Chip>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -709,22 +1370,22 @@ function AddMemberPanel({ initiative, mode, current }: { initiative: Initiative;
 function OverrideModal({ member, onClose }: { member: InitiativeMember; onClose: () => void }) {
   const updateMember = useCrm((s) => s.updateMember);
   const notify = useUi((s) => s.notify);
-  const currentUserId = useCrm((s) => s.currentUserId);
   const userMap = useUserMap();
   const standard = memberWeight({ ...member, weightOverride: null });
   const [value, setValue] = useState((member.weightOverride ?? standard).toFixed(2));
-  const [unanimous, setUnanimous] = useState(false);
-  const [prc, setPrc] = useState(false);
+  const [reason, setReason] = useState(member.weightNote ?? "");
+  const [allSigned, setAllSigned] = useState(member.weightOverride != null);
   const n = Number(value);
   const valid = Number.isFinite(n) && n > 0 && n <= 10;
   const name = userMap.get(member.userId)?.name ?? "member";
+  const ok = valid && allSigned && reason.trim().length >= 10;
 
   return (
     <Modal
       open
       onOpenChange={(v) => !v && onClose()}
-      title={`Weight override — ${name}`}
-      description="Consensus adjustment of standard role weights (§4.1)"
+      title={`Agreed weight — ${name}`}
+      description="A non-standard weight in the Role and Weight Agreement (§6.7, Annex D)"
       footer={
         <>
           {member.weightOverride != null && (
@@ -732,12 +1393,12 @@ function OverrideModal({ member, onClose }: { member: InitiativeMember; onClose:
               variant="ghost"
               className="mr-auto"
               onClick={() => {
-                updateMember(member.id, { weightOverride: null });
-                notify("Override cleared — standard weights apply");
+                updateMember(member.id, { weightOverride: null, weightNote: "" });
+                notify("Standard weights apply again");
                 onClose();
               }}
             >
-              Clear override
+              Use the standard weight
             </Button>
           )}
           <Button variant="ghost" onClick={onClose}>
@@ -745,58 +1406,58 @@ function OverrideModal({ member, onClose }: { member: InitiativeMember; onClose:
           </Button>
           <Button
             variant="primary"
-            disabled={!valid || !unanimous || !prc}
+            disabled={!ok}
             onClick={() => {
-              updateMember(member.id, { weightOverride: Math.round(n * 100) / 100 });
-              notify(`Weight for ${name} set to ${n.toFixed(2)}`);
+              updateMember(member.id, { weightOverride: Math.round(n * 100) / 100, weightNote: reason.trim() });
+              notify(`Agreed weight for ${name} set to ${n.toFixed(2)}`);
               onClose();
             }}
           >
-            Apply override
+            Record agreed weight
           </Button>
         </>
       }
     >
       <div className="space-y-3 text-sm">
         <div className="rounded-lg border border-soft-yellow/40 bg-soft-yellow/10 p-3 text-xs text-soft-yellow">
-          Standard weights may only be changed when <strong>both</strong> conditions hold: (1) all team members agree unanimously, and (2) the Project Review Committee approves the adjustment.
-          <Cite s="4.1" />
+          The standard weights apply unless <strong>every initial member agrees in writing</strong> to different weights that reflect actual responsibilities. The reason is recorded on the agreement; the PRC checks it at approval.
+          <Cite s="6.7" />
         </div>
         <div className="flex items-end gap-3">
           <div className="w-32">
-            <Label>New weight</Label>
+            <Label>Agreed weight</Label>
             <Input inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value.replace(/[^\d.]/g, ""))} className="sg-num" autoFocus />
           </div>
           <p className="pb-1.5 text-xs text-sg-dim">
             Standard: <span className="sg-num font-semibold text-sg-muted">{standard.toFixed(2)}</span> ({member.roles.map((r) => ROLE_META[r].label).join(" + ")})
           </p>
         </div>
+        <div>
+          <Label>Reason for the non-standard weight (required)</Label>
+          <Textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Signs off the pressure-vessel design as engineer of record in addition to the TL role" className="min-h-[64px]" />
+        </div>
         <label className="flex cursor-pointer items-center gap-2 text-xs text-sg-text">
-          <input type="checkbox" checked={unanimous} onChange={(e) => setUnanimous(e.target.checked)} className="size-3.5 accent-sg-white" />
-          All team members have agreed unanimously
+          <input type="checkbox" checked={allSigned} onChange={(e) => setAllSigned(e.target.checked)} className="size-3.5 accent-sg-white" />
+          Every initial team member has signed the agreement with this weight
         </label>
-        <label className="flex cursor-pointer items-center gap-2 text-xs text-sg-text">
-          <input type="checkbox" checked={prc} onChange={(e) => setPrc(e.target.checked)} className="size-3.5 accent-sg-white" />
-          Approved by the PRC — recorded by {userMap.get(currentUserId)?.name ?? "current user"}
-        </label>
-        {!valid && <p className="text-2xs text-soft-red">Enter a weight greater than 0.</p>}
+        {!valid && <p className="text-2xs text-soft-red">Enter a weight between 0 and 10.</p>}
       </div>
     </Modal>
   );
 }
 
 const REMOVAL_STEPS = [
-  { stage: "verbal", label: "Verbal warning", desc: `Project Lead documents the concern; ${POLICY.removalWarningDays.verbal} days to improve.` },
-  { stage: "written", label: "Written warning", desc: `Formal written warning; ${POLICY.removalWarningDays.written} days to improve.` },
-  { stage: "removed", label: "Removal", desc: "Removed from the team and reported to HR and the direct manager. Bonus prorated for satisfactory work to date." },
+  { stage: "verbal", label: "Verbal warning", desc: `The Project Lead names the areas to improve; ${POLICY.removalWarningDays.verbal} days to improve.` },
+  { stage: "written", label: "Written project warning", desc: `${POLICY.removalWarningDays.written}-day improvement period. Not a disciplinary warning (§3.4).` },
+  { stage: "removed", label: "Removal with PRC approval", desc: "Keeps the share of payments for work periods up to the removal date; reported to HR and the line manager; appeal to the PRC within 5 business days." },
 ] as const;
 
 function RemovalModal({ member, onClose }: { member: InitiativeMember; onClose: () => void }) {
   const advanceRemoval = useCrm((s) => s.advanceRemoval);
-  const removeMember = useCrm((s) => s.removeMember);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
   const [note, setNote] = useState("");
+  const [prc, setPrc] = useState(false);
   const name = userMap.get(member.userId)?.name ?? "member";
   const stage = member.removal.stage;
   const idx: number = stage === "none" ? 0 : stage === "verbal" ? 1 : stage === "written" ? 2 : 3;
@@ -804,39 +1465,26 @@ function RemovalModal({ member, onClose }: { member: InitiativeMember; onClose: 
   const waitDays = stage === "verbal" ? POLICY.removalWarningDays.verbal : stage === "written" ? POLICY.removalWarningDays.written : 0;
   const periodEnd = member.removal.updatedAt ? Date.parse(member.removal.updatedAt) + waitDays * DAY : 0;
   const early = waitDays > 0 && periodEnd > Date.now();
+  const needsPrc = next?.stage === "removed";
 
   return (
     <Modal
       open
       onOpenChange={(v) => !v && onClose()}
-      title={`Removal protocol — ${name}`}
-      description="Performance-based removal follows three documented steps (§5.3)"
+      title={`Removal from the project — ${name}`}
+      description="Poor project performance follows three documented steps (§7.5). Other team changes use an amendment (§6.8)."
       footer={
         <>
-          {stage === "none" && (
-            <Button
-              variant="ghost"
-              className="mr-auto"
-              title="Voluntary departure or reassignment — compensation adjusts prospectively (§7.2)"
-              onClick={() => {
-                removeMember(member.id);
-                notify(`${name} left the team`);
-                onClose();
-              }}
-            >
-              Record voluntary departure
-            </Button>
-          )}
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           {next && (
             <Button
               variant={next.stage === "removed" ? "danger" : "primary"}
-              disabled={note.trim().length < 5}
+              disabled={note.trim().length < 5 || (needsPrc && !prc)}
               onClick={() => {
                 advanceRemoval(member.id, note.trim());
-                notify(next.stage === "removed" ? `${name} removed — HR and manager notified` : `${next.label} recorded for ${name}`);
+                notify(next.stage === "removed" ? `${name} removed — HR and line manager notified` : `${next.label} recorded for ${name}`);
                 onClose();
               }}
             >
@@ -873,166 +1521,19 @@ function RemovalModal({ member, onClose }: { member: InitiativeMember; onClose: 
         </p>
       )}
       {next && (
-        <div className="mt-3">
-          <Label>Documentation note (required)</Label>
-          <Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="What was discussed, expectations, evidence…" className="min-h-[72px]" />
+        <div className="mt-3 space-y-2">
+          <div>
+            <Label>Documentation note (required)</Label>
+            <Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="What was discussed, expectations, evidence…" className="min-h-[72px]" />
+          </div>
+          {needsPrc ? (
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-sg-text">
+              <input type="checkbox" checked={prc} onChange={(e) => setPrc(e.target.checked)} className="size-3.5 accent-sg-white" />
+              The PRC approved the removal<Cite s="7.5" />
+            </label>
+          ) : null}
         </div>
       )}
-    </Modal>
-  );
-}
-
-function TransferModal({ initiative, current, lead, onClose }: { initiative: Initiative; current: InitiativeMember[]; lead: InitiativeMember | undefined; onClose: () => void }) {
-  const users = useCrm((s) => s.users);
-  const transferLead = useCrm((s) => s.transferLead);
-  const notify = useUi((s) => s.notify);
-  const userMap = useUserMap();
-  const [to, setTo] = useState("");
-  const [reason, setReason] = useState("");
-  const [ack, setAck] = useState(false);
-  const roles = useMemo<ProjectRole[]>(() => ["project_lead"], []);
-  const check = useCandidateCheck(to, roles, initiative);
-  const teamIds = new Set(current.filter((m) => m.consent !== "declined").map((m) => m.userId));
-  const ok = canProceed(check, ack) && reason.trim().length >= 5;
-
-  return (
-    <Modal
-      open
-      onOpenChange={(v) => !v && onClose()}
-      title="Transfer Project Lead"
-      description="Role changes need PRC approval; compensation adjusts prospectively from the effective date (§7.2)"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            disabled={!ok}
-            onClick={() => {
-              transferLead(initiative.id, to, reason.trim());
-              notify(`Project Lead transferred to ${userMap.get(to)?.name ?? "new lead"}`);
-              onClose();
-            }}
-          >
-            Transfer lead
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 text-xs text-sg-muted">
-          Current lead:
-          {lead ? (
-            <>
-              <Avatar user={userMap.get(lead.userId)} size="xs" /> <span className="font-semibold text-sg-white">{userMap.get(lead.userId)?.name}</span>
-            </>
-          ) : (
-            <span className="text-soft-orange">none assigned</span>
-          )}
-        </div>
-        <div>
-          <Label>New Project Lead</Label>
-          <Select value={to} onChange={(e) => (setTo(e.target.value), setAck(false))}>
-            <option value="">Choose…</option>
-            <optgroup label="Current team">
-              {users
-                .filter((u) => teamIds.has(u.id) && u.id !== lead?.userId)
-                .map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name} — {u.title}
-                  </option>
-                ))}
-            </optgroup>
-            <optgroup label="Other employees">
-              {users
-                .filter((u) => !teamIds.has(u.id))
-                .map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name} — {u.title}
-                  </option>
-                ))}
-            </optgroup>
-          </Select>
-        </div>
-        {to && <CapacityMeter userId={to} adding={check?.capacity.adds ?? 0} />}
-        <CandidateNotices check={check} ack={ack} onAck={setAck} />
-        <div>
-          <Label>Reason (recorded in the audit log)</Label>
-          <Textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Rani reassigned to the Selat rollout; Fajar takes over delivery from 1 Dec" className="min-h-[64px]" />
-        </div>
-        <p className="text-2xs text-sg-dim">
-          {lead ? `${userMap.get(lead.userId)?.name} keeps any other roles; the Project Lead weight (2.0) moves to the new lead.` : "The new lead joins with the Project Lead role (weight 2.0)."} Type {initiative.type} lead roles count {PROJECT_TYPE_META[initiative.type].capacityFactor} toward the 2.0 capacity limit
-          <Cite s="5.1" />
-        </p>
-      </div>
-    </Modal>
-  );
-}
-
-function ApplyModal({ initiative, onClose }: { initiative: Initiative; onClose: () => void }) {
-  const currentUserId = useCrm((s) => s.currentUserId);
-  const addMember = useCrm((s) => s.addMember);
-  const notify = useUi((s) => s.notify);
-  const [roles, setRoles] = useState<ProjectRole[]>(["engineer"]);
-  const [specialistWeight, setSpecialistWeight] = useState(ROLE_META.specialist.weight);
-  const [allocation, setAllocation] = useState("20");
-  const [ack, setAck] = useState(false);
-  const check = useCandidateCheck(currentUserId, roles, initiative);
-  const ok = canProceed(check, ack) && roles.length > 0;
-  const applyRoles = ASSIGNABLE_ROLES.filter((r) => r !== "project_lead");
-
-  return (
-    <Modal
-      open
-      onOpenChange={(v) => !v && onClose()}
-      title="Apply to join"
-      description={`Applications are reviewed by the Project Lead and PRC within ${POLICY.sla.applicationBusinessDays} business days (§7.1)`}
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            disabled={!ok}
-            onClick={() => {
-              addMember(initiative.id, currentUserId, roles, { application: true, consent: "accepted", allocationPct: Math.max(0, Math.min(100, Number(allocation) || 0)), specialistWeight: roles.includes("specialist") ? specialistWeight : null });
-              notify("Application submitted — awaiting PRC approval");
-              onClose();
-            }}
-          >
-            <UserPlus className="size-4" /> Submit application
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-3">
-        <div className="flex items-center gap-2 text-xs text-sg-muted">
-          Your eligibility: <EligibilityBadge userId={currentUserId} />
-        </div>
-        <div>
-          <Label>Roles you&apos;re applying for</Label>
-          <RoleToggles value={roles} onChange={setRoles} roles={applyRoles} />
-          {roles.includes("specialist") && (
-            <div className="mt-1.5 flex items-center gap-2 text-2xs text-sg-dim">
-              Proposed specialist weight
-              <Select value={specialistWeight.toFixed(1)} onChange={(e) => setSpecialistWeight(Number(e.target.value))} wrapperClassName="w-[68px]" className="h-6 px-1.5 pr-6 text-2xs">
-                {SPECIALIST_OPTIONS.map((w) => (
-                  <option key={w} value={w.toFixed(1)}>
-                    {w.toFixed(1)}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          )}
-        </div>
-        <div className="w-32">
-          <Label>Allocation %</Label>
-          <Input inputMode="numeric" value={allocation} onChange={(e) => setAllocation(e.target.value.replace(/\D/g, ""))} className="sg-num" />
-        </div>
-        <CandidateNotices check={check} ack={ack} onAck={setAck} />
-      </div>
     </Modal>
   );
 }

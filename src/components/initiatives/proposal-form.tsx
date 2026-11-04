@@ -20,7 +20,7 @@ import { PageHeader } from "@/components/shell/page-header";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Select, Textarea } from "@/components/ui/input";
 import { Chip, EmptyState, Kbd } from "@/components/ui/misc";
-import { Cite, Money, Pct, Rate, RateCurve, StatusChip, TierChip } from "./shared";
+import { Cite, Money, Pct, Rate, RateCurve, StatusChip, TierChip, milestoneWorkPeriods } from "./shared";
 import { TeamEditor } from "./team-editor";
 
 type Origination = NonNullable<Initiative["origination"]>;
@@ -267,11 +267,6 @@ const COST_FIELDS = [
 const DEFERRAL_PCTS = [0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3];
 const DEFERRAL_MONTHS = Array.from({ length: POLICY.deferral.maxMonths - POLICY.deferral.minMonths + 1 }, (_, i) => POLICY.deferral.minMonths + i);
 
-/** Work period each milestone pays for: previous milestone's due date (or project start) → this due date (§6.5). */
-export function milestoneWorkPeriods(milestones: Milestone[], startDate: string) {
-  const sorted = [...milestones].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-  return new Map(sorted.map((m, i) => [m.id, { from: i ? sorted[i - 1].dueDate : startDate, to: m.dueDate }] as const));
-}
 
 /* ───────────────────────── component ───────────────────────── */
 

@@ -1,45 +1,58 @@
 "use client";
 
-/* Derived HR register rows for /people (policy §1.2, §2.1, §4.5, §5.1, §6.2, §6.8). */
+/* Derived HR register rows for /people (Policy v4.0 §3, §7.1, §7.3, §9.3, §10, §11, §15.1). */
 import { useMemo } from "react";
 import { useCrm } from "@/lib/store";
 import type { User, SpectrumColor } from "@/lib/types";
 import type { EmployeeProfile, GovernanceRole, SeparationKind } from "@/lib/initiatives/types";
-import { concurrentMemberships, leadershipLoad, paidInYear, participationEligibility, probationBalance, type EligibilityResult } from "@/lib/initiatives/engine";
-import { POLICY } from "@/lib/initiatives/policy";
+import { concurrentNonLeadRoles, leadershipLoad, maxAllocationFactor, paidInYear, participationEligibility, probationBalance, type EligibilityResult } from "@/lib/initiatives/engine";
+import { EMPLOYMENT_META, POLICY_DATED } from "@/lib/initiatives/policy";
 
 export const GOVERNANCE_META: Record<GovernanceRole, { label: string; title: string; color: SpectrumColor }> = {
   prc: { label: "PRC", title: "Project Review Committee member", color: "magenta" },
-  ceo: { label: "CEO", title: "Chief Executive Officer", color: "magenta" },
-  cfo: { label: "CFO", title: "Chief Financial Officer", color: "yellow" },
-  hr: { label: "HR", title: "Human Resources", color: "cyan" },
-  finance: { label: "Finance", title: "Finance department", color: "yellow" },
-  executive_committee: { label: "ExCo", title: "Executive Committee", color: "blue" },
+  ceo: { label: "CEO", title: "Chief Executive Officer — PRC chair, holds the veto (§13.1)", color: "magenta" },
+  cfo: { label: "CFO", title: "Chief Financial Officer — certifies the break-even test and cash check (§9.1)", color: "yellow" },
+  hr: { label: "HR", title: "Human Resources — verifies eligibility and status (§3.5)", color: "cyan" },
+  finance: { label: "Finance", title: "Finance — calculates bonuses, issues statements (§13.2)", color: "yellow" },
+  executive_committee: { label: "ExCo", title: "Executive Committee — decides appeals (§4.6, §14)", color: "blue" },
 };
 
 export const SEPARATION_LABEL: Record<SeparationKind, string> = {
   resignation: "Resignation",
-  termination_for_cause: "Termination for cause",
-  termination_without_cause: "Termination without cause",
+  termination_for_cause: "Dismissal for a serious violation",
+  termination_without_cause: "Termination on other grounds",
+  contract_end: "End of fixed-term (PKWT) contract",
   retirement: "Retirement",
-  death_disability: "Death / permanent disability",
-  probation_failed: "Probation not completed",
+  death_disability: "Death or permanent disability",
+  probation_failed: "Employment ended in probation",
+  ineligible_status: "Move to an ineligible status",
 };
+
+/** Annex B signature state: missing → payments held (§15.1); signed before v4.0 was issued → re-sign the updated agreement. */
+export type AnnexBState = "missing" | "pre_v4" | "signed";
+export function annexBState(p: EmployeeProfile | undefined): AnnexBState | null {
+  if (!p) return null;
+  if (!p.acknowledgmentSignedAt) return "missing";
+  return Date.parse(p.acknowledgmentSignedAt) < Date.parse(POLICY_DATED) ? "pre_v4" : "signed";
+}
 
 export interface PersonRow {
   user: User;
   profile: EmployeeProfile | undefined;
   eligibility: EligibilityResult;
-  projects: number;
+  /** §7.1 concurrent non-lead roles (Engineer, Secretary, Specialist) on live projects */
+  nonLeadRoles: number;
   leadership: number;
   ytdPaid: number;
-  cap: number;
-  capPct: number; // 0–1+
   pendingDeferred: number;
-  probation: number; // outstanding accrual (withheld, not yet settled by an outcome)
+  probation: number; // held balance not yet settled by an outcome
   probationary: boolean;
   separated: boolean;
   inNotice: boolean;
+  annexB: AnnexBState | null;
+  /** employee may take part (eligible employment type) and is still employed */
+  participant: boolean;
+  allocationCap: number;
 }
 
 export const currentYear = () => String(new Date().getFullYear());
@@ -66,24 +79,23 @@ export function usePeopleRows(): PersonRow[] {
     const now = Date.now();
     return users.map((user) => {
       const profile = profiles.find((p) => p.userId === user.id);
-      const ytdPaid = paidInYear(user.id, bonusRuns, year, deferred);
-      const cap = (profile?.annualBaseSalary ?? 0) * POLICY.personAnnualCapOfSalary;
       const settled = outcomes.filter((o) => o.userId === user.id).reduce((s, o) => s + o.amount, 0);
       const { separated, inNotice } = noticeState(profile, now);
       return {
         user,
         profile,
         eligibility: participationEligibility(profile),
-        projects: concurrentMemberships(user.id, initiatives, members),
+        nonLeadRoles: concurrentNonLeadRoles(user.id, initiatives, members),
         leadership: leadershipLoad(user.id, initiatives, members, { includePending: true }).used,
-        ytdPaid,
-        cap,
-        capPct: cap > 0 ? ytdPaid / cap : 0,
+        ytdPaid: paidInYear(user.id, bonusRuns, year, deferred),
         pendingDeferred: deferred.filter((d) => d.userId === user.id && d.status === "pending").reduce((s, d) => s + d.amount, 0),
         probation: Math.max(0, probationBalance(user.id, bonusRuns) - settled),
         probationary: profile?.employmentType === "probationary",
         separated,
         inNotice,
+        annexB: annexBState(profile),
+        participant: !!profile && EMPLOYMENT_META[profile.employmentType].eligible && !separated,
+        allocationCap: maxAllocationFactor(profile),
       };
     });
   }, [users, profiles, initiatives, members, bonusRuns, deferred, outcomes]);

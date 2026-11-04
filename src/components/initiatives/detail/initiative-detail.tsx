@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/shell/page-header";
 import { buttonVariants } from "@/components/ui/button";
 import { EmptyState, Kbd } from "@/components/ui/misc";
 import { Tabs } from "@/components/ui/overlays";
-import { StatusChip, TypeChip } from "@/components/initiatives/shared";
+import { SampleChip, StatusChip, TypeChip } from "@/components/initiatives/shared";
 import { HeaderActions } from "./header-actions";
 import { WorkflowStepper } from "./workflow-stepper";
 import { OverviewTab } from "./overview-tab";
@@ -26,6 +26,7 @@ export function InitiativeDetail({ id }: { id: string }) {
   const members = useCrm((s) => s.initiativeMembers);
   const auditLog = useCrm((s) => s.auditLog);
   const revenueEntries = useCrm((s) => s.revenueEntries);
+  const amendments = useCrm((s) => s.teamAmendments);
   const [tab, setTab] = useState<Tab>("overview");
 
   useEffect(() => {
@@ -47,13 +48,13 @@ export function InitiativeDetail({ id }: { id: string }) {
 
   const counts = useMemo(() => {
     const team = members.filter((m) => m.initiativeId === id && m.consent !== "declined" && m.removal.stage !== "removed" && !m.leftAt);
-    const memberIds = new Set(members.filter((m) => m.initiativeId === id).map((m) => m.id));
+    const memberIds = new Set([...members.filter((m) => m.initiativeId === id).map((m) => m.id), ...amendments.filter((a) => a.initiativeId === id).map((a) => a.id)]);
     return {
       team: team.length,
       revenue: revenueEntries.filter((e) => e.initiativeId === id).length,
       activity: auditLog.filter((a) => a.entityId === id || memberIds.has(a.entityId)).length,
     };
-  }, [members, revenueEntries, auditLog, id]);
+  }, [members, revenueEntries, auditLog, amendments, id]);
 
   if (!ini) {
     return (
@@ -93,6 +94,8 @@ export function InitiativeDetail({ id }: { id: string }) {
             {ini.code || ini.trackingNo ? <span className="sg-num rounded-sm bg-sg-card-3 px-1.5 py-0.5 text-2xs font-semibold text-sg-text">{ini.code ?? ini.trackingNo}</span> : null}
             <TypeChip type={ini.type} />
             <StatusChip status={ini.status} />
+            {ini.demo ? <SampleChip /> : null}
+            {ini.policyVersion === "3.0" ? <span className="text-2xs text-sg-dim">v3.0 terms kept (§15.1)</span> : null}
           </span>
         }
       >
@@ -107,7 +110,7 @@ export function InitiativeDetail({ id }: { id: string }) {
             items={[
               { value: "overview", label: label("Overview", 1) },
               { value: "team", label: label("Team", 2), count: counts.team },
-              { value: "financials", label: label("Financials", 3), count: counts.revenue || undefined },
+              { value: "financials", label: label("Payments", 3), count: counts.revenue || undefined },
               { value: "prc", label: label("PRC review", 4) },
               { value: "activity", label: label("Activity", 5), count: counts.activity || undefined },
             ]}

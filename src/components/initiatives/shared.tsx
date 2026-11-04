@@ -1,11 +1,11 @@
 "use client";
 
 /* Shared UI for the Project Initiative & Compensation module (Policy v4.0). */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import Link from "next/link";
 import { CircleCheck, CircleAlert, CircleX } from "lucide-react";
 import { useCrm } from "@/lib/store";
-import type { InitiativeStatus, ProjectRole, ProjectType } from "@/lib/initiatives/types";
+import type { InitiativeStatus, Milestone, ProjectRole, ProjectType } from "@/lib/initiatives/types";
 import { leadershipLoad, participationEligibility, revenueShareRate, type ProjectRate } from "@/lib/initiatives/engine";
 import { CURVE, POLICY, PROJECT_TYPE_META, ROLE_META, TIER_META, type ApprovalTier, type Curve } from "@/lib/initiatives/policy";
 import type { SpectrumColor } from "@/lib/types";
@@ -209,7 +209,8 @@ export function RateCurve({ x, curve = CURVE, months, light, className }: { x: n
   const ink = light ? "#111" : undefined;
   const grid = light ? "#bbb" : undefined;
 
-  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+  const onMove = (event: ReactMouseEvent<SVGSVGElement>) => {
+    const e = event as unknown as { clientX: number; currentTarget: SVGSVGElement };
     const rect = e.currentTarget.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * W;
     const v = ((px - padL) / (W - padL - padR)) * xMax;
@@ -270,4 +271,10 @@ export function RateCurve({ x, curve = CURVE, months, light, className }: { x: n
       </div>
     </div>
   );
+}
+
+/** Work period each payment milestone pays for: previous milestone's due date (or project start) → this due date (§6.5). */
+export function milestoneWorkPeriods(milestones: Milestone[], startDate: string) {
+  const sorted = [...milestones].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  return new Map(sorted.map((m, i) => [m.id, { from: i ? sorted[i - 1].dueDate : startDate, to: m.dueDate }] as const));
 }

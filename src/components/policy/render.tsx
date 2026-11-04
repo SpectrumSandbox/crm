@@ -6,6 +6,7 @@
  * (§5.1 rate curve, §5.2 net revenue, §6.6 bonus formula, §9.1 operating result) — drawn as styled HTML, not raw TeX.
  */
 import { Fragment, createContext, useContext, type ReactNode } from "react";
+import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { plainText, sectionAnchor, unescapeMd, type Block } from "./model";
 
@@ -16,6 +17,8 @@ interface RenderCtx {
   ids: Set<string>;
   /** in-document navigation (smooth scroll); falls back to a plain hash link */
   onNavigate?: (id: string) => void;
+  /** render cross-references as links to another page (e.g. "/policy") instead of in-page anchors */
+  base?: string;
 }
 const Ctx = createContext<RenderCtx>({ query: "", ids: new Set() });
 export const PolicyRenderProvider = Ctx.Provider;
@@ -45,7 +48,13 @@ function Highlight({ text }: { text: string }) {
 }
 
 function AnchorLink({ id, children }: { id: string; children: ReactNode }) {
-  const { onNavigate } = useContext(Ctx);
+  const { onNavigate, base } = useContext(Ctx);
+  if (base)
+    return (
+      <Link href={`${base}#${id}`} className="text-soft-cyan underline decoration-soft-cyan/30 underline-offset-2 hover:decoration-soft-cyan">
+        {children}
+      </Link>
+    );
   return (
     <a
       href={`#${id}`}

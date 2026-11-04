@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CircleAlert, CircleCheck, Pencil, Send, Sparkles, Trash2 } from "lucide-react";
+import { CircleAlert, CircleCheck, Pencil, Printer, Send, Sparkles, Trash2 } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import type { Initiative } from "@/lib/initiatives/types";
-import { proposalGaps } from "@/lib/initiatives/engine";
+import { approvalTier, proposalGaps } from "@/lib/initiatives/engine";
+import { TIER_META } from "@/lib/initiatives/policy";
 import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Modal, Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
@@ -25,10 +26,17 @@ export function HeaderActions({ ini }: { ini: Initiative }) {
   const [confirmComplete, setConfirmComplete] = useState(false);
 
   const gaps = useMemo(() => proposalGaps(ini, members), [ini, members]);
+  const tier = TIER_META[approvalTier(ini).tier];
+  const packet = (
+    <Link href={`/initiatives/${encodeURIComponent(ini.id)}/print`} className={buttonVariants({ variant: "outline", size: "md" })} title="Printable PRC packet — Annex A proposal and Annex D Role and Weight Agreement">
+      <Printer /> PRC packet
+    </Link>
+  );
 
   if (ini.status === "draft") {
     return (
       <>
+        {packet}
         <Link href={`/initiatives/new?edit=${encodeURIComponent(ini.id)}`} className={buttonVariants({ variant: "outline", size: "md" })}>
           <Pencil /> Edit proposal
         </Link>
@@ -37,7 +45,7 @@ export function HeaderActions({ ini }: { ini: Initiative }) {
             variant="primary"
             onClick={() => {
               submitInitiative(ini.id);
-              notify("Submitted to the PRC — acknowledgment due within 1 business day");
+              notify(`Submitted to the PRC — acknowledgment within 1 business day; ${tier.label} decides within ${tier.decisionBusinessDays}`);
             }}
           >
             <Send /> Submit to PRC
@@ -51,9 +59,9 @@ export function HeaderActions({ ini }: { ini: Initiative }) {
             </PopoverTrigger>
             <PopoverContent align="end" className="w-80">
               <div className="flex items-center font-display text-sm font-extrabold text-sg-white">
-                Proposal incomplete <Cite s="2.2" />
+                Proposal incomplete <Cite s="4.3" />
               </div>
-              <p className="mt-1 text-xs text-sg-muted">The PRC only accepts complete proposals. Fill these in before submitting:</p>
+              <p className="mt-1 text-xs text-sg-muted">The PMO returns incomplete proposals with a list of what is missing. Fill these in before submitting:</p>
               <ul className="mt-2 space-y-1">
                 {gaps.map((g) => (
                   <li key={g} className="flex items-start gap-1.5 text-xs text-sg-text">
@@ -102,7 +110,9 @@ export function HeaderActions({ ini }: { ini: Initiative }) {
 
   if (ini.status === "approved") {
     return (
-      <Button
+      <>
+        {packet}
+        <Button
         variant="primary"
         onClick={() => {
           activateInitiative(ini.id);
@@ -110,13 +120,15 @@ export function HeaderActions({ ini }: { ini: Initiative }) {
         }}
       >
         <Sparkles /> Kick off project
-      </Button>
+        </Button>
+      </>
     );
   }
 
   if (ini.status === "active") {
     return (
       <>
+        {packet}
         <Button variant="primary" onClick={() => setConfirmComplete(true)}>
           <CircleCheck /> Mark completed
         </Button>
@@ -145,15 +157,14 @@ export function HeaderActions({ ini }: { ini: Initiative }) {
         >
           <div className="space-y-2 text-sm text-sg-text">
             <p>
-              Finance performs a <strong className="text-sg-white">final reconciliation within 30 days</strong> of completion: actual revenue and direct costs are compared with the monthly entries and any difference is settled in the
-              next bonus run <Cite s="4.4" />.
+              A project closes when all deliverables are accepted, the final invoice is paid or written off and final costs are booked; the Project Lead submits the close-out report (Annex G). Within <strong className="text-sg-white">30 days</strong> Finance recalculates the total pool on final figures: a higher pool is paid with the next salary, an overpayment comes first from deferred and carried-forward amounts <Cite s="8.3" />.
             </p>
-            <p className="text-xs text-sg-muted">Revenue recognised after completion (e.g. retention or final milestone payments) can still be recorded on the Financials tab.</p>
+            <p className="text-xs text-sg-muted">Deferred amounts vest {ini.deferralMonths || 6} months after close (§9.3); a final invoice collected later still earns a late-collection bonus for eligible members (§8.3) — record it on the Payments tab.</p>
           </div>
         </Modal>
       </>
     );
   }
 
-  return null;
+  return packet;
 }
