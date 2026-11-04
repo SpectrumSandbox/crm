@@ -22,6 +22,7 @@ import type {
 } from "./types";
 import { uid } from "./utils";
 import { issueStatusMeta } from "./meta";
+import { createInitiativeActions, type InitiativeActions } from "./initiatives/actions";
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 const nowIso = () => new Date().toISOString();
@@ -46,7 +47,7 @@ export type NewIssueInput = Pick<Issue, "projectId" | "type" | "summary"> & Part
   link?: { crmType: CrmObjectType; crmId: string; linkType: LinkType };
 };
 
-export interface CrmState extends SeedData {
+export interface CrmState extends SeedData, InitiativeActions {
   currentUserId: string;
 
   /* CRM */
@@ -304,11 +305,15 @@ export const useCrm = create<CrmState>()(
         },
 
         resetDemo: () => set({ ...collections() }),
+
+        ...createInitiativeActions<CrmState>(set, get, uid),
       };
     },
     {
       name: "sg-crm-v1",
-      version: 1,
+      version: 2,
+      // v2 added the initiative & compensation module and new staff — start from the fresh seed
+      migrate: () => collections(),
       storage: createJSONStorage(() => localStorage),
       skipHydration: true,
       partialize: (s) => {

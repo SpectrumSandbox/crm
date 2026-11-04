@@ -5,7 +5,7 @@ export type ISODate = string;
 
 /* ───────────────────────── People ───────────────────────── */
 
-export type Team = "Sales" | "Service" | "Engineering" | "Leadership" | "Marketing";
+export type Team = "Sales" | "Service" | "Engineering" | "Leadership" | "Marketing" | "Finance" | "People";
 
 export interface User {
   id: ID;

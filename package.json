@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
+    "test:policy": "tsc -p scripts/tsconfig.json && node scripts/.out/scripts/verify-policy.js",
     "postinstall": "node scripts/workers-ci-postinstall.mjs",
     "cf:build": "opennextjs-cloudflare build",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",

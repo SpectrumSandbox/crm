@@ -29,6 +29,7 @@ import type {
   User,
   Workflow,
 } from "./types";
+import { initiativeSeed } from "./initiatives/seed";
 
 /* ───────────────────────── time helpers ───────────────────────── */
 
@@ -70,6 +71,11 @@ export const users: User[] = [
   { id: "u-kevin", name: "Kevin Tanoto", initials: "KT", email: "kevin.tanoto@spectrumgroup.id", title: "AI / ML Engineer", team: "Engineering", color: "magenta" },
   { id: "u-ayu", name: "Ayu Kartika", initials: "AK", email: "ayu.kartika@spectrumgroup.id", title: "UAV Systems Engineer", team: "Engineering", color: "green" },
   { id: "u-bima", name: "Bima Siregar", initials: "BS", email: "bima.siregar@spectrumgroup.id", title: "QA & Certification Engineer", team: "Engineering", color: "orange" },
+  { id: "u-maria", name: "Maria Gunadi", initials: "MG", email: "maria.gunadi@spectrumgroup.id", title: "Chief Financial Officer", team: "Finance", color: "yellow" },
+  { id: "u-dina", name: "Dina Prasetyo", initials: "DP", email: "dina.prasetyo@spectrumgroup.id", title: "HR Manager", team: "People", color: "cyan" },
+  { id: "u-lia", name: "Lia Anggraini", initials: "LA", email: "lia.anggraini@spectrumgroup.id", title: "Project Coordinator", team: "Engineering", color: "magenta" },
+  { id: "u-rafi", name: "Rafi Hidayat", initials: "RH", email: "rafi.hidayat@spectrumgroup.id", title: "Junior Embedded Engineer", team: "Engineering", color: "green" },
+  { id: "u-tomi", name: "Tomi Wijaya", initials: "TW", email: "tomi.wijaya@spectrumgroup.id", title: "CAD Drafter (contract)", team: "Engineering", color: "blue" },
 ];
 
 /* ───────────────────────── companies ───────────────────────── */
@@ -668,6 +674,7 @@ export const seed = {
   sequences,
   sequenceEnrollments,
   workflows,
+  ...initiativeSeed,
 };
 
 export type SeedData = typeof seed;

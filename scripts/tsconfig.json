@@ -6,9 +6,14 @@
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "rootDir": "..",
     "outDir": ".out"
   },
-  "files": ["generate-seed-sql.ts"]
+  "files": [
+    "generate-seed-sql.ts",
+    "verify-policy.ts"
+  ]
 }
