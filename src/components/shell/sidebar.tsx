@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useMemo } from "react";
-import { Briefcase, Building2, ChevronsLeft, ChevronsRight, Handshake, Kanban, Keyboard, RotateCcw, Search, UserCheck, Users, Wallet, type LucideIcon } from "lucide-react";
+import { BookOpen, Briefcase, Building2, ChevronsLeft, ChevronsRight, CircleUser, Handshake, House, Kanban, Keyboard, ListChecks, ListTodo, RotateCcw, Search, Ticket, UserCheck, Users, Wallet, type LucideIcon } from "lucide-react";
+import { SidebarExtras } from "./sidebar-extras";
+import { NotificationBell } from "./notifications";
 import { useCrm, useUi } from "@/lib/store";
 import { SMART_LISTS } from "@/lib/smart-lists";
 import { cn } from "@/lib/utils";
@@ -50,16 +52,24 @@ export function Sidebar() {
   }, [deals, contacts, companies, issues, sprints, pipelines, initiatives]);
 
   const revenue: NavItem[] = [
+    { href: "/home", label: "Home", icon: House, shortcut: "G H" },
     { href: "/deals", label: "Deals", icon: Handshake, shortcut: "G D", count: counts.openDeals },
     { href: "/contacts", label: "Contacts", icon: Users, shortcut: "G C", count: counts.contacts },
     { href: "/companies", label: "Companies", icon: Building2, shortcut: "G O", count: counts.companies },
+    { href: "/tickets", label: "Tickets", icon: Ticket, shortcut: "G T" },
   ];
   const programme: NavItem[] = [
     { href: "/initiatives", label: "Initiatives", icon: Briefcase, shortcut: "G I", count: counts.awaitingPrc },
     { href: "/compensation", label: "Compensation", icon: Wallet, shortcut: "G M" },
     { href: "/people", label: "People", icon: UserCheck, shortcut: "G P" },
+    { href: "/me", label: "My compensation", icon: CircleUser, shortcut: "G Y" },
+    { href: "/policy", label: "Policy", icon: BookOpen, shortcut: "G K" },
   ];
-  const delivery: NavItem[] = [{ href: "/board", label: "Agile Board", icon: Kanban, shortcut: "G B", count: counts.sprintIssues }];
+  const delivery: NavItem[] = [
+    { href: "/board", label: "Agile Board", icon: Kanban, shortcut: "G B", count: counts.sprintIssues },
+    { href: "/backlog", label: "Backlog & Sprints", icon: ListChecks, shortcut: "G L" },
+    { href: "/issues", label: "Issues", icon: ListTodo, shortcut: "G U" },
+  ];
 
   const isActive = (href: string) => pathname === href || pathname.startsWith(href + "/");
   const activeView = params.get("view");
@@ -80,10 +90,11 @@ export function Sidebar() {
         </Link>
       </div>
 
+      <div className={cn("mx-2 mt-3 flex gap-1", collapsed && "flex-col")}>
       <button
         type="button"
         onClick={() => setPaletteOpen(true)}
-        className={cn("mx-2 mt-3 flex h-8 items-center gap-2 rounded border border-sg-line bg-sg-card text-sm text-sg-dim transition-colors hover:border-sg-line-2 hover:text-sg-muted", collapsed ? "justify-center px-0" : "px-2.5")}
+        className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded border border-sg-line bg-sg-card text-sm text-sg-dim transition-colors hover:border-sg-line-2 hover:text-sg-muted", collapsed ? "justify-center px-0" : "px-2.5")}
         aria-label="Search (Command K)"
       >
         <Search className="size-3.5" />
@@ -94,6 +105,8 @@ export function Sidebar() {
           </>
         )}
       </button>
+      <NotificationBell collapsed={collapsed} />
+      </div>
 
       <nav className="mt-4 flex-1 space-y-5 overflow-y-auto px-2 pb-4">
         <Section title="Revenue" collapsed={collapsed}>
@@ -127,6 +140,7 @@ export function Sidebar() {
       </nav>
 
       <div className="space-y-1 border-t border-sg-line p-2">
+        <SidebarExtras collapsed={collapsed} />
         {!collapsed && (
           <div className="flex gap-1">
             <button type="button" onClick={() => openDialog({ kind: "shortcuts" })} className="flex h-7 flex-1 items-center gap-2 rounded px-2 text-xs text-sg-dim hover:bg-sg-card hover:text-sg-white">

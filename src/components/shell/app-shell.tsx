@@ -9,6 +9,7 @@ import { CommandPalette } from "./command-palette";
 import { GlobalDialogs } from "./dialogs";
 import { useGlobalHotkeys } from "./hotkeys";
 import { IssueDrawer } from "@/components/agile/issue-drawer";
+import { WorkspaceSync } from "./sync";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
@@ -43,6 +44,7 @@ function Overlays() {
   useGlobalHotkeys();
   return (
     <>
+      <WorkspaceSync />
       <CommandPalette />
       <GlobalDialogs />
       <IssueDrawer />
@@ -67,7 +69,7 @@ function Toast() {
   useEffect(() => {
     if (!toast) return;
     setVisible(true);
-    const t = window.setTimeout(() => setVisible(false), 2400);
+    const t = window.setTimeout(() => setVisible(false), toast.action ? 6000 : 2400);
     return () => window.clearTimeout(t);
   }, [toast]);
   if (!toast || !visible) return null;
@@ -75,6 +77,18 @@ function Toast() {
     <div role="status" className="fixed bottom-5 left-1/2 z-[70] flex -translate-x-1/2 items-center gap-2 rounded-pill border border-sg-line-2 bg-sg-card-2 px-4 py-2 text-sm font-semibold text-sg-white shadow-pop animate-in fade-in-0 slide-in-from-bottom-2">
       <Check className="size-4 text-soft-green" />
       {toast.message}
+      {toast.action && (
+        <button
+          type="button"
+          onClick={() => {
+            toast.action?.run();
+            setVisible(false);
+          }}
+          className="ml-1 rounded-pill border border-sg-line-2 px-2 py-0.5 text-xs text-sg-white hover:bg-sg-white hover:text-sg-bg"
+        >
+          {toast.action.label}
+        </button>
+      )}
     </div>
   );
 }

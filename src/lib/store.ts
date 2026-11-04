@@ -23,6 +23,10 @@ import type {
 import { uid } from "./utils";
 import { issueStatusMeta } from "./meta";
 import { createInitiativeActions, type InitiativeActions } from "./initiatives/actions";
+import { createCrmExtrasSlice, type CrmExtrasSlice } from "./slices/crm-extras";
+import { createAgileExtrasSlice, type AgileExtrasSlice } from "./slices/agile-extras";
+import { createPlatformSlice, type PlatformSlice } from "./slices/platform";
+import { createProgramExtrasSlice, type ProgramExtrasSlice } from "./slices/program-extras";
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 const nowIso = () => new Date().toISOString();
@@ -47,7 +51,7 @@ export type NewIssueInput = Pick<Issue, "projectId" | "type" | "summary"> & Part
   link?: { crmType: CrmObjectType; crmId: string; linkType: LinkType };
 };
 
-export interface CrmState extends SeedData, InitiativeActions {
+export interface CrmState extends SeedData, InitiativeActions, CrmExtrasSlice, AgileExtrasSlice, PlatformSlice, ProgramExtrasSlice {
   currentUserId: string;
 
   /* CRM */
@@ -307,6 +311,10 @@ export const useCrm = create<CrmState>()(
         resetDemo: () => set({ ...collections() }),
 
         ...createInitiativeActions<CrmState>(set, get, uid),
+        ...createCrmExtrasSlice<CrmState>(set, get, uid),
+        ...createAgileExtrasSlice<CrmState>(set, get, uid),
+        ...createPlatformSlice<CrmState>(set, get, uid),
+        ...createProgramExtrasSlice<CrmState>(set, get, uid),
       };
     },
     {
@@ -351,8 +359,9 @@ interface UiState {
   closeDialog: () => void;
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
-  toast: { id: number; message: string } | null;
-  notify: (message: string) => void;
+  toast: { id: number; message: string; action?: { label: string; run: () => void } } | null;
+  /** Show a toast; pass an action for "Undo"-style follow-ups. */
+  notify: (message: string, action?: { label: string; run: () => void }) => void;
 }
 
 export const useUi = create<UiState>()((set) => ({
@@ -366,5 +375,5 @@ export const useUi = create<UiState>()((set) => ({
   sidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   toast: null,
-  notify: (message) => set({ toast: { id: Date.now(), message } }),
+  notify: (message, action) => set({ toast: { id: Date.now(), message, action } }),
 }));

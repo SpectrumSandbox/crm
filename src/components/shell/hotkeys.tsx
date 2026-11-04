@@ -16,6 +16,12 @@ export const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
   { keys: ["G", "I"], label: "Go to Initiatives", group: "Navigation" },
   { keys: ["G", "M"], label: "Go to Compensation", group: "Navigation" },
   { keys: ["G", "P"], label: "Go to People", group: "Navigation" },
+  { keys: ["G", "H"], label: "Go to Home", group: "Navigation" },
+  { keys: ["G", "T"], label: "Go to Tickets", group: "Navigation" },
+  { keys: ["G", "L"], label: "Go to Backlog & Sprints", group: "Navigation" },
+  { keys: ["G", "U"], label: "Go to Issues", group: "Navigation" },
+  { keys: ["G", "Y"], label: "Go to My compensation", group: "Navigation" },
+  { keys: ["G", "K"], label: "Go to Policy", group: "Navigation" },
   { keys: ["C"], label: "Create (deal / contact / company / issue / initiative — by page)", group: "Create" },
   { keys: ["L"], label: "Log a call", group: "Create" },
   { keys: ["/"], label: "Focus the page filter", group: "Create" },
@@ -47,7 +53,7 @@ export function useGlobalHotkeys() {
       if (pendingG.current) {
         window.clearTimeout(pendingG.current);
         pendingG.current = null;
-        const dest: Record<string, string> = { d: "/deals", c: "/contacts", o: "/companies", b: "/board", i: "/initiatives", m: "/compensation", p: "/people" };
+        const dest: Record<string, string> = { h: "/home", d: "/deals", c: "/contacts", o: "/companies", t: "/tickets", b: "/board", l: "/backlog", u: "/issues", i: "/initiatives", m: "/compensation", p: "/people", y: "/me", k: "/policy" };
         const to = dest[e.key.toLowerCase()];
         if (to) {
           e.preventDefault();
