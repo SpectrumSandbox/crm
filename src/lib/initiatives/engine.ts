@@ -428,7 +428,9 @@ export function computeRun(inp: RunInputs): RunResult {
   const poolTotal = projects.reduce((s, p) => s + p.pool, 0);
   // §6.1 Operating Result = Σ net project revenue − Σ direct project costs − monthly overheads − planned bonus pool.
   // "Net project revenue" here is recognised revenue less estimated taxes, so direct costs are subtracted once.
-  const operatingResult = revenue - taxes - directCosts - inp.overheads - poolTotal;
+  // A corrective partial deferral (§6.1 option 2) moves part of the pool to next month, so only the remainder is planned now.
+  const plannedPool = poolTotal * (1 - carryPct);
+  const operatingResult = revenue - taxes - directCosts - inp.overheads - plannedPool;
   const passed = operatingResult >= 0;
 
   let suggestion: RunResult["suggestion"] = null;
@@ -472,7 +474,8 @@ function suggestCorrection(inp: RunInputs, projects: ProjectRunResult[], operati
   }
   // still failing at the floor → defer part of the payout to next month (pool is still "planned", so report what is released now)
   const pct = Math.min(100, Math.ceil((shortfall / poolTotal) * 100));
-  return { kind: "partial_deferral", pct, operatingResult: operatingResult + (poolTotal * pct) / 100 };
+  const check = computeRun({ ...inp, partialDeferralPct: pct });
+  return { kind: "partial_deferral", pct, operatingResult: check.operatingResult };
 }
 
 /* ───────────────────────── §6.4 clawback ───────────────────────── */
