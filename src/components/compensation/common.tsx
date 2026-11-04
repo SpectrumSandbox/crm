@@ -1,28 +1,30 @@
 "use client";
 
-/* Shared building blocks for the /compensation workspace (§6). */
+/* Shared building blocks for the /compensation workspace (Policy v4.0 §8–§11). */
 import { useMemo } from "react";
 import Link from "next/link";
 import { CircleAlert, Info, TriangleAlert, CircleCheck } from "lucide-react";
 import { useCrm } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
-import type { ClawbackTrigger, LineStatus } from "@/lib/initiatives/types";
+import type { BonusRun, ClawbackTrigger, GovernanceRole, LineStatus } from "@/lib/initiatives/types";
+import type { ProjectRate } from "@/lib/initiatives/engine";
 import type { SpectrumColor } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, formatIDR } from "@/lib/utils";
 import { Avatar, Chip } from "@/components/ui/misc";
 import { Cite } from "@/components/initiatives/shared";
 
-export const DEFAULT_OVERHEADS = 750_000_000;
-export const DEFAULT_EBITDA = 4_000_000_000;
+/** §9.1 inputs entered by Finance each month (rolling three closed months). */
+export type RunInputValues = Pick<BonusRun, "companyRevenue" | "directCosts" | "overheads" | "cash" | "fixedCostsMonthly">;
+export const EMPTY_INPUTS: RunInputValues = { companyRevenue: 0, directCosts: 0, overheads: 0, cash: 0, fixedCostsMonthly: 0 };
 
 export const lineStatusMeta: Record<LineStatus, { label: string; color: SpectrumColor; hint: string }> = {
-  payable: { label: "Payable", color: "green", hint: "Paid on the payment date" },
-  partially_deferred: { label: "Partly deferred", color: "yellow", hint: "Part paid now, part deferred (§6.3) or carried over (§6.1)" },
-  withheld_probation: { label: "Withheld · probation", color: "orange", hint: "Accrued until probation completes (§6.8)" },
-  held: { label: "Held", color: "orange", hint: "Held pending standing / leave / PRC decision (§4.5)" },
-  cap_review: { label: "Cap review", color: "magenta", hint: "Above 200% of annual base salary — CEO + PRC approval (§6.2)" },
-  forfeited: { label: "Forfeited", color: "red", hint: "Not payable (§4.5)" },
-  ineligible: { label: "Ineligible", color: "red", hint: "Not eligible to participate (§1.2)" },
+  payable: { label: "Payable", color: "green", hint: "Paid in full with the salary (§8.2)" },
+  partially_deferred: { label: "Part deferred", color: "cyan", hint: "Part paid now, part deferred until 6–12 months after project close (§9.3)" },
+  carried_forward: { label: "Carried forward", color: "yellow", hint: "A check failed — paid pro rata; the rest is paid first in the next passing month (§9.2)" },
+  withheld_probation: { label: "Held · probation", color: "orange", hint: "Calculated normally, held until probation ends (§11.3)" },
+  held: { label: "Held", color: "orange", hint: "Annex B not signed, suspension, unpaid leave over 30 days or retirement awaiting PRC confirmation (§10, §15.1)" },
+  forfeited: { label: "Forfeited", color: "red", hint: "Not payable under §10 — returns to the company, never redistributed" },
+  ineligible: { label: "Ineligible", color: "red", hint: "Employment status may not take part (§3.2)" },
 };
 
 export function LineStatusChip({ status }: { status: LineStatus }) {
@@ -38,18 +40,59 @@ export function LineStatusChip({ status }: { status: LineStatus }) {
 
 export const runStatusMeta: Record<"none" | "draft" | "failed" | "certified" | "released", { label: string; color: SpectrumColor }> = {
   none: { label: "Not started", color: "blue" },
-  draft: { label: "Draft", color: "blue" },
-  failed: { label: "Break-even failed", color: "red" },
+  draft: { label: "Provisional", color: "blue" },
+  failed: { label: "Checks failed", color: "red" },
   certified: { label: "Certified by CFO", color: "cyan" },
   released: { label: "Released by PRC", color: "green" },
 };
 
 export const triggerMeta: Record<ClawbackTrigger, { label: string; description: string }> = {
-  revenue_reversal: { label: "Revenue reversal", description: "Client non-payment, refund or credit note after the bonus was paid" },
-  cost_overrun: { label: "Cost overrun", description: "Material direct costs discovered after the bonus was calculated" },
-  misconduct: { label: "Misconduct", description: "Fraud, misrepresentation or misconduct affecting the result" },
-  data_error: { label: "Data / calculation error", description: "Error in revenue, cost or weight data" },
+  revenue_reversal: { label: "Revenue reversed", description: "Client default, bad-debt write-off, contract cancellation or a scope reduction" },
+  misconduct: { label: "Misconduct proven", description: "Fraud, gross negligence, an undisclosed conflict of interest or serious misconduct connected with the project, proven under the Company Regulations" },
+  data_error: { label: "Data error", description: "Error in revenue, costs or the ledger that led to an overpayment — including one left after a §5.1 rate recalculation" },
 };
+/** §9.4 protections — never a clawback trigger. */
+export const NOT_CLAWBACK = ["cost overruns", "rework", "warranty claims", "penalties", "legal settlements", "normal business or market risk"];
+
+export const rateSourceLabel: Record<ProjectRate["source"], string> = {
+  fixed: "fixed by the PRC at approval (§5.1)",
+  v3_flat: "v3.0 flat share kept (§15.1)",
+  curve: "from the curve on the expected case (§5.1)",
+  provisional: "provisional — enter the expected case",
+};
+
+/** Revenue-share rate y with 3 decimals, e.g. 20.060 %. */
+export function ratePct(v: number) {
+  return `${(v * 100).toFixed(3)}%`;
+}
+
+export function RateCell({ rate }: { rate: Pick<ProjectRate, "rate" | "x" | "source"> }) {
+  return (
+    <span className="block">
+      <span className="sg-num font-semibold text-sg-white">{ratePct(rate.rate)}</span>
+      <span className={cn("block text-2xs", rate.source === "provisional" ? "text-soft-yellow" : "text-sg-dim")}>
+        {rate.source === "curve" || rate.source === "fixed" ? `x ${formatIDR(rate.x)} · ` : ""}
+        {rateSourceLabel[rate.source]}
+      </span>
+    </span>
+  );
+}
+
+export function SampleChip({ demo }: { demo?: boolean }) {
+  if (!demo) return null;
+  return (
+    <span title="Fictional sample record shipped with the demo data">
+      <Chip color="blue">Sample</Chip>
+    </span>
+  );
+}
+
+/** Governance roles of the signed-in user (from their HR record). */
+export function useMyRoles(): { userId: string; roles: GovernanceRole[] } {
+  const currentUserId = useCrm((s) => s.currentUserId);
+  const profiles = useCrm((s) => s.employeeProfiles);
+  return useMemo(() => ({ userId: currentUserId, roles: profiles.find((p) => p.userId === currentUserId)?.governanceRoles ?? [] }), [currentUserId, profiles]);
+}
 
 /** Bordered workspace card with an eyebrow-style header. */
 export function Panel({
@@ -121,8 +164,11 @@ export function InitiativeLink({ id, compact }: { id: string; compact?: boolean 
   if (!ini) return <span className="text-sg-dim">Unknown project</span>;
   return (
     <Link href={`/initiatives/${ini.id}`} className="group block min-w-0">
-      <span className="block truncate font-semibold text-sg-white group-hover:underline">{ini.title}</span>
-      {!compact ? <span className="sg-num block text-2xs text-sg-dim">{ini.code ?? ini.trackingNo ?? "—"}</span> : null}
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate font-semibold text-sg-white group-hover:underline">{ini.title}</span>
+        <SampleChip demo={ini.demo} />
+      </span>
+      {!compact ? <span className="sg-num block text-2xs text-sg-dim">{ini.code ?? (ini.trackingNo || "—")}</span> : null}
     </Link>
   );
 }
@@ -145,6 +191,12 @@ export function monthLabel(month: string) {
   const d = new Date(`${month}-01T00:00:00Z`);
   if (Number.isNaN(d.getTime())) return month;
   return new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }).format(d);
+}
+
+export function shortMonthLabel(month: string) {
+  const d = new Date(`${month}-01T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return month;
+  return new Intl.DateTimeFormat("en-GB", { month: "short", year: "numeric", timeZone: "UTC" }).format(d);
 }
 
 export function pctLabel(v: number) {

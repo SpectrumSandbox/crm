@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Building2, CalendarDays, CircleAlert, FileText, Handshake, Kanban, Mail, Phone, Search, StickyNote, SquareCheck, Ticket, TriangleAlert, User } from "lucide-react";
 import { useCrm, useUi, type DialogState } from "@/lib/store";
 import { CAPABILITIES, ISSUE_PRIORITIES, ISSUE_STATUSES, ISSUE_TYPES, LIFECYCLE_STAGES, LINK_TYPES, type Capability, type CompanyTier, type CrmObjectType, type IssuePriority, type IssueStatus, type IssueType, type LifecycleStage, type LinkType, type Ticket as TicketRecord, type TicketPriority } from "@/lib/types";
@@ -14,7 +14,7 @@ import { Modal, Tabs } from "@/components/ui/overlays";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/misc";
-import { SHORTCUTS } from "./hotkeys";
+import { shortcutsFor } from "./hotkeys";
 
 export function GlobalDialogs() {
   const dialog = useUi((s) => s.dialog);
@@ -1404,6 +1404,8 @@ function GenerateQuoteDialog({ onClose, d }: Props<"generateQuote">) {
 /* ───────────────────────── Shortcuts ───────────────────────── */
 
 function ShortcutsDialog({ onClose }: { onClose: () => void }) {
+  const pathname = usePathname();
+  const SHORTCUTS = shortcutsFor(pathname);
   const groups = Array.from(new Set(SHORTCUTS.map((s) => s.group)));
   return (
     <Modal open onOpenChange={(o) => !o && onClose()} title="Keyboard shortcuts" description="Everything is reachable without the mouse.">

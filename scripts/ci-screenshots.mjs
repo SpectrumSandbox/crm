@@ -173,6 +173,13 @@ try {
   await goOptional("/me", "37-my-compensation");
   await goOptional("/policy", "38-policy");
   await goOptional("/settings", "39-settings");
+  // ongoing-projects register (Policy v4.0)
+  await go("/projects", "41-projects-register");
+  await page.getByText("People register").first().click().catch(() => log.push("[warn] no people tab"));
+  await shot("42-projects-people");
+  await go("/projects/prj-elang", "43-project-elang");
+  await go("/projects/prj-navora", "44-project-navora");
+  await go("/projects/ini-sbs-pdm", "45-project-sample-sbs");
 
   // 404 page
   await page.goto(BASE + NOT_FOUND_PATH);

@@ -32,6 +32,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: ["G", "C"], label: "Go to Contacts", group: "Navigation" },
   { keys: ["G", "O"], label: "Go to Companies", group: "Navigation" },
   { keys: ["G", "T"], label: "Go to Tickets", group: "Navigation" },
+  { keys: ["G", "J"], label: "Go to Ongoing projects", group: "Navigation" },
   { keys: ["G", "B"], label: "Go to Agile Board", group: "Navigation" },
   { keys: ["G", "L"], label: "Go to Backlog & Sprints", group: "Navigation" },
   { keys: ["G", "U"], label: "Go to Issues", group: "Navigation" },
@@ -163,7 +164,7 @@ export function useGlobalHotkeys() {
       if (pendingG.current) {
         window.clearTimeout(pendingG.current);
         pendingG.current = null;
-        const dest: Record<string, string> = { h: "/home", d: "/deals", c: "/contacts", o: "/companies", t: "/tickets", b: "/board", l: "/backlog", u: "/issues", i: "/initiatives", m: "/compensation", p: "/people", y: "/me", k: "/policy" };
+        const dest: Record<string, string> = { h: "/home", d: "/deals", c: "/contacts", o: "/companies", t: "/tickets", b: "/board", l: "/backlog", u: "/issues", i: "/initiatives", m: "/compensation", p: "/people", y: "/me", k: "/policy", j: "/projects" };
         const to = dest[e.key.toLowerCase()];
         if (to) {
           e.preventDefault();
@@ -206,7 +207,8 @@ export function useGlobalHotkeys() {
           e.preventDefault();
           if (pathname.startsWith("/initiatives")) {
             if (pathname !== "/initiatives/new") router.push("/initiatives/new");
-          } else if (pathname.startsWith("/board")) ui.openDialog({ kind: "createIssue" });
+          } else if (ISSUE_ROUTES.some((r) => pathname.startsWith(r))) ui.openDialog({ kind: "createIssue" });
+          else if (pathname.startsWith("/projects") || pathname.startsWith("/tickets")) return;
           else if (pathname.startsWith("/contacts")) ui.openDialog({ kind: "createContact" });
           else if (pathname.startsWith("/companies")) ui.openDialog({ kind: "createCompany" });
           else ui.openDialog({ kind: "createDeal" });
