@@ -1,0 +1,63 @@
+name: QA journeys
+
+# End-to-end user journeys (scripts/ci-journeys.mjs) against a local `next start`.
+# Screenshots + report.md/report.json are force-pushed to the `qa-artifacts` branch, pass or fail.
+on:
+  push:
+    branches: ["qa/**"]
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Optional regex — run only journeys whose name matches"
+        required: false
+        default: ""
+
+concurrency:
+  group: qa-journeys-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  journeys:
+    name: User journeys (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        run: |
+          npm install --no-audit --no-fund
+          npm install --no-save @playwright/test
+          npx playwright install --with-deps chromium
+
+      - name: Build and start
+        run: |
+          npm run build
+          (npx next start -p 3000 > next.log 2>&1 &)
+          npx --yes wait-on@8 -t 60000 http://localhost:3000/deals
+
+      - name: Run journeys
+        run: BASE_URL=http://localhost:3000 OUT=qa node scripts/ci-journeys.mjs "${{ github.event.inputs.only }}"
+
+      - name: Publish to qa-artifacts branch
+        if: success() || failure()
+        run: |
+          mkdir -p qa
+          cp next.log qa/next.log || true
+          cd qa
+          git init -q -b qa-artifacts
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -q --allow-empty -m "QA journeys for ${GITHUB_SHA} (${GITHUB_REF_NAME})"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" qa-artifacts
+
+      - name: Job summary
+        if: success() || failure()
+        run: test -f qa/report.md && cat qa/report.md >> "$GITHUB_STEP_SUMMARY" || true

@@ -141,6 +141,15 @@ export interface Ticket {
   createdAt: ISODate;
   slaDueAt: ISODate;
   closedAt: ISODate | null;
+  /** SLA clock paused (ticket waiting on the customer) since this instant; slaDueAt is pushed out on resume */
+  slaPausedAt?: ISODate | null;
+  /** total time the SLA clock has spent paused, ms (for reporting) */
+  slaPausedMs?: number;
+  /** how the SLA deadline is counted: "business" = Mon–Fri 08:00–17:00 WIB excl. public holidays, "clock" = 24/7 */
+  slaBasis?: "business" | "clock";
+  /** customer satisfaction captured on resolve, 1–5 */
+  csat?: number | null;
+  csatComment?: string;
 }
 
 export interface Product {
@@ -216,6 +225,10 @@ export interface Project {
   leadId: ID;
   description: string;
   color: SpectrumColor;
+  /** next issue number to hand out (keys are never reused after a delete) */
+  nextIssueNumber?: number;
+  /** board WIP limits per status, shared by everyone on the workspace */
+  wipLimits?: Partial<Record<IssueStatus, number>>;
 }
 
 export type SprintState = "active" | "future" | "closed";
@@ -229,6 +242,8 @@ export interface Sprint {
   endDate: ISODate;
   state: SprintState;
   capacity: number; // story points
+  /** per-person capacity in story points for this sprint (userId → points) */
+  memberCapacity?: Record<ID, number>;
 }
 
 export interface Epic {
@@ -271,6 +286,65 @@ export interface Issue {
   createdAt: ISODate;
   updatedAt: ISODate;
   dueDate: ISODate | null;
+  /** triage inbox state; undefined = never needed triage */
+  triage?: TriageState;
+  triageNote?: string;
+  /** snoozed in triage until this time */
+  snoozedUntil?: ISODate | null;
+  /** set when declined as a duplicate */
+  duplicateOfId?: ID | null;
+}
+
+export type TriageState = "pending" | "accepted" | "declined";
+
+export const ISSUE_LINK_TYPES = ["blocks", "relates_to", "duplicates"] as const;
+/** read as "<from issue> blocks / relates to / duplicates <to issue>" */
+export type IssueLinkType = (typeof ISSUE_LINK_TYPES)[number];
+
+export interface IssueLink {
+  id: ID;
+  fromIssueId: ID;
+  toIssueId: ID;
+  type: IssueLinkType;
+  createdAt: ISODate;
+  createdById: ID;
+}
+
+export const TRACKED_ISSUE_FIELDS = ["status", "assigneeId", "priority", "sprintId", "storyPoints", "epicId", "parentId", "type", "summary", "description", "labels", "dueDate"] as const;
+export type TrackedIssueField = (typeof TRACKED_ISSUE_FIELDS)[number];
+
+/** One recorded change on an issue (persisted + synced; capped per issue). */
+export interface IssueHistoryEntry {
+  id: ID;
+  issueId: ID;
+  /** a tracked field, or "created" for free-form notes (clone, restore, triage…) */
+  field: TrackedIssueField | "created";
+  from: string | number | null;
+  to: string | number | null;
+  actorId: ID;
+  at: ISODate;
+  note?: string;
+}
+
+/** Saved when a sprint is completed (Jira-style sprint report). Points exclude sub-tasks. */
+export interface SprintReport {
+  id: ID;
+  sprintId: ID;
+  projectId: ID;
+  sprintName: string;
+  startDate: ISODate;
+  endDate: ISODate;
+  closedAt: ISODate;
+  closedById: ID;
+  committed: { count: number; points: number };
+  added: { count: number; points: number };
+  removed: { count: number; points: number };
+  completed: { count: number; points: number };
+  carriedOver: { count: number; points: number };
+  /** null = backlog */
+  carriedToSprintId: ID | null;
+  /** remaining points at the end of each sprint day (WIB yyyy-mm-dd) */
+  daily: { day: string; remaining: number }[];
 }
 
 export interface IssueComment {
