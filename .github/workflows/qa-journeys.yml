@@ -4,7 +4,8 @@ name: QA journeys
 # Screenshots + report.md/report.json are force-pushed to the `qa-artifacts` branch, pass or fail.
 on:
   push:
-    branches: ["qa/**"]
+    branches: ["qa/**", "main"]
+  pull_request:
   workflow_dispatch:
     inputs:
       only:

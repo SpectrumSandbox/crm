@@ -5,6 +5,7 @@
  * §11, §15.1). Pay and status data is personal (§13.4): viewers without a Finance, HR or PRC role get the directory only.
  */
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { CircleAlert, Lock, Mail, Search, TriangleAlert, UserPlus } from "lucide-react";
 import { useCrm } from "@/lib/store";
 import { useAccess } from "@/lib/access-control";
@@ -41,7 +42,8 @@ export default function PeoplePage() {
   const full = access.seeAllPay;
   const [filter, setFilter] = useState<Filter>("all");
   const [reminding, setReminding] = useState<PersonRow[] | null>(null);
-  const [q, setQ] = useState("");
+  const searchParams = useSearchParams();
+  const [q, setQ] = useState(() => searchParams.get("q") ?? "");
   const [openId, setOpenId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
 

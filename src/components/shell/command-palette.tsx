@@ -26,6 +26,7 @@ import {
   Kanban,
   Keyboard,
   Layers,
+  LineChart,
   ListChecks,
   ListTodo,
   Mail,
@@ -100,6 +101,7 @@ const NAV_ITEMS: NavEntry[] = [
   { href: "/policy", label: "Policy", icon: BookOpen, keys: "G K", keywords: ["handbook", "rules", "initiative policy"] },
   { href: "/me/company", label: "Company results", icon: BarChart3, keywords: ["§9.6", "financial summary", "monthly results", "company performance"] },
   { href: "/disputes", label: "Disputes", icon: Scale, keys: "G X", keywords: ["§14", "appeal", "complaint", "objection"] },
+  { href: "/reports", label: "Reports", icon: LineChart, keys: "G R", keywords: ["win loss", "forecast", "cycle time", "throughput", "pipeline change", "margin"] },
   { href: "/automation", label: "Automation", icon: Workflow, keys: "G A", keywords: ["workflows", "sequences", "templates", "whatsapp", "email"] },
   { href: "/settings", label: "Settings", icon: Settings, keywords: ["preferences", "workspace", "admin", "sync"] },
 ];

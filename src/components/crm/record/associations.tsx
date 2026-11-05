@@ -89,7 +89,7 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
                   <Unlink className="size-3" />
                 </button>
               </div>
-              <button type="button" onClick={() => (l.issue ? openIssue(l.issue.id) : l.epic ? router.push(`/backlog?epic=${encodeURIComponent(l.epic.id)}`) : undefined)} className="flex w-full items-start gap-2 text-left" title={l.epic ? "Open the epic on the backlog" : "Open the issue"}>
+              <button type="button" onClick={() => (l.issue ? openIssue(l.issue.id) : l.epic ? router.push(`/board?project=${encodeURIComponent(l.epic.projectId)}&epic=${encodeURIComponent(l.epic.id)}`) : undefined)} className="flex w-full items-start gap-2 text-left" title={l.epic ? "Open the epic on the board" : "Open the issue"}>
                 <TypeIcon className={cn("mt-0.5 size-3.5 shrink-0", l.issue ? softText[issueTypeMeta[l.issue.type].color] : "text-soft-magenta")} />
                 <span className="min-w-0 flex-1">
                   <span className="mr-1.5 font-semibold text-sg-muted">{key}</span>

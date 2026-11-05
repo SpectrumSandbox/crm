@@ -15,8 +15,8 @@
   // Production hostname. Wrangler creates the DNS record + certificate on deploy
   // (the spectrumgroup.id zone must be on this Cloudflare account).
   "routes": [{ "pattern": "crm.spectrumgroup.id", "custom_domain": true }],
-  "workers_dev": true,
-  "preview_urls": true,
+  "workers_dev": false,
+  "preview_urls": false,
   "observability": { "enabled": true },
   "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "crm" }],
   "d1_databases": [

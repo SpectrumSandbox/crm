@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useMemo } from "react";
-import { BookOpen, Briefcase, Building2, ChevronsLeft, ChevronsRight, CircleUser, BarChart3, ClipboardList, FileText, Handshake, House, Kanban, Keyboard, ListChecks, ListTodo, Scale, Search, Ticket, UserCheck, Users, Wallet, Workflow, type LucideIcon } from "lucide-react";
+import { BookOpen, Briefcase, Building2, ChevronsLeft, ChevronsRight, CircleUser, BarChart3, ClipboardList, FileText, Handshake, House, Kanban, Keyboard, ListChecks, LineChart, ListTodo, Scale, Search, Ticket, UserCheck, Users, Wallet, Workflow, type LucideIcon } from "lucide-react";
 import { SidebarExtras } from "./sidebar-extras";
 import { NotificationBell } from "./notifications";
 import { useCrm, useUi } from "@/lib/store";
@@ -79,6 +79,7 @@ export function Sidebar() {
     { href: "/tickets", label: "Tickets", icon: Ticket, shortcut: "G T" },
     { href: "/quotes", label: "Quotes", icon: FileText, shortcut: "G Q" },
     { href: "/automation", label: "Automation", icon: Workflow, shortcut: "G A" },
+    { href: "/reports", label: "Reports", icon: LineChart, shortcut: "G R" },
   ];
   // §13.4: Compensation (everyone's pay) only for pay roles; the PRC queue count only for people who act on it
   const programme: NavItem[] = [

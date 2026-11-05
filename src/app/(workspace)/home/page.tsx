@@ -889,7 +889,7 @@ export default function HomePage() {
 function CompanyResults({ run }: { run: BonusRun | undefined }) {
   if (!run) {
     return (
-      <Card title="Company results" icon={Landmark}>
+      <Card title="Company results" icon={Landmark} action={<Link href="/me/company" className="text-2xs font-semibold text-sg-muted hover:text-sg-white">Company results →</Link>}>
         <EmptyState icon={BarChart3} title="No cycle published yet">
           Each month Finance publishes the company’s revenue, costs, margin and the break-even result here (§9.6).
         </EmptyState>
@@ -901,7 +901,7 @@ function CompanyResults({ run }: { run: BonusRun | undefined }) {
   const marginPct = run.companyRevenue ? margin / run.companyRevenue : 0;
   const passed = run.status !== "failed" && run.payoutPct > 0;
   return (
-    <Card title={`Company results — ${run.month}`} icon={Landmark} action={<span className="text-2xs text-sg-dim">§9.6 · aggregate only</span>}>
+    <Card title={`Company results — ${run.month}`} icon={Landmark} action={<Link href="/me/company" className="text-2xs font-semibold text-sg-muted hover:text-sg-white">§9.6 · details →</Link>}>
       <div className="grid grid-cols-2 gap-px bg-sg-line sm:grid-cols-4">
         <Figure label="Revenue (3 months)" value={formatIDR(run.companyRevenue)} />
         <Figure label="Costs" value={formatIDR(costs)} hint={`direct ${formatIDR(run.directCosts)} · overheads ${formatIDR(run.overheads)}`} />

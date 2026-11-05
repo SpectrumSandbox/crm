@@ -50,6 +50,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: ["G", "K"], label: "Go to Policy", group: "Navigation" },
   { keys: ["G", "Q"], label: "Go to Quotes", group: "Navigation" },
   { keys: ["G", "A"], label: "Go to Automation", group: "Navigation" },
+  { keys: ["G", "R"], label: "Go to Reports", group: "Navigation" },
   { keys: ["G", "X"], label: "Go to Disputes", group: "Navigation" },
 
   // Agile board
@@ -232,7 +233,7 @@ export function useGlobalHotkeys() {
       if (pendingG.current) {
         window.clearTimeout(pendingG.current);
         pendingG.current = null;
-        const dest: Record<string, string> = { h: "/home", d: "/deals", c: "/contacts", o: "/companies", t: "/tickets", b: "/board", l: "/backlog", u: "/issues", i: "/initiatives", m: "/compensation", p: "/people", y: "/me", k: "/policy", j: "/projects", a: "/automation", x: "/disputes", q: "/quotes" };
+        const dest: Record<string, string> = { h: "/home", d: "/deals", c: "/contacts", o: "/companies", t: "/tickets", b: "/board", l: "/backlog", u: "/issues", i: "/initiatives", m: "/compensation", p: "/people", y: "/me", k: "/policy", j: "/projects", a: "/automation", x: "/disputes", q: "/quotes", r: "/reports" };
         const to = dest[e.key.toLowerCase()];
         if (to) {
           e.preventDefault();

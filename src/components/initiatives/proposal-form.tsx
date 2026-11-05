@@ -155,24 +155,34 @@ function formFromDeal(dealId: string, ctx: DealContext): { form: FormState; deal
   const name = (productId: string) => ctx.products.find((p) => p.id === productId)?.name ?? "Deliverable";
   const amount = (l: Pick<LineItem, "quantity" | "unitPrice" | "discountPct">) => Math.round(l.quantity * l.unitPrice * (1 - l.discountPct / 100));
   // a signed / sent quote is the best record of what was sold; otherwise the deal's line items
-  const quote = [...ctx.quotes.filter((q) => q.dealId === deal.id && q.status !== "expired")].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const quote = [...ctx.quotes.filter((q) => q.dealId === deal.id && q.status !== "expired" && !q.supersededById)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   const items = quote?.lineItems.length ? quote.lineItems.map((l) => ({ name: name(l.productId), amount: amount(l) })) : ctx.lineItems.filter((l) => l.dealId === deal.id).map((l) => ({ name: name(l.productId), amount: amount(l) }));
   const span = Date.parse(end) - Date.parse(start);
-  const milestones: Milestone[] = items.map((it, i) => ({
-    id: uid("ms"),
-    name: it.name,
-    dueDate: fromDateInput(toDateInput(new Date(Date.parse(start) + (span * (i + 1)) / items.length).toISOString())),
-    paymentAmount: it.amount,
-    done: false,
-  }));
+  const quoteTotal = items.reduce((s, it) => s + it.amount, 0);
+  // the quote's payment schedule (W3) is the agreed billing plan; otherwise one milestone per line item
+  const milestones: Milestone[] = quote?.paymentSchedule?.length
+    ? quote.paymentSchedule.map((p, i, all) => ({
+        id: uid("ms"),
+        name: p.label,
+        dueDate: p.dueAt ? fromDateInput(toDateInput(p.dueAt)) : fromDateInput(toDateInput(new Date(Date.parse(start) + (span * (i + 1)) / all.length).toISOString())),
+        paymentAmount: Math.round((quoteTotal * p.pct) / 100),
+        done: false,
+      }))
+    : items.map((it, i) => ({
+        id: uid("ms"),
+        name: it.name,
+        dueDate: fromDateInput(toDateInput(new Date(Date.parse(start) + (span * (i + 1)) / items.length).toISOString())),
+        paymentAmount: it.amount,
+        done: false,
+      }));
   return {
     deal,
     form: {
       ...base,
       title: deal.name.replace(/^[A-Z][A-Za-z0-9&]{1,6}\s+[—–-]\s+/, ""),
       type: guessType(deal),
-      origination: "personal",
-      firstContactAt: earliestContact(deal, ctx.activities),
+      origination: deal.origination?.channel ?? "personal",
+      firstContactAt: deal.origination?.firstContactAt ?? earliestContact(deal, ctx.activities),
       summary: deal.description,
       companyId: deal.companyId,
       dealId: deal.id,

@@ -88,7 +88,7 @@ export default function BoardPage() {
   const [lane, setLane] = useState<Swimlane>("none");
   const [q, setQ] = useUrlQuery();
   const jql = useJql(q);
-  const [epicFilter, setEpicFilter] = useState<string | null>(null);
+  const [epicFilter, setEpicFilter] = useState<string | null>(() => params.get("epic"));
   const [onlyMine, setOnlyMine] = useState(false);
   const [onlyCrm, setOnlyCrm] = useState(false);
   const [onlyBlocking, setOnlyBlocking] = useState(false);
