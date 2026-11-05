@@ -258,6 +258,7 @@ export function ProbationTab() {
  */
 export function ProbationOutcomeModal({ kind, userId, onClose, onDone }: { kind: "complete" | "fail" | "dismiss"; userId: string; onClose: () => void; onDone?: () => void }) {
   const completeProbation = useCrm((s) => s.completeProbation);
+  const failProbation = useCrm((s) => s.failProbation);
   const recordSeparation = useCrm((s) => s.recordSeparation);
   const profiles = useCrm((s) => s.employeeProfiles);
   const bonusRuns = useCrm((s) => s.bonusRuns);
@@ -281,7 +282,7 @@ export function ProbationOutcomeModal({ kind, userId, onClose, onDone }: { kind:
       notify(`${name}: confirmed — ${formatIDR(balance)} Probation Completion Bonus due by ${formatDate(payBy, "medium")}`);
     } else if (kind === "fail") {
       // §11.4 / §10: end of employment during probation on the last working day — ledger rows close that day
-      recordSeparation(userId, "probation_failed", end, { noticeAt: new Date().toISOString() });
+      failProbation(userId, end);
       notify(`${name}: employment ends ${formatDate(end, "medium")} — ${formatIDR(balance)} held balance paid with final pay`);
     } else {
       recordSeparation(userId, "termination_for_cause", end, { noticeAt: new Date().toISOString() });

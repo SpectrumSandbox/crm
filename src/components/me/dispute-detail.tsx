@@ -19,6 +19,7 @@ import {
   isDisputeAdmin,
   isExcoMember,
   isPrcMember,
+  pendingCorrection,
 } from "@/lib/slices/program-extras";
 import { cn, formatDate, formatIDR, relativeTime } from "@/lib/utils";
 import { PageHeader } from "@/components/shell/page-header";
@@ -127,6 +128,7 @@ export function DisputeDetail({ id }: { id: string }) {
   const initiatives = useCrm((s) => s.initiatives);
   const profiles = useCrm((s) => s.employeeProfiles);
   const members = useCrm((s) => s.initiativeMembers);
+  const runs = useCrm((s) => s.bonusRuns);
   const access = useAccess();
   const a = useCrm.getState;
   const notify = useUi((s) => s.notify);
@@ -162,6 +164,7 @@ export function DisputeDetail({ id }: { id: string }) {
   const canDecideHere = member && !recusedMe;
   const appealOpen = stage === "closed" && !!d.prcDecision && !d.excoDecision && Date.parse(d.prcDecision.appealBy) >= Date.now() && (isRaiser || isHandler || d.involvedIds.includes(me));
   const finance = access.roles.includes("finance") || access.roles.includes("cfo");
+  const corr = pendingCorrection(d, runs);
   const handlers = profiles.filter((p) => p.userId !== d.raisedById && (p.governanceRoles.length > 0 || initiatives.some((i) => i.id === d.initiativeId))).map((p) => p.userId);
   const leadIds = members.filter((m) => m.initiativeId === d.initiativeId && m.roles.includes("project_lead")).map((m) => m.userId);
   const handlerOptions = [...new Set([...handlers, ...leadIds])].filter((u) => u !== d.raisedById);
@@ -355,17 +358,18 @@ export function DisputeDetail({ id }: { id: string }) {
                       <span className="font-semibold text-sg-white">PRC:</span> {d.prcDecision.text} <span className="text-2xs text-sg-dim">— {name(d.prcDecision.byId)}, {formatDate(d.prcDecision.at, "medium")}</span>
                     </p>
                   )}
-                  {d.outcome === "settled" && d.proposal && (
+                  {(d.settledDirectly || d.outcome === "settled") && d.proposal && (
                     <p className="text-sg-text">
                       <span className="font-semibold text-sg-white">Settled directly:</span> {d.proposal.text}
                     </p>
                   )}
-                  {d.correction && (
+                  {(d.correction || corr) && (
                     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-sg-line bg-sg-bg/40 px-3 py-2">
                       <span className="text-sg-text">
-                        Correction {showAmounts ? <RpFull value={d.correction.amount} className="font-semibold text-soft-green" /> : null} with the {cycleLabel(d.correction.cycle)} salary (§8.5)
+                        Correction {showAmounts ? <RpFull value={d.correction?.amount ?? corr?.amount ?? 0} className="font-semibold text-soft-green" /> : null} with the {cycleLabel(d.correction?.cycle ?? corr?.cycle ?? "")} salary (§8.5)
+                        {corr && !corr.recorded && <span className="text-2xs text-sg-dim"> · from the accepted settlement — Finance confirms</span>}
                       </span>
-                      {d.correction.paidAt ? (
+                      {d.correction?.paidAt ? (
                         <Chip color="green">Paid {formatDate(d.correction.paidAt, "medium")}</Chip>
                       ) : finance ? (
                         <Button size="xs" variant="primary" className="ml-auto" onClick={() => run(() => a().markCorrectionPaid(d.id), "Correction marked as paid")}>

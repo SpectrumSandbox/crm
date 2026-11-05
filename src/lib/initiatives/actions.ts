@@ -502,6 +502,7 @@ export function createInitiativeActions<S extends CoreState>(set: SetFn<S>, get:
     },
 
     proposeAmendment: (initiativeId, change, effectiveDate, reason) => {
+      actions.closeOverdueAmendments();
       const id = uid("am");
       const me = get().currentUserId;
       // "add" and "change" take effect from 00:00 WIB on the effective date; a removal keeps the last day given
@@ -515,6 +516,8 @@ export function createInitiativeActions<S extends CoreState>(set: SetFn<S>, get:
     },
     voteAmendment: (id, vote, userId) => {
       const voter = userId ?? get().currentUserId;
+      // a vote after the 5-business-day deadline does not count — close overdue amendments first (§6.8.2)
+      actions.closeOverdueAmendments();
       const a = get().teamAmendments.find((x) => x.id === id);
       if (!a || a.status !== "open") return;
       const votes = [...a.votes.filter((v) => v.userId !== voter), { userId: voter, vote, at: now() }];

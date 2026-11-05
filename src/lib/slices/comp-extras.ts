@@ -11,50 +11,9 @@ import type { CrmState } from "../store";
 import { can, rolesOf } from "../access-control";
 import { prcRoster } from "../initiatives/engine";
 import type { GetFn, SetFn, Uid } from "./types";
+import type { CycleNote, ExceptionReview, LedgerConfirmation, ReleaseApproval } from "../seed-ext/comp";
 
-export interface LedgerConfirmation {
-  id: string;
-  month: string;
-  initiativeId: string;
-  confirmedById: string;
-  at: string;
-  /** Finance confirmed without the Project Lead — reason recorded (§8.2) */
-  override?: string;
-}
-
-export interface ExceptionReview {
-  id: string;
-  month: string;
-  /** stable key of the exception, e.g. "joiner:u-rafi:ini-1" */
-  key: string;
-  reviewedById: string;
-  at: string;
-  note?: string;
-}
-
-/** A PRC member's recorded vote on releasing a certified run — passed to releaseRun as the §13.1 PRC vote. */
-export interface ReleaseApproval {
-  id: string;
-  runId: string;
-  month: string;
-  userId: string;
-  vote: "for" | "against";
-  /** the certification this approval refers to — a re-certification invalidates earlier approvals */
-  certifiedAt: string | null;
-  at: string;
-  /** recorded by someone else from the member's written approval */
-  recordedById: string;
-  withdrawnAt?: string | null;
-}
-
-export interface CycleNote {
-  id: string;
-  month: string;
-  kind: "certification_reference";
-  text: string;
-  byId: string;
-  at: string;
-}
+export type { CycleNote, ExceptionReview, LedgerConfirmation, ReleaseApproval } from "../seed-ext/comp";
 
 export interface CompExtrasSlice {
   confirmLedger: (month: string, initiativeId: string, override?: string) => void;

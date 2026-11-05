@@ -1,16 +1,17 @@
 "use client";
 
 /* Shared building blocks for the /compensation workspace (Policy v4.0 §8–§11). */
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import Link from "next/link";
 import { CircleAlert, Info, Lock, TriangleAlert, CircleCheck } from "lucide-react";
 import { useCrm } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
-import type { BonusRun, ClawbackTrigger, GovernanceRole, LineStatus } from "@/lib/initiatives/types";
+import type { BonusRun, ClawbackTrigger, LineStatus } from "@/lib/initiatives/types";
 import type { ProjectRate } from "@/lib/initiatives/engine";
 import type { SpectrumColor } from "@/lib/types";
 import { cn, formatIDR } from "@/lib/utils";
 import { Avatar, Chip } from "@/components/ui/misc";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Cite } from "@/components/initiatives/shared";
 
 /** §9.1 inputs entered by Finance each month (rolling three closed months). */
@@ -85,13 +86,6 @@ export function SampleChip({ demo }: { demo?: boolean }) {
       <Chip color="blue">Sample</Chip>
     </span>
   );
-}
-
-/** Governance roles of the signed-in user (from their HR record). */
-export function useMyRoles(): { userId: string; roles: GovernanceRole[] } {
-  const currentUserId = useCrm((s) => s.currentUserId);
-  const profiles = useCrm((s) => s.employeeProfiles);
-  return useMemo(() => ({ userId: currentUserId, roles: profiles.find((p) => p.userId === currentUserId)?.governanceRoles ?? [] }), [currentUserId, profiles]);
 }
 
 /** Bordered workspace card with an eyebrow-style header. */
@@ -218,54 +212,9 @@ export function parseAmount(v: string) {
   return Number.isFinite(n) ? n : 0;
 }
 
-const SUFFIX: [RegExp, number][] = [
-  [/(juta|jt)$/i, 1e6],
-  [/(ribu|rb|k)$/i, 1e3],
-  [/(miliar|milyar|bn|b|m)$/i, 1e9],
-  [/(triliun|t)$/i, 1e12],
-];
-
 /**
- * Rupiah typed the way Finance writes it: "7.200.000.000", "7,200,000,000", "Rp 7.2 M", "7,2 M" (miliar), "720 jt",
- * "720jt", "15 rb". Indonesian "M" is miliar (10⁹). Returns whole rupiah (rounded down, §8.5), or NaN when unreadable.
- */
-export function parseIdr(text: string): number {
-  let t = String(text).trim().replace(/^rp\.?/i, "").replace(/\s+/g, "");
-  if (!t) return 0;
-  const neg = t.startsWith("-") || t.startsWith("−");
-  if (neg) t = t.slice(1);
-  let mult = 1;
-  for (const [re, m] of SUFFIX) {
-    if (re.test(t)) {
-      mult = m;
-      t = t.replace(re, "");
-      break;
-    }
-  }
-  if (!/^\d[\d.,]*$/.test(t) && !/^[.,]\d+$/.test(t)) return Number.NaN;
-  const last = Math.max(t.lastIndexOf(","), t.lastIndexOf("."));
-  const tail = last >= 0 ? t.length - last - 1 : 0;
-  const mark = last >= 0 ? t[last] : "";
-  const other = mark === "," ? "." : ",";
-  const single = last >= 0 && t.indexOf(mark) === last;
-  // the last mark is a decimal point when the other mark groups thousands before it ("1.500.000,50"), or it is the
-  // only mark and not followed by exactly three digits ("7,2 M", "12,5") — with a unit, "7.2 M" too
-  const decimal = last >= 0 && single && (t.includes(other) || tail !== 3 || (mult > 1 && !t.includes(other) && mark === ","));
-  const intPart = decimal ? t.slice(0, last) : t;
-  const fracPart = decimal ? t.slice(last + 1) : "";
-  const num = Number(`${intPart.replace(/[.,]/g, "") || "0"}${fracPart ? `.${fracPart}` : ""}`);
-  if (!Number.isFinite(num)) return Number.NaN;
-  const v = Math.floor(num * mult + 1e-6);
-  return neg ? -v : v;
-}
-
-const groupFmt = new Intl.NumberFormat("id-ID", { maximumFractionDigits: 0 });
-/** "7.200.000.000" — the id-ID grouping shown in money inputs. */
-export const groupIdr = (n: number) => groupFmt.format(Math.round(n) === 0 ? 0 : Math.round(n));
-
-/**
- * Rupiah input with thousand separators (id-ID) that also reads "7,2 M" (miliar), "720 jt" or "15 rb".
- * Emits whole rupiah on every keystroke that parses; the text is regrouped on blur.
+ * Rupiah input for the compensation and HR forms — the shared W2 MoneyInput (id-ID grouping, "7,2 M" miliar,
+ * "720 jt"), adapted to number state: an empty or unreadable field leaves the last valid amount (0 when cleared).
  */
 export function AmountInput({
   value,
@@ -288,45 +237,19 @@ export function AmountInput({
   "aria-label"?: string;
   id?: string;
 }) {
-  const [text, setText] = useState(() => (value ? groupIdr(value) : ""));
-  const [focused, setFocused] = useState(false);
-  useEffect(() => {
-    if (!focused) setText(value ? groupIdr(value) : "");
-  }, [value, focused]);
-  const parsed = parseIdr(text);
-  const invalid = text.trim() !== "" && Number.isNaN(parsed);
   return (
-    <span className="relative block">
-      <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-2xs font-semibold text-sg-dim">Rp</span>
-      <input
-        id={id}
-        inputMode="decimal"
-        autoComplete="off"
-        aria-label={ariaLabel}
-        aria-invalid={invalid || undefined}
-        autoFocus={autoFocus}
-        disabled={disabled}
-        placeholder={placeholder}
-        value={text}
-        onFocus={() => setFocused(true)}
-        onBlur={() => {
-          setFocused(false);
-          const n = parseIdr(text);
-          if (!Number.isNaN(n)) setText(n ? groupIdr(min != null ? Math.max(min, n) : n) : "");
-        }}
-        onChange={(e) => {
-          setText(e.target.value);
-          const n = parseIdr(e.target.value);
-          if (!Number.isNaN(n)) onChange(min != null ? Math.max(min, n) : n);
-        }}
-        title="Type 7.200.000.000, 7,2 M (miliar), 720 jt or 15 rb"
-        className={cn(
-          "sg-num h-8 w-full rounded border border-sg-line bg-sg-bg/60 pl-8 pr-2.5 text-sm text-sg-text placeholder:text-sg-dim transition-colors duration-150 hover:border-sg-line-2 focus:border-sg-white/60 focus:outline-none focus-visible:ring-1 focus-visible:ring-sg-white/40 disabled:opacity-50",
-          invalid && "border-soft-red/60 text-soft-red",
-          className,
-        )}
-      />
-    </span>
+    <MoneyInput
+      id={id}
+      value={value}
+      onValueChange={(n) => onChange(n === null ? 0 : min != null ? Math.max(min, n) : n)}
+      allowNegative={min == null}
+      min={min ?? undefined}
+      disabled={disabled}
+      placeholder={placeholder}
+      autoFocus={autoFocus}
+      aria-label={ariaLabel}
+      className={className}
+    />
   );
 }
 

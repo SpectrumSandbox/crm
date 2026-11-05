@@ -178,6 +178,11 @@ export function MonthlyRunTab({ month }: { month: string }) {
     const opts = st === "certified" && onBehalf && cfoId ? { certifiedById: cfoId } : {};
     const id = recordRun(result as RunResult, draft, st, opts);
     if (!id) return;
+    const saved = useCrm.getState().bonusRuns.find((r) => r.id === id);
+    if (saved && saved.status !== st && !(st === "draft" && saved.status === "failed")) {
+      notify(`Not ${st === "certified" ? "certified" : "reopened"} — ${useCrm.getState().auditLog.find((e) => e.entityId === id && e.action.startsWith("refused"))?.detail ?? "refused by the §8.2 / §13.2 controls"}`);
+      return;
+    }
     if (st === "certified" && onBehalf) addCycleNote(month, "certification_reference", `${userMap.get(cfoId ?? "")?.name ?? "CFO"}'s written certification: ${reference.trim()}`);
     notify(st === "certified" ? `${monthLabel(month)} checks certified${onBehalf ? ` for ${userMap.get(cfoId ?? "")?.name ?? "the CFO"}` : ""}${result.passed ? " — passed" : ` — ${pctLabel(result.payoutPct)} pro rata (§9.2)`}; awaiting PRC release` : `Provisional bonuses saved for ${monthLabel(month)}`);
     setReference("");
@@ -1395,6 +1400,10 @@ interface PayrollRow {
   probationBonus: number;
   heldReleased: number;
   recovered: number;
+  /** §14 / §8.5 dispute corrections due with this salary (not part of the run lines) */
+  disputeCorrection: number;
+  /** gross bonus + dispute corrections */
+  total: number;
   pph: { withheld: number; net: number; rate: number; category: string } | null;
   split: string;
   notes: string[];
@@ -1406,8 +1415,12 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
   const profiles = useCrm((s) => s.employeeProfiles);
   const bonusRuns = useCrm((s) => s.bonusRuns);
   const outcomes = useCrm((s) => s.probationOutcomes);
+  const disputes = useCrm((s) => s.disputes);
+  const markCorrectionPaid = useCrm((s) => s.markCorrectionPaid);
   const notify = useUi((s) => s.notify);
   const access = useAccess();
+  // §8.5 / §14 corrections agreed in a dispute, due with this salary or overdue from an earlier one
+  const corrections = useMemo(() => (run ? disputes.filter((d) => d.correction && !d.correction.paidAt && d.correction.cycle <= run.month) : []), [disputes, run]);
 
   const rows = useMemo<ExportRow[]>(() => {
     if (!run) return [];
@@ -1422,7 +1435,7 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
 
   const payroll = useMemo<PayrollRow[]>(() => {
     if (!run) return [];
-    const ids = Array.from(new Set(run.lines.filter((l) => l.payable > 0 || (l.recovered ?? 0) > 0).map((l) => l.userId)));
+    const ids = Array.from(new Set([...run.lines.filter((l) => l.payable > 0 || (l.recovered ?? 0) > 0).map((l) => l.userId), ...corrections.map((d) => d.raisedById)]));
     return ids
       .map((userId) => {
         const u = users.find((x) => x.id === userId);
@@ -1437,7 +1450,12 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
           .filter((l) => l.payable > 0)
           .map((l) => `${codeOf(initiatives.find((i) => i.id === l.initiativeId), l.initiativeId)}:${Math.floor(l.payable)}`)
           .join("; ");
-        const notes = mine.flatMap((l) => (l.extras ?? []).map((x) => x.note)).concat(mine.some((l) => (l.recovered ?? 0) > 0) ? ["Clawback recovered from this bonus (§9.4)"] : []);
+        const mineCorr = corrections.filter((d) => d.raisedById === userId);
+        const disputeCorrection = mineCorr.reduce((s, d) => s + Math.floor(d.correction!.amount), 0);
+        const notes = mine
+          .flatMap((l) => (l.extras ?? []).map((x) => x.note))
+          .concat(mine.some((l) => (l.recovered ?? 0) > 0) ? ["Clawback recovered from this bonus (§9.4)"] : [])
+          .concat(mineCorr.map((d) => `Dispute ${d.number} correction (§8.5, §14)`));
         return {
           userId,
           name: u?.name ?? userId,
@@ -1450,13 +1468,15 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
           probationBonus: sumExtra(["probation_completion", "probation_final_pay"]),
           heldReleased: mine.reduce((s, l) => s + (l.heldIn ?? 0), 0),
           recovered: mine.reduce((s, l) => s + (l.recovered ?? 0), 0),
+          disputeCorrection,
+          total: gross + disputeCorrection,
           pph,
           split,
           notes: Array.from(new Set(notes)),
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [run, users, profiles, initiatives]);
+  }, [run, users, profiles, initiatives, corrections]);
 
   if (!run) return null;
   const ready = run.status === "certified" || run.status === "released";
@@ -1484,6 +1504,8 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
     { header: "of which probation bonus (IDR)", value: (r) => r.probationBonus },
     { header: "of which held earlier, now released (IDR)", value: (r) => r.heldReleased },
     { header: "Clawback recovered, already deducted (IDR)", value: (r) => r.recovered },
+    { header: "Dispute correction (IDR)", value: (r) => r.disputeCorrection },
+    { header: "Total to pay with salary (IDR)", value: (r) => r.total },
     { header: "PPh 21 withheld — estimate (IDR)", value: (r) => (r.pph ? r.pph.withheld : "") },
     { header: "Net bonus — estimate (IDR)", value: (r) => (r.pph ? r.pph.net : "") },
     { header: "Cost centres (project:amount)", value: (r) => r.split },
@@ -1540,6 +1562,7 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
                     <th className={thRight}>Held, now paid</th>
                     <th className={thRight}>Clawback recovered</th>
                     <th className={thRight}>Gross payable</th>
+                    <th className={thRight}>Dispute corr.</th>
                     {hasPph ? <th className={thRight}>PPh 21 est.</th> : null}
                     {hasPph ? <th className={thRight}>Net est.</th> : null}
                   </tr>
@@ -1555,6 +1578,7 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
                       <td className={tdNum}>{r.heldReleased ? exactIdr(r.heldReleased) : "—"}</td>
                       <td className={cn(tdNum, r.recovered ? "text-soft-red" : "")}>{r.recovered ? exactIdr(-r.recovered) : "—"}</td>
                       <td className={cn(tdNum, "font-semibold text-sg-white")}>{exactIdr(r.gross)}</td>
+                      <td className={tdNum}>{r.disputeCorrection ? exactIdr(r.disputeCorrection) : "—"}</td>
                       {hasPph ? <td className={tdNum}>{r.pph ? exactIdr(r.pph.withheld) : "—"}</td> : null}
                       {hasPph ? <td className={cn(tdNum, "text-soft-green")}>{r.pph ? exactIdr(r.pph.net) : "—"}</td> : null}
                     </tr>
@@ -1580,6 +1604,37 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
           ) : (
             <RoleNote>Finance exports the payroll files (§13.2).</RoleNote>
           )}
+          {corrections.length ? (
+            <div className="rounded-lg border border-sg-line px-3 py-2 text-xs">
+              <div className="sg-eyebrow mb-1">Dispute corrections with this salary (§8.5, §14)</div>
+              <ul className="space-y-1">
+                {corrections.map((d) => (
+                  <li key={d.id} className="flex flex-wrap items-center gap-2">
+                    <span className="w-44">
+                      <UserCell userId={d.raisedById} />
+                    </span>
+                    <span className="min-w-0 flex-1 text-sg-muted">
+                      {d.number} · {d.subject}
+                      {d.correction!.cycle < run.month ? <span className="text-soft-yellow"> · due in {d.correction!.cycle}</span> : null}
+                    </span>
+                    <span className="sg-num font-semibold text-sg-white">{exactIdr(d.correction!.amount)}</span>
+                    {final && access.certify ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={() => {
+                          markCorrectionPaid(d.id);
+                          notify(`Correction for ${d.number} marked paid`);
+                        }}
+                      >
+                        Mark paid
+                      </Button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <p className="text-2xs text-sg-dim">
             One row per employee: project lines including deferred releases, Probation Completion Bonuses and held amounts whose condition has cleared, after any §9.4 recovery. Amounts are gross, rounded down to whole rupiah; payroll withholds PPh 21 <Cite s="8.5" />
             {hasPph ? " — the PPh 21 and net columns are TER estimates on the base salary plus bonus (PMK 168/2023); payroll's figure is final" : ""}.{!final ? " The run is certified but not released — the file is marked DRAFT and must not be paid." : ""}

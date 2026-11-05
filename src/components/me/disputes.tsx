@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 import { MessageSquare, Plus, Scale } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { DISPUTE_CATEGORIES, type Dispute, type DisputeCategory, type DisputeOutcome, type DisputeStage } from "@/lib/initiatives/types";
-import { DISPUTE_CATEGORY_META, DISPUTE_OUTCOME_LABEL, DISPUTE_STAGE_META, disputeSla, disputeTimeLimit, isLateDispute, statementDate } from "@/lib/slices/program-extras";
+import { DISPUTE_CATEGORY_META, DISPUTE_STAGE_META, disputeSla, disputeTimeLimit, isLateDispute, outcomeLabel, statementDate } from "@/lib/slices/program-extras";
 import { POLICY } from "@/lib/initiatives/policy";
 import type { SpectrumColor } from "@/lib/types";
 import { cn, formatDate, formatIDR, toDateInput } from "@/lib/utils";
@@ -27,7 +27,7 @@ export const STAGE_COLOR: Record<DisputeStage, SpectrumColor> = { direct: "blue"
 const OUTCOME_COLOR: Record<DisputeOutcome, SpectrumColor> = { upheld: "green", partially_upheld: "cyan", rejected: "red", withdrawn: "blue", settled: "green" };
 
 export function DisputeStageChip({ d }: { d: Dispute }) {
-  if (d.stage === "closed" && d.outcome) return <Chip color={OUTCOME_COLOR[d.outcome]}>{DISPUTE_OUTCOME_LABEL[d.outcome]}</Chip>;
+  if (d.stage === "closed" && d.outcome) return <Chip color={OUTCOME_COLOR[d.outcome]}>{outcomeLabel(d)}</Chip>;
   return (
     <Chip color={STAGE_COLOR[d.stage]} dot>
       {DISPUTE_STAGE_META[d.stage].label}

@@ -133,8 +133,23 @@ export function disputeSla(d: Pick<Dispute, "dueAt" | "stage">, now = Date.now()
   return { overdue, days: overdue ? -businessDaysBetween(d.dueAt, nowIso) : businessDaysBetween(nowIso, d.dueAt) };
 }
 
-/** May this person see the dispute? The employee, the handler, the parties and Finance / HR / PRC / ExCo (§13.4). */
-export const canSeeDispute = (d: Dispute, userId: string, profiles: EmployeeProfile[]) => d.raisedById === userId || d.handlerId === userId || isDisputeAdmin(userId, profiles);
+/** May this person see the dispute? The employee, the handler, the people involved and the pay roles (§13.4) — the same
+ * rule the server applies to the workspace snapshot (src/lib/sync/server-policy.ts). */
+export const canSeeDispute = (d: Dispute, userId: string, profiles: EmployeeProfile[]) => d.raisedById === userId || d.handlerId === userId || d.involvedIds.includes(userId) || isDisputeAdmin(userId, profiles);
+
+/** Finance / CFO may set the correction (a decision field on the server). */
+export const isFinance = (userId: string, profiles: EmployeeProfile[]) => hasAny(userId, profiles, ["finance", "cfo"]);
+
+/** Correction still to pay: the recorded one, or — for a direct settlement accepted by the employee — the proposal's,
+ * which Finance confirms and pays (non-pay writers cannot set `correction`). */
+export function pendingCorrection(d: Dispute, runs: BonusRun[], now = Date.now()): { amount: number; cycle: string; recorded: boolean } | null {
+  if (d.correction) return d.correction.paidAt ? null : { amount: d.correction.amount, cycle: d.correction.cycle, recorded: true };
+  if (d.stage === "closed" && d.settledDirectly && d.proposal?.correction) return { amount: d.proposal.correction, cycle: correctionCycle(runs, now), recorded: false };
+  return null;
+}
+
+/** Outcome label, marking direct settlements. */
+export const outcomeLabel = (d: Pick<Dispute, "outcome" | "settledDirectly">) => (d.outcome ? `${d.settledDirectly ? "Settled · " : ""}${DISPUTE_OUTCOME_LABEL[d.outcome]}` : "Open");
 
 /** Next salary cycle still open for a correction: the cycle of today, or the one after if its run is certified (§8.5). */
 export function correctionCycle(runs: BonusRun[], now = Date.now()) {
@@ -354,10 +369,12 @@ export function createProgramExtrasSlice<S extends ProgramExtrasSlice & Needs>(s
       if (!d || d.stage !== "direct" || !d.proposal || d.raisedById !== me()) return;
       const p = d.proposal;
       const ts = now();
-      const correction = p.correction ? { amount: p.correction, cycle: correctionCycle(get().bonusRuns), paidAt: null, paidById: null } : null;
+      const cycle = correctionCycle(get().bonusRuns);
+      // the outcome becomes the proposal's outcome (the only change the server accepts from the employee); Finance
+      // records and pays any correction (pendingCorrection)
       patch(
         id,
-        (x) => ({ ...x, stage: "closed", dueAt: null, outcome: "settled", closedAt: ts, correction, events: [...x.events, event("accepted", "direct", `Settled directly — ${DISPUTE_OUTCOME_LABEL[p.outcome].toLowerCase()}${correction ? ` · Rp ${correction.amount.toLocaleString("id-ID")} corrected in the ${correction.cycle} cycle (§8.5)` : ""}`)] }),
+        (x) => ({ ...x, stage: "closed", dueAt: null, outcome: p.outcome, settledDirectly: true, closedAt: ts, events: [...x.events, event("accepted", "direct", `Settled directly — ${DISPUTE_OUTCOME_LABEL[p.outcome].toLowerCase()}${p.correction ? ` · Rp ${p.correction.toLocaleString("id-ID")} to be corrected in the ${cycle} cycle (§8.5)` : ""}`)] }),
         audit("policy", id, `§14 dispute ${d.number} settled directly`, p.text),
       );
     },
@@ -487,13 +504,14 @@ export function createProgramExtrasSlice<S extends ProgramExtrasSlice & Needs>(s
     markCorrectionPaid: (id) => {
       const d = find(id);
       const u = me();
-      const r = roleSet(u, profiles());
-      if (!d?.correction || d.correction.paidAt || !(r.has("finance") || r.has("cfo"))) return;
+      if (!d || !isFinance(u, profiles())) return;
+      const pending = pendingCorrection(d, get().bonusRuns);
+      if (!pending) return;
       const ts = now();
       patch(
         id,
-        (x) => ({ ...x, correction: x.correction ? { ...x.correction, paidAt: ts, paidById: u } : null, events: [...x.events, event("correction_paid", x.stage, `Correction paid with the ${x.correction?.cycle} salary (§8.5)`)] }),
-        audit("policy", id, `§14 dispute ${d.number}: correction paid`, `Rp ${d.correction.amount.toLocaleString("id-ID")}`),
+        (x) => ({ ...x, correction: { amount: pending.amount, cycle: pending.cycle, paidAt: ts, paidById: u }, events: [...x.events, event("correction_paid", x.stage, `Correction of Rp ${pending.amount.toLocaleString("id-ID")} paid with the ${pending.cycle} salary (§8.5)`)] }),
+        audit("policy", id, `§14 dispute ${d.number}: correction paid`, `Rp ${pending.amount.toLocaleString("id-ID")}`),
       );
     },
 

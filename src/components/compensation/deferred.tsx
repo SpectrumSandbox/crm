@@ -10,7 +10,7 @@ import { CircleAlert, CircleCheck, CircleX, Hourglass, PiggyBank, SquareCheck } 
 import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
 import type { DeferredBonus, EmployeeProfile, Initiative, RevenueEntry } from "@/lib/initiatives/types";
-import { collectionWindow, cycleMonth, deferralShare, deferralVestDate, monthStart, netRevenue, paymentDate, paymentOutcome, projectRate, proposalEconomics, type PaymentOutcome } from "@/lib/initiatives/engine";
+import { allocateDeferralCosts, collectionWindow, cycleMonth, deferralShare, deferralVestDate, monthStart, netRevenue, paymentDate, paymentOutcome, projectRate, proposalEconomics, type PaymentOutcome } from "@/lib/initiatives/engine";
 import { useAccess } from "@/lib/access-control";
 import { POLICY } from "@/lib/initiatives/policy";
 import { cn, formatDate, formatIDR } from "@/lib/utils";
@@ -48,7 +48,7 @@ function review(d: DeferredBonus, ini: Initiative | undefined, entries: RevenueE
   const unpaid = open.filter(overdue);
   const upcoming = open.filter((e) => !overdue(e));
   // the deferred bonus was earned on payments collected by the cut-off of its cycle, for work before it (§10)
-  const collected = (d as DeferredBonus & { collectedAt?: string | null }).collectedAt ?? collectionWindow(d.month).to;
+  const collected = d.collectedAt ?? collectionWindow(d.month).to;
   const outcome = paymentOutcome(profile, new Date(now).toISOString(), collected, monthStart(d.month));
   const payOn = paymentDate(cycleMonth(new Date(Math.max(Date.parse(vestAt), now)).toISOString()));
   return { d, ini, vestAt, estimated: !closed, vested, closed, unpaid, upcoming, outcome, payOn, ready: vested && outcome.kind === "pay" };
@@ -156,6 +156,7 @@ export function DeferredTab() {
                         <Chip color={statusColor[d.status]} dot>
                           {d.status === "pending" ? "Pending" : d.status === "released" ? (d.releasedAmount < d.amount ? "Released · reduced" : "Released") : "Forfeited"}
                         </Chip>
+                        {d.status === "released" && d.payMonth ? <div className="mt-0.5 text-2xs text-sg-dim">paid with the {formatDate(paymentDate(d.payMonth), "medium")} salary{d.costDeduction ? ` · ${formatIDR(d.costDeduction)} costs deducted` : ""}</div> : null}
                       </td>
                       <td className={cn(tdCls, "min-w-[280px] text-2xs")}>
                         {d.status === "pending" ? (
@@ -225,8 +226,7 @@ function Cond({ ok, label, warn }: { ok: boolean; label: string; warn?: boolean 
  * Entries whose holder may be paid now are released; the others keep their reduced amount pending (§10).
  */
 function ReleaseModal({ initiativeId, pending, onClose }: { initiativeId: string; pending: Review[]; onClose: () => void }) {
-  const releaseDeferred = useCrm((s) => s.releaseDeferred);
-  const forfeitDeferred = useCrm((s) => s.forfeitDeferred);
+  const releaseProjectDeferrals = useCrm((s) => s.releaseProjectDeferrals);
   const reduceDeferred = useCrm((s) => s.reduceDeferred);
   const entries = useCrm((s) => s.revenueEntries);
   const adjustments = useCrm((s) => s.curveAdjustments);
@@ -266,19 +266,25 @@ function ReleaseModal({ initiativeId, pending, onClose }: { initiativeId: string
   const writeOffTotal = unpaid.length && writtenOff ? Math.max(0, writeOff) : 0;
   const shortfallApplies = !!shortfall && shortfall.pct > POLICY.deferral.forecastShortfallReviewPct;
   const shortCutPct = shortfallApplies && misstated ? Math.min(shortfall!.pct, Math.max(0, parseAmount(shortPct) / 100)) : 0;
-  const pool = Math.min(projectPending, costs + writeOffTotal); // costs beyond the deferred pool are absorbed by the company
   const absorbed = Math.max(0, costs + writeOffTotal - projectPending);
 
+  // written-off invoices and a misstated-forecast shortfall reduce each entry pro rata first; warranty / rework costs
+  // are then shared once across the project (engine allocateDeferralCosts — the same rule releaseProjectDeferrals applies)
   const plan = useMemo(() => {
-    let left = pool;
-    return pending.map((x, i) => {
-      const share = i === pending.length - 1 ? left : Math.min(left, Math.floor((pool * x.d.amount) / (projectPending || 1)));
-      left -= share;
-      const shortCut = Math.floor((x.d.amount - share) * shortCutPct);
-      const cut = Math.min(x.d.amount, share + shortCut);
-      return { x, cut, net: x.d.amount - cut, payNow: x.ready };
+    let left = Math.min(projectPending, writeOffTotal);
+    const first = pending.map((x, i) => {
+      const wo = i === pending.length - 1 ? left : Math.min(left, Math.floor((writeOffTotal * x.d.amount) / (projectPending || 1)));
+      left -= wo;
+      const short = Math.floor((x.d.amount - wo) * shortCutPct);
+      return { x, pre: Math.min(x.d.amount, wo + short) };
     });
-  }, [pending, pool, projectPending, shortCutPct]);
+    const alloc = allocateDeferralCosts(first.map((f) => ({ id: f.x.d.id, amount: f.x.d.amount - f.pre })), costs);
+    return first.map((f) => {
+      const cost = alloc.rows.find((r) => r.id === f.x.d.id)?.deduction ?? 0;
+      const cut = Math.min(f.x.d.amount, f.pre + cost);
+      return { x: f.x, pre: f.pre, cost, cut, net: f.x.d.amount - cut, payNow: f.x.ready };
+    });
+  }, [pending, projectPending, writeOffTotal, shortCutPct, costs]);
   const releasing = plan.filter((p) => p.payNow);
   const releaseTotal = releasing.reduce((s, p) => s + p.net, 0);
   const cutTotal = plan.reduce((s, p) => s + p.cut, 0);
@@ -294,12 +300,14 @@ function ReleaseModal({ initiativeId, pending, onClose }: { initiativeId: string
     ].filter(Boolean);
     const basis = `${parts.length ? `§9.3 project costs allocated once across ${pending.length} entr${pending.length === 1 ? "y" : "ies"}: ${parts.join("; ")}. ` : "No deductions. "}${note.trim()}`.trim();
     for (const p of plan) {
-      if (p.payNow) {
-        if (p.net > 0) releaseDeferred(p.x.d.id, p.net, `Released ${formatIDR(p.net, "full")} with the ${formatDate(p.x.payOn, "medium")} salary${p.cut ? ` after ${formatIDR(p.cut, "full")}` : ""} — ${basis}`);
-        else forfeitDeferred(p.x.d.id, `Deferred amount fully used by §9.3 deductions — ${basis}`);
-      } else if (p.cut > 0) reduceDeferred(p.x.d.id, p.cut, basis);
+      if (p.pre > 0) reduceDeferred(p.x.d.id, p.pre, basis);
+      // entries that cannot be paid yet bear their share of the costs now and stay pending
+      if (!p.payNow && p.cost > 0) reduceDeferred(p.x.d.id, p.cost, basis);
     }
-    notify(`${releasing.length} deferred entr${releasing.length === 1 ? "y" : "ies"} released — ${formatIDR(releaseTotal)}${cutTotal ? ` after ${formatIDR(cutTotal)} §9.3 deductions` : ""}`);
+    const readyIds = releasing.filter((p) => p.x.d.amount - p.pre > 0).map((p) => p.x.d.id);
+    const readyCosts = releasing.reduce((s, p) => s + p.cost, 0);
+    const res = readyIds.length ? releaseProjectDeferrals(initiativeId, readyCosts, basis, { ids: readyIds }) : null;
+    notify(res ? `${readyIds.length} deferred entr${readyIds.length === 1 ? "y" : "ies"} released — ${formatIDR(res.released)} paid in the next open cycle${cutTotal ? ` after ${formatIDR(cutTotal)} §9.3 deductions` : ""}` : readyIds.length ? "Release refused — PRC with Finance decides deferral releases (§13.2)" : "Deferred amounts fully used by §9.3 deductions");
     onClose();
   };
 
@@ -404,7 +412,7 @@ function ReleaseModal({ initiativeId, pending, onClose }: { initiativeId: string
                   <td className={cn(tdNum, p.cut ? "text-soft-red" : "text-sg-dim")}>{exactIdr(-p.cut)}</td>
                   <td className={cn(tdNum, "font-semibold", p.payNow ? "text-soft-green" : "text-sg-muted")}>
                     {exactIdr(p.net)}
-                    <span className="block text-2xs font-normal text-sg-dim">{p.payNow ? `paid ${formatDate(p.x.payOn, "short")}` : "pending"}</span>
+                    <span className="block text-2xs font-normal text-sg-dim">{p.payNow ? `paid from ${formatDate(p.x.payOn, "short")}` : "pending"}</span>
                   </td>
                 </tr>
               ))}

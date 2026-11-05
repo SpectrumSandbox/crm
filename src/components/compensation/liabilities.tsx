@@ -8,8 +8,8 @@ import { useMemo } from "react";
 import { Download, Landmark } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useAccess } from "@/lib/access-control";
-import type { AuditEntry, BonusRun, DeferredBonus, ProbationOutcome } from "@/lib/initiatives/types";
-import { cycleMonth, nextMonth } from "@/lib/initiatives/engine";
+import type { BonusRun, DeferredBonus, ProbationOutcome } from "@/lib/initiatives/types";
+import { cycleMonth, liabilityRollForward, nextMonth } from "@/lib/initiatives/engine";
 import { csvFilename, downloadCsv, type CsvColumn } from "@/lib/csv";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -36,66 +36,38 @@ export interface RollRow {
 
 const counted = (r: BonusRun) => r.status === "certified" || r.status === "released";
 
-/** Roll-forward of every bonus liability account for each cycle up to `upto`. */
-export function rollForward(upto: string, ctx: { runs: BonusRun[]; deferred: DeferredBonus[]; outcomes: ProbationOutcome[]; auditLog: AuditEntry[] }): RollRow[] {
-  const runs = ctx.runs.filter(counted).sort((a, b) => a.month.localeCompare(b.month));
-  const first = [runs[0]?.month, ...ctx.deferred.map((d) => d.month), ...ctx.outcomes.map((o) => cycleMonth(o.decidedAt))].filter((m): m is string => !!m && m <= upto).sort()[0];
+/**
+ * Roll-forward of every bonus liability account for each cycle up to `upto`. Opening and closing balances come from
+ * the engine's liabilityRollForward (W7); additions and payments are taken from the runs, the deferred ledger and the
+ * probation outcomes, and the balancing figure is shown as forfeited / reduced.
+ */
+export function rollForward(upto: string, ctx: { runs: BonusRun[]; deferred: DeferredBonus[]; outcomes: ProbationOutcome[] }): RollRow[] {
+  const runs = ctx.runs.filter(counted);
+  const first = [...runs.map((r) => r.month), ...ctx.deferred.map((d) => d.month)].filter((m) => m <= upto).sort()[0];
   if (!first) return [];
   const runOf = (m: string) => runs.find((r) => r.month === m);
   const sumLines = (m: string, k: "deferred" | "withheld" | "held" | "carriedOver" | "carriedIn") => runOf(m)?.lines.reduce((s, l) => s + l[k], 0) ?? 0;
-
-  // deferred: original amount from the releasing run's lines; release / reduction dates from the audit trail
-  const events = ctx.deferred.map((d) => {
-    const original = Math.max(d.amount, runOf(d.month)?.lines.find((l) => l.userId === d.userId && l.initiativeId === d.initiativeId)?.deferred ?? d.amount);
-    const log = ctx.auditLog.filter((a) => a.entity === "deferred" && a.entityId === d.id);
-    const releasedAt = log.find((a) => /released/i.test(a.action))?.at;
-    const reducedAt = log.find((a) => /reduced|forfeit/i.test(a.action))?.at;
-    const paid = d.status === "released" ? d.releasedAmount : 0;
-    const reduced = d.status === "pending" ? original - d.amount : original - paid;
-    return { add: d.month, original, paid, payMonth: releasedAt ? cycleMonth(releasedAt) : null, reduced, reduceMonth: reduced > 0 ? cycleMonth(reducedAt ?? releasedAt ?? new Date().toISOString()) : null };
-  });
-
   const rows: RollRow[] = [];
-  const closing: Record<Account, number> = { deferred: 0, carried: 0, probation: 0, held: 0 };
   for (let m = first; m <= upto; m = nextMonth(m)) {
-    // deferred
-    {
-      const additions = events.filter((e) => e.add === m).reduce((s, e) => s + e.original, 0);
-      const payments = events.filter((e) => e.payMonth === m).reduce((s, e) => s + e.paid, 0);
-      const reductions = events.filter((e) => e.reduceMonth === m).reduce((s, e) => s + e.reduced, 0);
-      const opening = closing.deferred;
-      closing.deferred = opening + additions - payments - reductions;
-      rows.push({ month: m, account: "deferred", opening, additions, payments, reductions, closing: closing.deferred });
-    }
-    // carried forward: the run's carried-in is paid first (§9.2) — in full whenever any new bonus is paid
-    {
-      const r = runOf(m);
-      const opening = closing.carried;
-      const close = r ? sumLines(m, "carriedOver") : opening;
-      const carriedIn = r ? sumLines(m, "carriedIn") : 0;
-      const payments = !r ? 0 : r.payoutPct > 0 ? carriedIn : Math.max(0, carriedIn - close);
-      const reductions = r ? Math.max(0, opening - carriedIn) : 0; // dropped under §10 before it reached the run
-      const additions = Math.max(0, close - (opening - reductions - payments));
-      closing.carried = close;
-      rows.push({ month: m, account: "carried", opening, additions, payments, reductions, closing: close });
-    }
-    // probation accrual
-    {
-      const additions = sumLines(m, "withheld");
-      const settled = ctx.outcomes.filter((o) => cycleMonth(o.decidedAt) === m);
-      const payments = settled.filter((o) => o.outcome !== "forfeited").reduce((s, o) => s + o.amount, 0);
-      const reductions = settled.filter((o) => o.outcome === "forfeited").reduce((s, o) => s + o.amount, 0);
-      const opening = closing.probation;
-      closing.probation = Math.max(0, opening + additions - payments - reductions);
-      rows.push({ month: m, account: "probation", opening, additions, payments, reductions, closing: closing.probation });
-    }
-    // held payments: what the cycle's run holds (re-checked and carried by the engine each cycle)
-    {
-      const r = runOf(m);
-      const opening = closing.held;
-      const close = r ? sumLines(m, "held") : opening;
-      closing.held = close;
-      rows.push({ month: m, account: "held", opening, additions: Math.max(0, close - opening), payments: Math.max(0, opening - close), reductions: 0, closing: close });
+    const lr = liabilityRollForward(m, { runs: ctx.runs, deferred: ctx.deferred, probationOutcomes: ctx.outcomes });
+    const acc = (k: Account) => lr.accounts.find((a) => a.key === k)!;
+    const r = runOf(m);
+    const movements: Record<Account, { additions: number; payments: number }> = {
+      // deferred: amounts deferred by this cycle's run; paid when a release lands in this cycle's payroll
+      deferred: { additions: sumLines(m, "deferred"), payments: ctx.deferred.filter((d) => d.status === "released" && (d.payMonth ?? (d.releasedAt ? cycleMonth(d.releasedAt) : null)) === m).reduce((s, d) => s + d.releasedAmount, 0) },
+      // carried: paid first whenever any new bonus is paid (§9.2)
+      carried: (() => {
+        const carriedIn = r ? r.lines.reduce((s, l) => s + Math.max(0, l.carriedIn - (l.heldIn ?? 0)), 0) : 0;
+        const payments = !r ? 0 : r.payoutPct > 0 ? carriedIn : 0;
+        return { payments, additions: Math.max(0, acc("carried").closing - (acc("carried").opening - payments)) };
+      })(),
+      probation: { additions: sumLines(m, "withheld"), payments: ctx.outcomes.filter((o) => o.outcome !== "forfeited" && (o.payMonth ?? cycleMonth(o.decidedAt)) === m).reduce((s, o) => s + o.amount, 0) },
+      held: { additions: r ? r.lines.reduce((s, l) => s + (l.heldItems ?? []).filter((h) => h.fromMonth === m).reduce((a, h) => a + h.amount, 0), 0) || Math.max(0, acc("held").closing - acc("held").opening) : 0, payments: r ? r.lines.reduce((s, l) => s + (l.heldIn ?? 0), 0) : 0 },
+    };
+    for (const k of ["deferred", "carried", "probation", "held"] as Account[]) {
+      const a = acc(k);
+      const mv = movements[k];
+      rows.push({ month: m, account: k, opening: a.opening, additions: mv.additions, payments: mv.payments, reductions: Math.max(0, a.opening + mv.additions - mv.payments - a.closing), closing: a.closing });
     }
   }
   return rows;
@@ -105,11 +77,10 @@ export function LiabilitiesTab({ month }: { month: string }) {
   const runs = useCrm((s) => s.bonusRuns);
   const deferred = useCrm((s) => s.deferredBonuses);
   const outcomes = useCrm((s) => s.probationOutcomes);
-  const auditLog = useCrm((s) => s.auditLog);
   const notify = useUi((s) => s.notify);
   const access = useAccess();
 
-  const rows = useMemo(() => rollForward(month, { runs, deferred, outcomes, auditLog }), [month, runs, deferred, outcomes, auditLog]);
+  const rows = useMemo(() => rollForward(month, { runs, deferred, outcomes }), [month, runs, deferred, outcomes]);
   const current = rows.filter((r) => r.month === month);
   const months = useMemo(() => Array.from(new Set(rows.map((r) => r.month))).slice(-6), [rows]);
   const total = current.reduce((s, r) => s + r.closing, 0);
@@ -194,7 +165,7 @@ export function LiabilitiesTab({ month }: { month: string }) {
         );
       })}
       <p className="text-2xs text-sg-dim">
-        Amounts come from certified and released runs, the deferred ledger and probation outcomes; payments and reductions are dated by the cycle they were recorded in. The CFO reviews the probationary exposure with the PRC each quarter <Cite s="11.5" />. Balances are reported in aggregate outside Finance (§9.6).
+        Opening and closing balances come from certified and released runs, the deferred ledger and probation outcomes; additions and payments are dated by the salary cycle they belong to, and the balancing figure is forfeited or reduced (§9.3, §10). The CFO reviews the probationary exposure with the PRC each quarter <Cite s="11.5" />. Balances are reported in aggregate outside Finance (§9.6).
       </p>
     </div>
   );

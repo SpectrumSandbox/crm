@@ -702,8 +702,10 @@ export interface Dispute {
   excoDecision: { outcome: Exclude<DisputeOutcome, "withdrawn" | "settled">; text: string; correction: number | null; byId: ID; at: ISODate } | null;
   outcome: DisputeOutcome | null;
   closedAt: ISODate | null;
-  /** §8.5 underpayment corrected in the next cycle */
+  /** §8.5 underpayment corrected in the next cycle (set by Finance / PRC / ExCo only — server rule) */
   correction: { amount: number; cycle: string; paidAt: ISODate | null; paidById: ID | null } | null;
+  /** closed because the employee accepted the direct-resolution proposal (outcome = the proposal's outcome) */
+  settledDirectly?: boolean;
   events: DisputeEvent[];
   demo?: boolean;
 }
