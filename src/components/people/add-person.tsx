@@ -8,12 +8,12 @@ import type { Team } from "@/lib/types";
 import type { EmploymentType } from "@/lib/initiatives/types";
 import { EMPLOYMENT_TYPES } from "@/lib/initiatives/types";
 import { addMonths } from "@/lib/initiatives/engine";
-import { EMPLOYMENT_META, POLICY, POLICY_VERSION } from "@/lib/initiatives/policy";
+import { EMPLOYMENT_META, POLICY, POLICY_VERSION, PTKP_STATUSES } from "@/lib/initiatives/policy";
 import { formatDate, fromDateInput, toDateInput } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/overlays";
-import { Callout } from "@/components/compensation/common";
+import { AmountInput, Callout } from "@/components/compensation/common";
 
 const TEAMS: Team[] = ["Engineering", "Service", "Sales", "Marketing", "Finance", "People", "Leadership"];
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -21,6 +21,7 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export function AddPersonModal({ onClose, onCreated }: { onClose: () => void; onCreated: (userId: string) => void }) {
   const users = useCrm((s) => s.users);
   const addPerson = useCrm((s) => s.addPerson);
+  const updateHrIdentifiers = useCrm((s) => s.updateHrIdentifiers);
   const notify = useUi((s) => s.notify);
   const managers = useMemo(() => [...users].sort((a, b) => a.name.localeCompare(b.name)), [users]);
 
@@ -32,7 +33,10 @@ export function AddPersonModal({ onClose, onCreated }: { onClose: () => void; on
   const [type, setType] = useState<EmploymentType>("full_time_permanent");
   const [hire, setHire] = useState(today);
   const [manager, setManager] = useState("");
-  const [salary, setSalary] = useState("");
+  const [salary, setSalary] = useState(0);
+  const [employeeNumber, setEmployeeNumber] = useState("");
+  const [npwp, setNpwp] = useState("");
+  const [ptkp, setPtkp] = useState("");
   const [probationEnd, setProbationEnd] = useState("");
   const [contractEnd, setContractEnd] = useState("");
   const [hours, setHours] = useState("50");
@@ -65,12 +69,13 @@ export function AddPersonModal({ onClose, onCreated }: { onClose: () => void; on
       employmentType: type,
       hireDate: hireIso,
       directManagerId: manager || null,
-      annualBaseSalary: Math.max(0, Math.round(Number(salary) || 0)),
+      annualBaseSalary: Math.max(0, Math.round(salary)),
       probationEndDate: type === "probationary" ? fromDateInput(probationValue) : null,
       contractEndDate: type === "fixed_term_contract" ? fromDateInput(contractEnd) : null,
       contractedHoursPct: type === "part_time" ? hoursPct : undefined,
       acknowledgmentSignedAt: annexB ? fromDateInput(annexB) : null,
     });
+    if (employeeNumber.trim() || npwp.trim() || ptkp) updateHrIdentifiers(id, { employeeNumber: employeeNumber.trim() || undefined, npwp: npwp.trim() || undefined, ptkpStatus: ptkp || undefined });
     notify(`${name.trim()} added — HR to confirm eligibility (§3.5)${annexB ? "" : "; payments held until Annex B is signed"}`);
     onCreated(id);
   };
@@ -158,8 +163,24 @@ export function AddPersonModal({ onClose, onCreated }: { onClose: () => void; on
             ))}
           </Select>
         </Field>
-        <Field label="Annual base salary (IDR)" hint="Used for the §9.4 clawback deduction limits">
-          <Input type="number" min={0} step={1_000_000} value={salary} onChange={(e) => setSalary(e.target.value)} className="sg-num" />
+        <Field label="Annual base salary" hint="Used for the §9.4 clawback deduction limits and the PPh 21 estimate">
+          <AmountInput value={salary} onChange={setSalary} aria-label="Annual base salary" />
+        </Field>
+        <Field label="Employee number" hint="Company employee ID — on statements and payroll">
+          <Input value={employeeNumber} onChange={(e) => setEmployeeNumber(e.target.value)} placeholder="e.g. SG-0142" />
+        </Field>
+        <Field label="NPWP" hint="Or the 16-digit NIK used as NPWP">
+          <Input value={npwp} onChange={(e) => setNpwp(e.target.value)} placeholder="00.000.000.0-000.000" />
+        </Field>
+        <Field label="PTKP status" hint="PPh 21 TER category (PMK 168/2023)">
+          <Select value={ptkp} onChange={(e) => setPtkp(e.target.value)}>
+            <option value="">Not recorded</option>
+            {PTKP_STATUSES.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </Select>
         </Field>
         <Field label={`Annex B signed (Policy v${POLICY_VERSION})`} hint="Leave empty if not signed yet — payments are held until it is (§15.1)" className="col-span-2">
           <Input type="date" value={annexB} onChange={(e) => setAnnexB(e.target.value)} className="w-44" />

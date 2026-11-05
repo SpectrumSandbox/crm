@@ -572,6 +572,9 @@ function DecisionForm({ ini }: { ini: Initiative }) {
   if (!veto && approving && !unrecorded.length && !majorityFor) errors.push(tie ? "Tied vote — the chair's casting vote is needed to approve (§13.1)" : "Approval needs more votes for than against (§13.1)");
   if (tier.tier === 3 && approving && !chairPresent) errors.push("Tier 3 is decided by the full PRC with the CEO present (§4.2)");
   if (tier.tier === 3 && approving && present.length < eligible.length) errors.push("Tier 3 needs the full PRC — every member not recused present (§4.2)");
+  const coi = coiGaps(ini, members, cois);
+  if (approving && coi.missing.length) errors.push(`Annex F conflict-of-interest declaration missing for ${coi.missing.map((u) => userMap.get(u)?.name ?? u).join(", ")} (§12.2)`);
+  if (approving && coi.undecided.length) errors.push(`Decide how to manage the declared conflict of ${coi.undecided.map((u) => userMap.get(u)?.name ?? u).join(", ")} first (§12.2)`);
   if (effective === "approved" && jiraProjectId === "") errors.push("Choose the Jira project for the delivery epic, or “Don’t create an epic”");
 
   const submit = () => {

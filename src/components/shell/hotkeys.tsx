@@ -18,8 +18,8 @@ export interface Shortcut {
 }
 
 const RECORD_ROUTES = ["/contacts/*", "/companies/*", "/deals/*", "/tickets/*"];
-/** Pages whose list is a SmartTable (j / k / x / Enter row navigation). Other list pages declare theirs with usePageShortcuts. */
-const TABLE_ROUTES = ["/contacts", "/companies"];
+/** List pages with j / k / x / Enter row navigation (SmartTable on contacts / companies / tickets, the /issues table). */
+const TABLE_ROUTES = ["/contacts", "/companies", "/tickets", "/issues"];
 const ISSUE_ROUTES = ["/board", "/backlog", "/issues"];
 /** CRM pages: "L" logs a call and "C" falls back to Create deal only here. */
 const CRM_PREFIXES = ["/home", "/deals", "/contacts", "/companies", "/tickets"];
@@ -48,6 +48,9 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: ["G", "P"], label: "Go to People", group: "Navigation" },
   { keys: ["G", "Y"], label: "Go to My compensation", group: "Navigation" },
   { keys: ["G", "K"], label: "Go to Policy", group: "Navigation" },
+  { keys: ["G", "Q"], label: "Go to Quotes", group: "Navigation" },
+  { keys: ["G", "A"], label: "Go to Automation", group: "Navigation" },
+  { keys: ["G", "X"], label: "Go to Disputes", group: "Navigation" },
 
   // Agile board
   { keys: ["J", "K"], label: "Next / previous card", group: "Board", routes: ["/board"] },
@@ -55,11 +58,15 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: ["Enter"], label: "Open the focused card", group: "Board", routes: ["/board"] },
   { keys: ["Shift", "←", "→"], label: "Move the focused card to the previous / next column", group: "Board", routes: ["/board"] },
   { keys: ["Esc"], label: "Clear the card focus", group: "Board", routes: ["/board"] },
+  { keys: ["I"], label: "Assign the focused issue to me / unassign", group: "Issue keys", routes: ["/board", "/issues"] },
+  { keys: ["P"], label: "Next priority on the focused issue", group: "Issue keys", routes: ["/board", "/issues"] },
+  { keys: ["E"], label: "Next estimate on the focused issue", group: "Issue keys", routes: ["/board", "/issues"] },
 
   // List / table views
   { keys: ["J", "K"], label: "Next / previous row", group: "Table", routes: TABLE_ROUTES },
   { keys: ["X"], label: "Select / deselect the current row", group: "Table", routes: TABLE_ROUTES },
   { keys: ["Enter"], label: "Open the current row", group: "Table", routes: TABLE_ROUTES },
+  { keys: ["Shift", "X"], label: "Select a range of rows", group: "Table", routes: ["/issues"] },
   { keys: ["Esc"], label: "Clear the selection", group: "Table", routes: ["/issues"] },
 
   // Record pages
@@ -218,7 +225,7 @@ export function useGlobalHotkeys() {
       if (pendingG.current) {
         window.clearTimeout(pendingG.current);
         pendingG.current = null;
-        const dest: Record<string, string> = { h: "/home", d: "/deals", c: "/contacts", o: "/companies", t: "/tickets", b: "/board", l: "/backlog", u: "/issues", i: "/initiatives", m: "/compensation", p: "/people", y: "/me", k: "/policy", j: "/projects" };
+        const dest: Record<string, string> = { h: "/home", d: "/deals", c: "/contacts", o: "/companies", t: "/tickets", b: "/board", l: "/backlog", u: "/issues", i: "/initiatives", m: "/compensation", p: "/people", y: "/me", k: "/policy", j: "/projects", a: "/automation", x: "/disputes", q: "/quotes" };
         const to = dest[e.key.toLowerCase()];
         if (to) {
           e.preventDefault();

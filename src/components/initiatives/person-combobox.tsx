@@ -1,7 +1,7 @@
 "use client";
 
 /* Searchable person picker — type to filter by name, title, team or email; ↑/↓ + Enter to pick; eligibility inline (§3). */
-import { useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { useCrm } from "@/lib/store";
 import type { User } from "@/lib/types";
@@ -34,6 +34,7 @@ export function PersonCombobox({
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLUListElement>(null);
+  const listId = useId();
   const selected = allUsers.find((u) => u.id === value);
 
   const eligibility = useMemo(() => {
@@ -125,11 +126,11 @@ export function PersonCombobox({
             onKeyDown={onKey}
             placeholder="Search name, title, team or email"
             aria-label="Search people"
-            aria-controls="person-combobox-list"
+            aria-controls={listId}
             className="h-9 w-full bg-transparent text-sm text-sg-text placeholder:text-sg-dim focus:outline-none"
           />
         </div>
-        <ul ref={listRef} id="person-combobox-list" role="listbox" aria-label={ariaLabel} className="max-h-64 overflow-y-auto py-1">
+        <ul ref={listRef} id={listId} role="listbox" aria-label={ariaLabel} className="max-h-64 overflow-y-auto py-1">
           {filtered.map((u, i) => {
             const st = status(u.id);
             return (

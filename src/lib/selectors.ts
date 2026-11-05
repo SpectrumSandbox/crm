@@ -2,8 +2,8 @@
 
 import { useMemo } from "react";
 import { useCrm } from "./store";
-import { holidayOn, isBusinessDay } from "./calendar";
-import type { Activity, Company, Contact, CrmObjectType, CrossLink, Deal, Epic, Issue, PipelineStage, Quote, Ticket, TicketPriority } from "./types";
+import { slaRemainingMs } from "./slices/crm-service";
+import type { Activity, Company, Contact, CrmObjectType, CrossLink, Deal, Epic, Issue, PipelineStage, Quote, Ticket } from "./types";
 
 /** stage id → stage, across all pipelines */
 export function useStageMap() {
@@ -225,107 +225,13 @@ export function useTicketEscalations() {
   }, [info]);
 }
 
-/* ───────────────────────── WIB calendar & business hours ───────────────────────── */
+/* ───────────────────────── SLA business hours (logic lives in the service slice; re-exported for the UI) ───────────────────────── */
+
+export { BUSINESS_HOURS, SLA_POLICY, addBusinessMs, businessMsBetween, isServiceDay, resumedSlaDue, slaDueFor, slaRemainingMs, type SlaPolicy } from "./slices/crm-service";
+export { holidayOn } from "./calendar";
 
 const HOUR = 3_600_000;
 const DAY_MS = 24 * HOUR;
-const WIB_OFFSET = 7 * HOUR;
-
-/** yyyy-mm-dd of an instant in WIB */
-export function wibYmd(ms: number) {
-  return new Date(ms + WIB_OFFSET).toISOString().slice(0, 10);
-}
-
-/** Service desk hours (WIB): Monday–Friday, 08:00–17:00, closed on Indonesian public holidays and cuti bersama. */
-export const BUSINESS_HOURS = { startHour: 8, endHour: 17 } as const;
-const BUSINESS_DAY_MS = (BUSINESS_HOURS.endHour - BUSINESS_HOURS.startHour) * HOUR;
-
-/** is this WIB date a working day for the service desk? (weekends, national holidays and cuti bersama are not) */
-export function isServiceDay(ymd: string) {
-  return isBusinessDay(ymd);
-}
-
-/** the holiday a WIB date falls on, for SLA explanations ("paused for Natal") */
-export { holidayOn };
-
-/** UTC ms of hh:00 WIB on a WIB date */
-const wibAt = (ymd: string, hour: number) => Date.parse(`${ymd}T00:00:00Z`) - WIB_OFFSET + hour * HOUR;
-const nextYmd = (ymd: string) => new Date(Date.parse(`${ymd}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10);
-
-/** add `ms` of service-desk business time to an instant (skips evenings, weekends and holidays) */
-export function addBusinessMs(fromMs: number, ms: number) {
-  let t = fromMs;
-  let left = ms;
-  for (let guard = 0; guard < 2000 && left > 0; guard += 1) {
-    const ymd = wibYmd(t);
-    const open = wibAt(ymd, BUSINESS_HOURS.startHour);
-    const close = wibAt(ymd, BUSINESS_HOURS.endHour);
-    if (!isServiceDay(ymd) || t >= close) {
-      t = wibAt(nextYmd(ymd), BUSINESS_HOURS.startHour);
-      continue;
-    }
-    if (t < open) t = open;
-    const take = Math.min(left, close - t);
-    t += take;
-    left -= take;
-  }
-  return t;
-}
-
-/** service-desk business time between two instants (negative when b < a) */
-export function businessMsBetween(a: number, b: number): number {
-  if (b < a) return -businessMsBetween(b, a);
-  let total = 0;
-  let ymd = wibYmd(a);
-  const last = wibYmd(b);
-  for (let guard = 0; guard < 1500; guard += 1) {
-    if (isServiceDay(ymd)) {
-      const open = Math.max(a, wibAt(ymd, BUSINESS_HOURS.startHour));
-      const close = Math.min(b, wibAt(ymd, BUSINESS_HOURS.endHour));
-      if (close > open) total += close - open;
-    }
-    if (ymd >= last) break;
-    ymd = nextYmd(ymd);
-  }
-  return total;
-}
-
-/* ───────────────────────── ticket SLA ───────────────────────── */
-
-export interface SlaPolicy {
-  basis: "clock" | "business";
-  ms: number;
-  label: string;
-}
-
-/** Resolution targets. Urgent faults run on the 24/7 clock; everything else counts service-desk business hours. */
-export const SLA_POLICY: Record<TicketPriority, SlaPolicy> = {
-  urgent: { basis: "clock", ms: 4 * HOUR, label: "4 hours, around the clock" },
-  high: { basis: "business", ms: BUSINESS_DAY_MS, label: "1 business day (9 business hours)" },
-  medium: { basis: "business", ms: 3 * BUSINESS_DAY_MS, label: "3 business days" },
-  low: { basis: "business", ms: 5 * BUSINESS_DAY_MS, label: "5 business days" },
-};
-
-/** SLA deadline for a new ticket of this priority opened at `fromMs` */
-export function slaDueFor(priority: TicketPriority, fromMs = Date.now()) {
-  const p = SLA_POLICY[priority];
-  const due = p.basis === "clock" ? fromMs + p.ms : addBusinessMs(fromMs, p.ms);
-  return { dueAt: new Date(due).toISOString(), basis: p.basis };
-}
-
-/** remaining SLA time at `atMs` in the ticket's own basis (business or clock ms) */
-export function slaRemainingMs(t: Pick<Ticket, "slaDueAt" | "slaBasis">, atMs: number) {
-  const due = Date.parse(t.slaDueAt);
-  return t.slaBasis === "business" ? businessMsBetween(atMs, due) : due - atMs;
-}
-
-/** deadline after resuming a paused ticket at `resumeMs`: the time that was left at the pause is kept */
-export function resumedSlaDue(t: Pick<Ticket, "slaDueAt" | "slaBasis" | "slaPausedAt">, resumeMs: number) {
-  if (!t.slaPausedAt) return t.slaDueAt;
-  const left = slaRemainingMs(t, Date.parse(t.slaPausedAt));
-  if (left <= 0) return new Date(resumeMs + left).toISOString(); // already breached when paused — stays breached
-  return new Date(t.slaBasis === "business" ? addBusinessMs(resumeMs, left) : resumeMs + left).toISOString();
-}
 
 export type SlaState = "met" | "late" | "breached" | "due_soon" | "on_track" | "paused";
 

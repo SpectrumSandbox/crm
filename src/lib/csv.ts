@@ -39,7 +39,7 @@ export function setCsvFormat(format: CsvFormat) {
 /** characters that make spreadsheet apps treat a cell as a formula (CSV injection) */
 const FORMULA_START = /^[=+\-@\t\r]/;
 /** a phone number or plain number written as text ("+62 21 5790 1120", "-12.5") — safe, never a formula */
-const PHONE_OR_NUMBER = /^[+-]?\d[\d\s().-]{1,}$/;
+const PHONE_OR_NUMBER = /^[+-]?\d+([.,]\d+)?$|^\+?\d[\d\s().-]{5,}$/;
 
 export function escapeCsvCell(value: CsvValue, format: CsvFormat = "comma"): string {
   const sep = format === "excel-id" ? ";" : ",";

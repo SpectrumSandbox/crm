@@ -20,6 +20,7 @@ import { MemberDialog } from "./member-dialog";
 import { FiguresCard, RatifyDialog } from "./figures-card";
 import { PaymentsCard } from "./payments-card";
 import { StatusUpdatesCard } from "./status-updates";
+import { CoiCard } from "@/components/initiatives/coi";
 import { ChangeOrdersCard } from "./change-orders";
 import { useAccess } from "@/lib/access-control";
 import { amendmentCount, amendmentIssues, isPastDay, lastDayEnd, openLeads, prcCanDecide, requiresAmendment, todayWib, wibDay } from "@/lib/initiatives/team-rules";
@@ -276,6 +277,7 @@ function Register({ reg }: { reg: ProjectRegister }) {
               </div>
             </section>
             <FiguresCard reg={reg} />
+            <CoiCard ini={ini} />
           </aside>
         </div>
       </div>
@@ -414,7 +416,8 @@ function EndDialog({ reg, member, onClose }: { reg: ProjectRegister; member: Ini
   const errors: string[] = [];
   if (!date) errors.push("Choose the last day");
   else {
-    if (isPastDay(date)) errors.push(amend ? "Amendments apply from their effective date forward — never to past work (§6.8 step 6)" : "The last day can't be in the past — use the ledger history for earlier changes");
+    // after the ledger exists changes apply forward only; while it is being set up from existing records (§15.1) a past last day is allowed
+    if (amend && isPastDay(date)) errors.push("Amendments apply from their effective date forward — never to past work (§6.8 step 6)");
     if (joinedDay && date < joinedDay) errors.push(`The last day can't be before they joined (${formatDate(member!.joinedAt, "short")})`);
   }
   if (leavesNoLead) errors.push("This leaves the project without a Project Lead — delegate the role first (§6.1, §4.9)");
@@ -450,7 +453,7 @@ function EndDialog({ reg, member, onClose }: { reg: ProjectRegister; member: Ini
     >
       <div className="grid gap-3">
         <Field label="Last day on the team" hint="Counts in full — the row closes at 23:59 WIB">
-          <Input type="date" lang="en-GB" min={[todayWib(), joinedDay].sort().pop()} value={date} onChange={(e) => setDate(e.target.value)} />
+          <Input type="date" lang="en-GB" min={amend ? [todayWib(), joinedDay].sort().pop() : joinedDay || undefined} value={date} onChange={(e) => setDate(e.target.value)} />
         </Field>
         <Field label={amend ? "Reason (required)" : "Reason"}>
           <Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />

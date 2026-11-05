@@ -46,6 +46,16 @@ export function RecordView({ type, id }: { type: CrmObjectType; id: string }) {
   );
   /** set while this record is being deleted from its own page, so we leave instead of rendering a 404 */
   const [leaving, setLeaving] = useState(false);
+  const docTitle = useCrm((s) => {
+    if (type === "contact") {
+      const c = s.contacts.find((x) => x.id === id);
+      return c ? `${c.firstName} ${c.lastName}` : "";
+    }
+    if (type === "company") return s.companies.find((x) => x.id === id)?.name ?? "";
+    if (type === "deal") return s.deals.find((x) => x.id === id)?.name ?? "";
+    const t = s.tickets.find((x) => x.id === id);
+    return t ? `${t.id.toUpperCase()} ${t.subject}` : "";
+  });
   if (!exists) {
     if (leaving) return null;
     notFound();
@@ -53,7 +63,7 @@ export function RecordView({ type, id }: { type: CrmObjectType; id: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader title={<RecordTitle type={type} id={id} />} crumbs={[crumbFor[type]]}>
+      <PageHeader title={<RecordTitle type={type} id={id} />} docTitle={docTitle || undefined} crumbs={[crumbFor[type]]}>
         <RecordNav type={type} id={id} />
         <RecordActions type={type} id={id} onLeave={() => setLeaving(true)} />
       </PageHeader>

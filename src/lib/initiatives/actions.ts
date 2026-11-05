@@ -31,6 +31,7 @@ import {
   amendmentDeadline,
   amendmentTally,
   certifyCheck,
+  clawbackAmount,
   curveInForce,
   cycleMonth,
   deferralTriggers,
@@ -54,7 +55,7 @@ import {
   type ReleaseVote,
   type RunResult,
 } from "./engine";
-import { CURVE_LIMITS, POLICY, PROJECT_TYPE_META, ROLE_META, type Curve } from "./policy";
+import { CURVE_LIMITS, EMPLOYMENT_META, POLICY, PROJECT_TYPE_META, ROLE_META, type Curve } from "./policy";
 import type { SeedData } from "../seed";
 
 type Uid = (prefix: string) => string;
@@ -154,10 +155,6 @@ export interface InitiativeActions {
   /** Changing a probationer to a permanent status runs the §11.4 completion so the held balance is paid. */
   updateProfile: (userId: string, patch: Partial<EmployeeProfile>) => void;
   recordSeparation: (userId: string, kind: SeparationKind, effectiveAt: string, opts?: { noticeAt?: string; retirementNoticeDays?: number; prcConfirmed?: boolean }) => void;
-  /** Withdraw a recorded separation (rescinded resignation, error): reopens the ledger rows and deferrals it closed. */
-  withdrawSeparation: (userId: string, reason: string) => void;
-  /** §10 PRC confirms a recorded retirement — held retirement payments are paid in the next run. */
-  confirmRetirement: (userId: string, note?: string) => boolean;
   /** Add a real employee who is not yet in the workspace (user + HR record). Returns the user id. */
   addPerson: (input: NewPersonInput) => string;
 
@@ -681,7 +678,7 @@ export function createInitiativeActions<S extends CoreState>(set: SetFn<S>, get:
           const amt = recovered.get(c.id);
           if (!amt) return c;
           const total = c.recovered + amt;
-          const due = c.originalPaid - c.recalculated;
+          const due = clawbackAmount(c, s.clawbacks);
           return { ...c, recovered: total, recoveries: [...(c.recoveries ?? []), { month: run.month, amount: amt, source: "bonus" as const, at: ts }], status: total >= due ? ("closed" as const) : c.status };
         }),
       }) as Partial<S>);
@@ -794,7 +791,7 @@ export function createInitiativeActions<S extends CoreState>(set: SetFn<S>, get:
     updateProfile: (userId, patch) => {
       const cur = get().employeeProfiles.find((p) => p.userId === userId);
       // §11.4 leaving probation by an HR status change still pays the held balance as a Probation Completion Bonus
-      if (cur?.employmentType === "probationary" && patch.employmentType && patch.employmentType !== "probationary" && !get().probationOutcomes.some((o) => o.userId === userId)) {
+      if (cur?.employmentType === "probationary" && patch.employmentType && patch.employmentType !== "probationary" && EMPLOYMENT_META[patch.employmentType].eligible && !get().probationOutcomes.some((o) => o.userId === userId)) {
         const { employmentType, ...rest } = patch;
         actions.completeProbation(userId, { endedAt: patch.probationEndDate ?? undefined });
         if (employmentType !== "full_time_permanent" || Object.keys(rest).length) {
@@ -841,34 +838,6 @@ export function createInitiativeActions<S extends CoreState>(set: SetFn<S>, get:
         const payMonth = outcome === "paid_final_pay" && amount > 0 ? openCycleFrom(effectiveAt) : null;
         set((s) => ({ probationOutcomes: [...s.probationOutcomes, { id: uid("po"), userId, outcome, amount, decidedAt: ts, payMonth, byProject, endedAt: effectiveAt }] }) as Partial<S>);
       }
-    },
-    withdrawSeparation: (userId, reason) => {
-      const p = get().employeeProfiles.find((x) => x.userId === userId);
-      const sep = p?.separation;
-      if (!p || !sep) return;
-      const rows = sep.closedRowIds ?? get().initiativeMembers.filter((m) => m.userId === userId && m.leftAt === sep.effectiveAt).map((m) => m.id);
-      const runs = get().bonusRuns;
-      set((s) => ({
-        employeeProfiles: s.employeeProfiles.map((x) => (x.userId === userId ? { ...x, separation: null, resignationNoticeAt: sep.kind === "resignation" ? null : x.resignationNoticeAt, terminationNoticeAt: sep.kind.startsWith("termination") ? null : x.terminationNoticeAt } : x)),
-        initiativeMembers: s.initiativeMembers.map((m) => (rows.includes(m.id) && m.leftAt === sep.effectiveAt ? { ...m, leftAt: null } : m)),
-        deferredBonuses: s.deferredBonuses.map((d) => (d.userId === userId && d.status === "forfeited" && d.note.startsWith("Forfeited — dismissal") ? { ...d, status: "pending" as const, note: `High-risk deferral restored — separation withdrawn: ${reason}` } : d)),
-        // a final-pay probation outcome not yet paid by a released run is undone
-        probationOutcomes: s.probationOutcomes.filter((o) => !(o.userId === userId && o.outcome !== "completed" && !(o.payMonth && runs.some((r) => r.month === o.payMonth && r.status === "released")))),
-      }) as Partial<S>);
-      log([audit("employee", userId, `separation withdrawn (${sep.kind.replace(/_/g, " ")} of ${sep.effectiveAt.slice(0, 10)})`, `${rows.length} ledger row${rows.length === 1 ? "" : "s"} reopened · ${reason}`)]);
-    },
-    confirmRetirement: (userId, note = "") => {
-      const p = get().employeeProfiles.find((x) => x.userId === userId);
-      const me = get().currentUserId;
-      if (!p?.separation || p.separation.kind !== "retirement" || p.separation.prcConfirmed) return false;
-      if (!has(me, "prc", "ceo")) {
-        refuse("employee", userId, "confirm retirement", "Retirement is confirmed by the PRC (§10)");
-        return false;
-      }
-      const ts = now();
-      set((s) => ({ employeeProfiles: s.employeeProfiles.map((x) => (x.userId === userId && x.separation ? { ...x, separation: { ...x.separation, prcConfirmed: true, prcConfirmedAt: ts, prcConfirmedById: me } } : x)) }) as Partial<S>);
-      log([audit("employee", userId, "PRC confirmed the retirement — held payments are paid in the next run (§10)", note)]);
-      return true;
     },
     addPerson: (input) => {
       const id = uid("u");

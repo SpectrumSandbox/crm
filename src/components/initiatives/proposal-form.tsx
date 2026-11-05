@@ -252,6 +252,7 @@ export function ProposalForm({ editId, fromDealId = null }: { editId: string | n
   const activities = useCrm((s) => s.activities);
   const currentUserId = useCrm((s) => s.currentUserId);
   const saveInitiative = useCrm((s) => s.saveInitiative);
+  const syncDraftTeamStart = useCrm((s) => s.syncDraftTeamStart);
   const submitInitiative = useCrm((s) => s.submitInitiative);
   const updateMember = useCrm((s) => s.updateMember);
   const notify = useUi((s) => s.notify);
@@ -347,6 +348,8 @@ export function ProposalForm({ editId, fromDealId = null }: { editId: string | n
     const payload: Partial<Initiative> = { ...form, title: form.title.trim() || "Untitled initiative", standardBonus: form.type === "C" ? Math.max(POLICY.typeCMinimum.standardBonus, form.standardBonus) : undefined };
     const savedId = saveInitiative(id ? { ...payload, id } : payload);
     if (id) syncInitiatorRole(savedId, form.origination, existing?.initiatorId ?? currentUserId);
+    // §6.5 while the proposal is a draft, every team row starts with the project — move them with a changed start date
+    if (form.startDate) syncDraftTeamStart(savedId, form.startDate);
     if (!id) {
       ownIdRef.current = savedId;
       setOwnId(savedId);

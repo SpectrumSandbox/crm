@@ -3,7 +3,7 @@
  * client withholding (PPh Final 0.5 % under PP 55/2022 — Policy §5.4 — or PPh 23 2 % on services), approval needs
  * (Policy §4.7 Finance check + director threshold), expiry, and amounts in words (terbilang / English).
  */
-import type { Company, LineItem, Product, Quote, QuoteSettings, QuoteStatus } from "@/lib/types";
+import type { Company, LineItem, Product, Quote, QuoteSettings, QuoteStatus } from "../../lib/types";
 
 export const DEFAULT_QUOTE_SETTINGS: QuoteSettings = {
   id: "qs-default",

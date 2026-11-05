@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useMemo } from "react";
-import { BookOpen, Briefcase, Building2, ChevronsLeft, ChevronsRight, CircleUser, ClipboardList, Handshake, House, Kanban, Keyboard, ListChecks, ListTodo, Search, Ticket, UserCheck, Users, Wallet, type LucideIcon } from "lucide-react";
+import { BookOpen, Briefcase, Building2, ChevronsLeft, ChevronsRight, CircleUser, ClipboardList, FileText, Gavel, Handshake, House, Kanban, Keyboard, Landmark, ListChecks, ListTodo, Search, Ticket, UserCheck, Users, Wallet, Workflow, type LucideIcon } from "lucide-react";
 import { SidebarExtras } from "./sidebar-extras";
 import { NotificationBell } from "./notifications";
 import { useCrm, useUi } from "@/lib/store";
@@ -17,7 +17,7 @@ interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
-  shortcut: string;
+  shortcut?: string;
   count?: number;
   /** what the count means, for the tooltip / screen readers ("12 open deals") */
   countLabel?: string;
@@ -77,6 +77,8 @@ export function Sidebar() {
     { href: "/contacts", label: "Contacts", icon: Users, shortcut: "G C", count: counts.contacts },
     { href: "/companies", label: "Companies", icon: Building2, shortcut: "G O", count: counts.companies },
     { href: "/tickets", label: "Tickets", icon: Ticket, shortcut: "G T" },
+    { href: "/quotes", label: "Quotes", icon: FileText, shortcut: "G Q" },
+    { href: "/automation", label: "Automation", icon: Workflow, shortcut: "G A" },
   ];
   // §13.4: Compensation (everyone's pay) only for pay roles; the PRC queue count only for people who act on it
   const programme: NavItem[] = [
@@ -84,6 +86,8 @@ export function Sidebar() {
     ...(access.seeAllPay ? [{ href: "/compensation", label: "Compensation", icon: Wallet, shortcut: "G M" }] : []),
     { href: "/people", label: "People", icon: UserCheck, shortcut: "G P" },
     { href: "/me", label: "My compensation", icon: CircleUser, shortcut: "G Y" },
+    { href: "/me/company", label: "Company results", icon: Landmark },
+    { href: "/disputes", label: "Disputes", icon: Gavel, shortcut: "G X" },
     { href: "/policy", label: "Policy", icon: BookOpen, shortcut: "G K" },
   ];
   const agile: NavItem[] = [
@@ -92,7 +96,8 @@ export function Sidebar() {
     { href: "/issues", label: "Issues", icon: ListTodo, shortcut: "G U" },
   ];
 
-  const isActive = (href: string) => pathname === href || pathname.startsWith(href + "/");
+  // "/me" must not light up on "/me/company", which has its own entry
+  const isActive = (href: string) => pathname === href || (pathname.startsWith(href + "/") && !(href === "/me" && pathname.startsWith("/me/company")));
   const activeView = params.get("view");
 
   return (
@@ -226,7 +231,7 @@ function NavLink({ item, active, collapsed }: { item: NavItem; active: boolean; 
     <Link
       href={item.href}
       aria-current={active ? "page" : undefined}
-      title={collapsed ? `${item.label}${countText ? ` · ${countText}` : ""} (${item.shortcut})` : countText && item.countLabel ? `${countText} · ${item.shortcut}` : undefined}
+      title={collapsed ? `${item.label}${countText ? ` · ${countText}` : ""}${item.shortcut ? ` (${item.shortcut})` : ""}` : countText && item.countLabel ? `${countText}${item.shortcut ? ` · ${item.shortcut}` : ""}` : undefined}
       className={cn(
         "group relative flex h-8 items-center gap-2.5 rounded text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-sg-white/60",
         collapsed ? "justify-center" : "px-2",

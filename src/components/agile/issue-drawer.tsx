@@ -105,7 +105,7 @@ function IssueDetail({ issue }: { issue: Issue }) {
       const idx = Number(e.key) - 1;
       if (idx >= 0 && idx < ISSUE_STATUSES.length) {
         e.preventDefault();
-        setStatusRef.current(ISSUE_STATUSES[idx]!);
+        setStatusRef.current?.(ISSUE_STATUSES[idx]!);
       }
     };
     window.addEventListener("keydown", onKey);

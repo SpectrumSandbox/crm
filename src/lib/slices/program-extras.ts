@@ -267,6 +267,7 @@ type Needs = {
   companySummaries: CompanySummary[];
   identity: { email: string | null; source: "access" | "demo"; userId: string | null };
   updateProfile: (userId: string, patch: Partial<EmployeeProfile>) => void;
+  updateClawback: (id: string, patch: Partial<Clawback>) => void;
 };
 
 export function createProgramExtrasSlice<S extends ProgramExtrasSlice & Needs>(set: SetFn<S>, get: GetFn<S>, uid: Uid): ProgramExtrasSlice {
@@ -325,6 +326,11 @@ export function createProgramExtrasSlice<S extends ProgramExtrasSlice & Needs>(s
         events: [event("raised", "direct", `${DISPUTE_CATEGORY_META[input.category].label} dispute raised${handlerId ? ` · handled by ${name(handlerId)}` : ""}${late ? ` · after the 30-day limit: ${input.lateReason?.trim()}` : ""}`, userId)],
       };
       set((s) => ({ disputes: [d, ...s.disputes], auditLog: [audit("policy", id, `§14 dispute ${d.number} raised`, `${DISPUTE_CATEGORY_META[d.category].label}: ${subject}`), ...s.auditLog] }) as Partial<S>);
+      // §9.4 step 4: a clawback disputed within the window waits for the outcome before any recovery
+      if (input.lineRef?.startsWith("clawback:")) {
+        const cb = st.clawbacks.find((c) => c.id === input.lineRef!.slice(9));
+        if (cb && cb.userId === userId && (cb.status === "identified" || cb.status === "prc_approved")) st.updateClawback(cb.id, { status: "disputed" });
+      }
       return id;
     },
 

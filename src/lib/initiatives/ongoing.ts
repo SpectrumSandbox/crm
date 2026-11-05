@@ -6,7 +6,8 @@
 import type { Initiative, ProjectType } from "./types";
 
 const REGISTERED_AT = "2026-11-04T02:00:00.000Z";
-const SIX_MONTHS = "2027-05-04T10:00:00.000Z";
+/** six whole contracted months (§5.1): 4 Nov 2026 → 3 May 2027 23:59:59 WIB (endDateForMonths) */
+const SIX_MONTHS = "2027-05-03T16:59:59.999Z";
 
 const ongoing = (id: string, title: string, type: ProjectType, jiraProjectId: string): Initiative => ({
   id,

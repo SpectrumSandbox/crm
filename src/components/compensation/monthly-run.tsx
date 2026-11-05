@@ -10,23 +10,25 @@ import { Fragment, useMemo, useState } from "react";
 import { BadgeCheck, Calculator, CalendarClock, ChevronDown, ChevronRight, CircleCheck, CircleX, ClipboardCheck, Coins, Download, Gavel, Hourglass, Info, Landmark, ListChecks, Lock, RotateCcw, Scale, Send, ShieldCheck, SlidersHorizontal, TriangleAlert, UserCheck, Users, Wallet } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
-import { can, useAccess } from "@/lib/access-control";
+import { useAccess } from "@/lib/access-control";
 import type { AuditEntry, BonusLine, BonusRun, Initiative, LineStatus } from "@/lib/initiatives/types";
 import type { ExceptionReview } from "@/lib/slices/comp-extras";
 import {
   breakEvenDeadline,
-  carriedForward,
+  buildRunInputs,
+  carriedOnly,
+  certifyCheck,
   collectionWindow,
   computeRun,
+  cycleTiming,
   deferralVestDate,
-  monthEnd,
-  monthStart,
   nextMonth,
   paymentDate,
   probationBalance,
   projectCycles,
   projectPayments,
   provisionalDeadline,
+  releaseCheck,
   type RunResult,
 } from "@/lib/initiatives/engine";
 import { POLICY } from "@/lib/initiatives/policy";
@@ -63,7 +65,7 @@ import {
   useInitiativeMap,
   type RunInputValues,
 } from "./common";
-import { heldCondition, holdReasons, payrollExtras, pph21Of, releaseState, runExceptions, type CycleException } from "./run-controls";
+import { heldCondition, holdReasons, liveVotes, runExceptions, type CycleException } from "./run-controls";
 
 const INPUT_KEYS: (keyof RunInputValues)[] = ["companyRevenue", "directCosts", "overheads", "cash", "fixedCostsMonthly"];
 const sameInputs = (a: RunInputValues, b: RunInputValues) => INPUT_KEYS.every((k) => Math.round(a[k]) === Math.round(b[k]));
@@ -77,7 +79,11 @@ export function MonthlyRunTab({ month }: { month: string }) {
   const profiles = useCrm((s) => s.employeeProfiles);
   const adjustments = useCrm((s) => s.curveAdjustments);
   const bonusRuns = useCrm((s) => s.bonusRuns);
-  const auditLog = useCrm((s) => s.auditLog);
+  const deferredBonuses = useCrm((s) => s.deferredBonuses);
+  const probationOutcomes = useCrm((s) => s.probationOutcomes);
+  const clawbacks = useCrm((s) => s.clawbacks);
+  const bonusAdjustments = useCrm((s) => s.bonusAdjustments);
+  const taxRegimeChanges = useCrm((s) => s.taxRegimeChanges);
   const ledgerConfirmations = useCrm((s) => s.ledgerConfirmations);
   const exceptionReviews = useCrm((s) => s.exceptionReviews);
   const cycleNotes = useCrm((s) => s.cycleNotes);
@@ -98,12 +104,20 @@ export function MonthlyRunTab({ month }: { month: string }) {
   const [reference, setReference] = useState("");
   const inp: RunInputValues = released && run ? pickInputs(run) : draft;
 
-  const carriedIn = useMemo(() => carriedForward(bonusRuns, month), [bonusRuns, month]);
-  const result = useMemo(
-    () => computeRun({ month, initiatives, members, entries, profiles, adjustments, ...inp, carriedIn }),
+  // everything the cycle pays: new pools, carried-forward and held amounts re-tested under §10, late collections,
+  // deferred releases, Probation Completion Bonuses, §8.3/§8.5 adjustments and §9.4 recoveries (W7 engine)
+  const runInputs = useMemo(
+    () =>
+      buildRunInputs(
+        { initiatives, initiativeMembers: members, revenueEntries: entries, employeeProfiles: profiles, curveAdjustments: adjustments, bonusRuns, deferredBonuses, probationOutcomes, clawbacks, bonusAdjustments, taxRegimeChanges },
+        month,
+        { companyRevenue: inp.companyRevenue, directCosts: inp.directCosts, overheads: inp.overheads, cash: inp.cash, fixedCostsMonthly: inp.fixedCostsMonthly },
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [month, initiatives, members, entries, profiles, adjustments, inp.companyRevenue, inp.directCosts, inp.overheads, inp.cash, inp.fixedCostsMonthly, carriedIn],
+    [month, initiatives, members, entries, profiles, adjustments, bonusRuns, deferredBonuses, probationOutcomes, clawbacks, bonusAdjustments, taxRegimeChanges, inp.companyRevenue, inp.directCosts, inp.overheads, inp.cash, inp.fixedCostsMonthly],
   );
+  const carriedIn = useMemo(() => carriedOnly(bonusRuns, month), [bonusRuns, month]);
+  const result = useMemo(() => computeRun(runInputs), [runInputs]);
 
   const lines: BonusLine[] = released && run ? run.lines : result.lines;
   const totals: BonusRun["totals"] = released && run ? run.totals : result.totals;
@@ -132,25 +146,24 @@ export function MonthlyRunTab({ month }: { month: string }) {
   const unreviewed = exceptions.filter((e) => !reviews.some((r) => r.key === e.key));
   const notes = useMemo(() => cycleNotes.filter((n) => n.month === month), [cycleNotes, month]);
 
-  const now = Date.now();
-  const windowCloses = collectionWindow(month).to;
-  const windowOpen = now < Date.parse(windowCloses);
-  const certifyLate = now > Date.parse(breakEvenDeadline(month));
-  const salaryPassed = now > Date.parse(paymentDate(month));
+  const timing = useMemo(() => cycleTiming(month), [month]);
+  const certifyLate = timing.phase === "release" || timing.phase === "late";
+  const salaryPassed = timing.phase === "late";
 
   const rollingLabel = `${shortMonthLabel(nextMonth(month, -3))} – ${shortMonthLabel(nextMonth(month, -1))}`;
   const status = run?.status ?? "none";
   const isCfo = access.roles.includes("cfo");
   const onBehalf = access.certify && !isCfo;
   const missingInputs = inp.companyRevenue <= 0 || inp.fixedCostsMonthly <= 0;
+  const check = certifyCheck(month, { profiles, actorId: access.userId, certifiedById: onBehalf ? cfoId : null });
   const certifyBlock = !access.certify
     ? "Only the CFO, or Finance recording the CFO's written certification, certifies the checks (§9.1, §13.2)"
     : onBehalf && !cfoId
       ? "No HR record holds the CFO role — HR assigns it on /people before a certification can be recorded"
       : missingInputs
         ? "Enter the rolling three-month company revenue and the monthly fixed operating costs first (§9.1)"
-        : windowOpen
-          ? `Collections for ${monthLabel(month)} stay open until ${formatDate(windowCloses, "datetime")} — certify after the cut-off (§8.2)`
+        : !check.ok
+          ? check.blockers.join(" · ")
           : unconfirmed.length
             ? `${unconfirmed.length} project${unconfirmed.length === 1 ? "" : "s"} still need the Project Lead's ledger confirmation (§8.2)`
             : unreviewed.length
@@ -176,7 +189,17 @@ export function MonthlyRunTab({ month }: { month: string }) {
 
       {!released && certifyLate && status !== "certified" ? (
         <Callout tone="warn">
-          <span className="font-semibold">Certification overdue.</span> The CFO certifies the break-even test and cash check by {formatDate(breakEvenDeadline(month), "datetime")} (§8.2). {salaryPassed ? `The ${formatDate(paymentDate(month), "medium")} salary date has passed — a late release needs a recorded reason.` : ""}
+          <span className="font-semibold">Certification overdue.</span> The CFO certifies the break-even test and cash check by {formatDate(breakEvenDeadline(month), "datetime")} (§8.2). {salaryPassed ? `The ${formatDate(paymentDate(month), "medium")} salary date has passed (${timing.lateDays} business day${timing.lateDays === 1 ? "" : "s"} late) — a late release records its reason.` : ""}
+        </Callout>
+      ) : null}
+      {!released && status === "certified" && salaryPassed ? (
+        <Callout tone="warn">
+          <span className="font-semibold">Release is late.</span> The {formatDate(paymentDate(month), "medium")} salary date passed {timing.lateDays} business day{timing.lateDays === 1 ? "" : "s"} ago — the PRC records the reason with the release (§8.2).
+        </Callout>
+      ) : null}
+      {result.dateNotes?.length ? (
+        <Callout>
+          {result.dateNotes.join(" · ")} <Cite s="8.2" />
         </Callout>
       ) : null}
 
@@ -285,7 +308,7 @@ export function MonthlyRunTab({ month }: { month: string }) {
         </Panel>
       </div>
 
-      {run && (run.status === "certified" || run.status === "released") ? <ReleasePanel run={run} dirty={dirty} lateReason={notes.find((n) => n.kind === "late_release")?.text ?? null} salaryPassed={salaryPassed} auditLog={auditLog} /> : null}
+      {run && (run.status === "certified" || run.status === "released") ? <ReleasePanel run={run} dirty={dirty} salaryPassed={salaryPassed} /> : null}
 
       {!released ? <ControlsPanel month={month} exceptions={exceptions} reviews={reviews} unconfirmed={unconfirmed.length} projects={result.projects.length} /> : null}
 
@@ -304,7 +327,7 @@ export function MonthlyRunTab({ month }: { month: string }) {
           <ul className="divide-y divide-sg-line">
             {notes.map((n) => (
               <li key={n.id} className="flex flex-wrap items-baseline gap-x-3 px-4 py-2 text-xs">
-                <span className="font-semibold text-sg-white">{n.kind === "late_release" ? "Late release" : n.kind === "early_certification" ? "Early certification" : "Certification reference"}</span>
+                <span className="font-semibold text-sg-white">Certification reference</span>
                 <span className="min-w-0 flex-1 text-sg-muted">{n.text}</span>
                 <span className="text-2xs text-sg-dim">
                   {userMap.get(n.byId)?.name ?? n.byId} · {formatDate(n.at, "datetime")}

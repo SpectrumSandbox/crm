@@ -145,7 +145,7 @@ export function HrRecordForm({ profile, readOnly }: { profile: EmployeeProfile; 
             Disciplinary <Cite s="10" />
           </div>
           <Toggle disabled={readOnly} checked={profile.underInvestigation} danger onChange={(v) => patch({ underInvestigation: v }, v ? "Investigation opened" : "Investigation closed")} label="Under investigation for serious misconduct" hint="No participation until the investigation closes (§3.2)" />
-          <Toggle disabled={readOnly} checked={profile.suspended} danger onChange={(v) => patch({ suspended: v }, v ? "Suspension recorded — payments held" : "Suspension lifted — held payments released")} label="Disciplinary suspension" hint="Payments falling due are held; paid if cleared, forfeited if a serious violation is confirmed (§10)" />
+          <Toggle disabled={readOnly} checked={profile.suspended} danger onChange={(v) => patch({ suspended: v }, v ? "Suspension recorded — payments held" : "Suspension lifted — held payments are paid in the next cycle")} label="Disciplinary suspension" hint="Payments falling due are held; paid if cleared, forfeited if a serious violation is confirmed (§10)" />
           <div className="mt-2 rounded-md border border-sg-line bg-sg-bg/40 p-2.5">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-sg-white">
               <CalendarClock className="size-3.5 text-sg-muted" /> Project Participation Agreement (Annex B) <Cite s="15.1" />

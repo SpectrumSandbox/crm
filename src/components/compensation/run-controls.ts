@@ -1,12 +1,10 @@
 /*
  * Pure helpers for the monthly cycle controls (Policy v4.0 §8.2, §9.1, §13.1): held-line conditions, the
- * exception population Finance reviews before certification, the PRC roster, maker-checker release state and
- * the extra payroll items of a cycle (deferred releases, probation bonuses, clawback recoveries).
+ * exception population Finance reviews before certification and the PRC votes recorded for a release.
  */
-import type { AuditEntry, BonusLine, BonusRun, DeferredBonus, EmployeeProfile, InitiativeMember, ProbationOutcome } from "@/lib/initiatives/types";
-import { can } from "@/lib/access-control";
-import { cycleMonth, monthEnd, monthStart, paymentDate } from "@/lib/initiatives/engine";
-import type { RecoveryDeduction, ReleaseApproval } from "@/lib/slices/comp-extras";
+import type { BonusLine, BonusRun, EmployeeProfile, InitiativeMember } from "@/lib/initiatives/types";
+import { monthEnd, monthStart, paymentDate, type ReleaseVote } from "@/lib/initiatives/engine";
+import type { ReleaseApproval } from "@/lib/slices/comp-extras";
 
 /* ───────────── held lines (§10, §15.1) ───────────── */
 
@@ -23,7 +21,8 @@ export function heldCondition(reason: string): { when: string; where: string | n
 
 const HOLD_RE = /annex b|suspension|unpaid leave|retirement|no hr record|held/i;
 export function holdReasons(line: BonusLine) {
-  return line.notes.filter((n) => HOLD_RE.test(n) && !/probation/i.test(n));
+  const fromItems = (line.heldItems ?? []).map((h) => h.reason).filter((r): r is string => !!r);
+  return fromItems.length ? Array.from(new Set(fromItems)) : line.notes.filter((n) => HOLD_RE.test(n) && !/probation|released — the hold has cleared/i.test(n));
 }
 
 /* ───────────── exception population (research: ICM exception review, §3.5) ───────────── */
@@ -66,82 +65,9 @@ export function runExceptions({ month, lines, members, profiles, initiativeIds }
   return out;
 }
 
-/* ───────────── PRC roster, maker-checker and quorum (§8.2, §13.1) ───────────── */
+/* ───────────── PRC release votes (§13.1) ───────────── */
 
-export function prcRoster(profiles: EmployeeProfile[], nowMs = Date.now()) {
-  return profiles.filter((p) => can.prc(p.governanceRoles) && !(p.separation && Date.parse(p.separation.effectiveAt) <= nowMs) && !(p.prcTermEndsAt && Date.parse(p.prcTermEndsAt) < nowMs && !p.governanceRoles.includes("ceo"))).map((p) => p.userId);
-}
-
-export interface ReleaseState {
-  roster: string[];
-  approvals: ReleaseApproval[];
-  /** members who may not approve: certifier / recorder (maker) and members with their own lines (§13.1) */
-  recused: { userId: string; reason: string }[];
-  eligible: string[];
-  present: string[];
-  quorumNeeded: number;
-  financePresent: boolean;
-  quorumMet: boolean;
-  preparedById: string | null;
-  recordedById: string | null;
-}
-
-export function releaseState({ run, profiles, approvals, auditLog }: { run: BonusRun; profiles: EmployeeProfile[]; approvals: ReleaseApproval[]; auditLog: AuditEntry[] }): ReleaseState {
-  const roster = prcRoster(profiles);
-  const runLog = auditLog.filter((a) => a.entity === "run" && a.entityId === run.id);
-  const recordedById = runLog.find((a) => /certified/i.test(a.action))?.actorId ?? run.certifiedById;
-  const preparedById = runLog.find((a) => /provisional/i.test(a.action))?.actorId ?? null;
-  const withLines = new Set(run.lines.map((l) => l.userId));
-  const recused: ReleaseState["recused"] = [];
-  for (const u of roster) {
-    if (u === run.certifiedById) recused.push({ userId: u, reason: "certified the checks (maker)" });
-    else if (u === recordedById) recused.push({ userId: u, reason: "recorded the certification (maker)" });
-    else if (withLines.has(u)) recused.push({ userId: u, reason: "has own bonus lines in this run (§13.1)" });
-  }
-  const live = approvals.filter((a) => a.runId === run.id && !a.withdrawnAt && a.certifiedAt === run.certifiedAt && roster.includes(a.userId));
-  const eligible = roster.filter((u) => !recused.some((r) => r.userId === u));
-  // the CFO who certified presents her certification to the meeting — present for the quorum, not an approver
-  const present = Array.from(new Set([...live.map((a) => a.userId), ...(run.certifiedById && roster.includes(run.certifiedById) ? [run.certifiedById] : [])]));
-  const isFinance = (u: string) => {
-    const r = profiles.find((p) => p.userId === u)?.governanceRoles ?? [];
-    return r.includes("cfo") || r.includes("finance");
-  };
-  const quorumNeeded = Math.floor(roster.length / 2) + 1;
-  const financePresent = present.some(isFinance);
-  return { roster, approvals: live, recused, eligible, present, quorumNeeded, financePresent, quorumMet: present.length >= quorumNeeded && financePresent && live.length > 0, preparedById, recordedById };
-}
-
-/* ───────────── payroll extras of a cycle (§8.5, §9.3, §11.4, §9.4) ───────────── */
-
-export interface PayrollExtra {
-  userId: string;
-  initiativeId: string | null;
-  kind: "deferred_release" | "probation_completion" | "probation_final_pay" | "clawback_recovery";
-  amount: number; // negative for recoveries
-  label: string;
-}
-
-export function payrollExtras(month: string, ctx: { deferredBonuses: DeferredBonus[]; probationOutcomes: ProbationOutcome[]; recoveryDeductions: RecoveryDeduction[]; auditLog: AuditEntry[] }): PayrollExtra[] {
-  const out: PayrollExtra[] = [];
-  for (const d of ctx.deferredBonuses) {
-    if (d.status !== "released" || d.releasedAmount <= 0) continue;
-    const at = ctx.auditLog.find((a) => a.entity === "deferred" && a.entityId === d.id && /released/i.test(a.action))?.at ?? d.vestAt;
-    if (cycleMonth(at) !== month) continue;
-    out.push({ userId: d.userId, initiativeId: d.initiativeId, kind: "deferred_release", amount: Math.floor(d.releasedAmount), label: `Deferred bonus from ${d.month} released (§9.3)` });
-  }
-  for (const o of ctx.probationOutcomes) {
-    if (o.outcome === "forfeited" || o.amount <= 0 || cycleMonth(o.decidedAt) !== month) continue;
-    out.push({ userId: o.userId, initiativeId: null, kind: o.outcome === "completed" ? "probation_completion" : "probation_final_pay", amount: Math.floor(o.amount), label: o.outcome === "completed" ? "Probation Completion Bonus (§11.4)" : "Held probation balance with final pay (§11.4)" });
-  }
-  for (const r of ctx.recoveryDeductions) {
-    if (r.cancelledAt || r.month !== month) continue;
-    out.push({ userId: r.userId, initiativeId: r.initiativeId, kind: "clawback_recovery", amount: -Math.floor(r.amount), label: `Clawback recovery (${r.source === "carried" ? "carried-forward amount" : "project bonus"}, §9.4)` });
-  }
-  return out;
-}
-
-/* ───────────── PPh 21 estimate on a line (§8.5, Annex E) ───────────── */
-
-export function pph21Of(_line: BonusLine): { gross: number; withheld: number; net: number } | null {
-  return null;
+/** Current votes recorded for a run's present certification — passed to releaseRun / releaseCheck (W7) as the PRC vote. */
+export function liveVotes(run: Pick<BonusRun, "id" | "certifiedAt">, approvals: ReleaseApproval[]): ReleaseVote[] {
+  return approvals.filter((a) => a.runId === run.id && !a.withdrawnAt && a.certifiedAt === run.certifiedAt).map((a) => ({ userId: a.userId, vote: a.vote }));
 }

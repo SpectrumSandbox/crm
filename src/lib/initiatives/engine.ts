@@ -1690,6 +1690,35 @@ export function probationBalance(userId: string, runs: BonusRun[]) {
   return runs.filter((r) => r.status === "released" || r.status === "certified").reduce((s, r) => s + r.lines.filter((l) => l.userId === userId).reduce((a, l) => a + l.withheld, 0), 0);
 }
 
+/**
+ * Month-end bonus liabilities for Finance's accruals (§9.2, §9.3, §10, §11.3 Probationary Bonus Accrual account; §11.5
+ * reporting): balance of each account at the end of `month` and of the month before, from certified and released
+ * runs, the deferred ledger and probation outcomes. Aggregates only (§9.6).
+ */
+export function liabilityRollForward(month: string, src: { runs: BonusRun[]; deferred?: DeferredBonus[]; probationOutcomes?: ProbationOutcome[] }) {
+  const counted = src.runs.filter((r) => r.status === "released" || r.status === "certified").sort((a, b) => a.month.localeCompare(b.month));
+  const latest = (m: string) => counted.filter((r) => r.month <= m).pop();
+  const balances = (m: string) => {
+    const end = Date.parse(monthEnd(m));
+    const probation = counted.filter((r) => r.month <= m).reduce((s, r) => s + r.lines.reduce((a, l) => a + l.withheld, 0), 0) - (src.probationOutcomes ?? []).filter((o) => Date.parse(o.decidedAt) <= end).reduce((s, o) => s + o.amount, 0);
+    const deferred = (src.deferred ?? [])
+      .filter((d) => d.month <= m && (d.status === "pending" || (d.status === "released" && d.releasedAt && Date.parse(d.releasedAt) > end)))
+      .reduce((s, d) => s + (d.status === "pending" ? d.amount : d.releasedAmount + (d.costDeduction ?? 0)), 0);
+    const run = latest(m);
+    return { probation: Math.max(0, probation), deferred, carried: run?.totals.carriedOver ?? 0, held: run?.totals.held ?? 0 };
+  };
+  const close = balances(month);
+  const open = balances(nextMonth(month, -1));
+  const meta = [
+    { key: "probation", label: "Probationary Bonus Accrual", cite: "11.3" },
+    { key: "deferred", label: "Deferred bonuses (high-risk projects)", cite: "9.3" },
+    { key: "carried", label: "Carried forward after a failed check", cite: "9.2" },
+    { key: "held", label: "Held — Annex B, suspension, unpaid leave, PRC confirmation", cite: "10" },
+  ] as const;
+  const accounts = meta.map((a) => ({ ...a, opening: open[a.key], closing: close[a.key], change: close[a.key] - open[a.key] }));
+  return { month, accounts, opening: accounts.reduce((s, a) => s + a.opening, 0), closing: accounts.reduce((s, a) => s + a.closing, 0) };
+}
+
 /** Paid in a calendar year: released runs (which now include deferred releases and probation payments) plus deferred releases paid outside a run. */
 export function paidInYear(userId: string, runs: BonusRun[], year: string, deferred: DeferredBonus[] = []) {
   const fromRuns = runs.filter((r) => r.status === "released" && r.month.startsWith(year)).reduce((s, r) => s + r.lines.filter((l) => l.userId === userId).reduce((a, l) => a + l.payable, 0), 0);

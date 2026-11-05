@@ -19,11 +19,13 @@ import {
   ClipboardList,
   Copy,
   FileText,
+  Gavel,
   Handshake,
   History,
   House,
   Kanban,
   Keyboard,
+  Landmark,
   Layers,
   ListChecks,
   ListTodo,
@@ -38,6 +40,7 @@ import {
   UserCheck,
   Users,
   Wallet,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
@@ -82,6 +85,7 @@ const NAV_ITEMS: NavEntry[] = [
   { href: "/contacts", label: "Contacts", icon: Users, keys: "G C" },
   { href: "/companies", label: "Companies", icon: Building2, keys: "G O" },
   { href: "/tickets", label: "Tickets", icon: Ticket, keys: "G T", keywords: ["support", "service", "helpdesk"] },
+  { href: "/quotes", label: "Quotes", icon: FileText, keys: "G Q", keywords: ["penawaran", "proposal", "approval", "ppn", "faktur"] },
   { href: "/board", label: "Agile board", icon: Kanban, keys: "G B" },
   { href: "/backlog", label: "Backlog & Sprints", icon: ListChecks, keys: "G L", keywords: ["sprint", "planning", "scrum"] },
   { href: "/issues", label: "Issues", icon: ListTodo, keys: "G U", keywords: ["jira", "bugs", "stories", "tasks"] },
@@ -91,6 +95,9 @@ const NAV_ITEMS: NavEntry[] = [
   { href: "/people", label: "People", icon: UserCheck, keys: "G P", keywords: ["hr", "eligibility", "employees", "probation", "directory"] },
   { href: "/me", label: "My compensation", icon: CircleUser, keys: "G Y", keywords: ["my bonus", "payslip", "me", "statement"] },
   { href: "/policy", label: "Policy", icon: BookOpen, keys: "G K", keywords: ["handbook", "rules", "initiative policy"] },
+  { href: "/me/company", label: "Company results", icon: Landmark, keywords: ["§9.6", "financial summary", "monthly results", "company performance"] },
+  { href: "/disputes", label: "Disputes", icon: Gavel, keys: "G X", keywords: ["§14", "appeal", "complaint", "objection"] },
+  { href: "/automation", label: "Automation", icon: Workflow, keys: "G A", keywords: ["workflows", "sequences", "templates", "whatsapp", "email"] },
   { href: "/settings", label: "Settings", icon: Settings, keywords: ["preferences", "workspace", "admin", "sync"] },
 ];
 
