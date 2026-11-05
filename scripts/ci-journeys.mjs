@@ -53,7 +53,10 @@ function field(scope, label) {
 }
 
 const dialog = (page, name) => (name ? page.getByRole("dialog", { name }) : page.getByRole("dialog")).last();
-const toast = (page, re) => page.getByRole("status").filter({ hasText: re }).first();
+// CSS (not getByRole): a toast raised while a modal/sheet is open sits under aria-hidden — see toastIsExposed()
+const toast = (page, re) => page.locator('[role="status"]').filter({ hasText: re }).first();
+/** true when the toast is reachable by assistive tech (not inside an aria-hidden / inert subtree) */
+const toastIsExposed = (loc) => loc.evaluate((el) => !el.closest('[aria-hidden="true"], [inert]'));
 const button = (scope, name, exact = false) => scope.getByRole("button", { name, exact }).first();
 
 async function open(page, path) {
@@ -216,7 +219,7 @@ journey("Deals — quick-edit the amount from the card, then Undo", async ({ pag
   await step("open the quick-edit popover", async () => {
     const card = page.locator('[data-rfd-draggable-id="d-nhs-asv"]');
     await card.hover();
-    await page.getByRole("button", { name: label }).click();
+    await page.getByRole("button", { name: label, exact: true }).click();
     await expect(page.getByRole("dialog").filter({ hasText: "Amount (IDR)" })).toBeVisible();
   });
   await step("change the amount and save", async () => {
@@ -229,20 +232,20 @@ journey("Deals — quick-edit the amount from the card, then Undo", async ({ pag
   });
   await step("re-opened popover shows the saved amount", async () => {
     await page.locator('[data-rfd-draggable-id="d-nhs-asv"]').hover();
-    await page.getByRole("button", { name: label }).click();
+    await page.getByRole("button", { name: label, exact: true }).click();
     const pop = page.getByRole("dialog").filter({ hasText: "Amount (IDR)" });
     await expect(field(pop, "Amount (IDR)")).toHaveValue("9100000000");
     await page.keyboard.press("Escape");
   });
   await step("Undo from a second edit's toast restores the amount", async () => {
     await page.locator('[data-rfd-draggable-id="d-nhs-asv"]').hover();
-    await page.getByRole("button", { name: label }).click();
+    await page.getByRole("button", { name: label, exact: true }).click();
     const pop = page.getByRole("dialog").filter({ hasText: "Amount (IDR)" });
     await field(pop, "Amount (IDR)").fill("100");
     await button(pop, "Save", true).click();
     await toast(page, /updated/).getByRole("button", { name: "Undo" }).click();
     await page.locator('[data-rfd-draggable-id="d-nhs-asv"]').hover();
-    await page.getByRole("button", { name: label }).click();
+    await page.getByRole("button", { name: label, exact: true }).click();
     await expect(field(page.getByRole("dialog").filter({ hasText: "Amount (IDR)" }), "Amount (IDR)")).toHaveValue("9100000000");
   });
 });
@@ -362,6 +365,35 @@ journey("Contacts — smart list tab + Export CSV downloads the rows in view", a
     const lines = text.trim().split(/\r?\n/);
     expect(lines[0]).toContain("Lead score");
     expect(lines.length - 1).toBe(shown);
+  });
+});
+
+journey("Contacts table — j / Enter opens the focused row; Alt+→ walks to the next record", async ({ page, step, note }) => {
+  await step("open /contacts", () => open(page, "/contacts"));
+  let first = "";
+  await step("press j then Enter", async () => {
+    await page.locator("body").click({ position: { x: 5, y: 600 } }).catch(() => {});
+    await page.keyboard.press("j");
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/contacts\/[^/?]+$/);
+    first = pathOf(page.url());
+    note(`opened ${first}`);
+  });
+  await step("Alt+ArrowRight opens the next contact", async () => {
+    await page.locator("#main").waitFor();
+    await page.keyboard.press("Alt+ArrowRight");
+    await expect.poll(() => pathOf(page.url())).not.toBe(first);
+    await expect(page).toHaveURL(/\/contacts\/[^/?]+$/);
+  });
+});
+
+journey("Deal record — Propose initiative link prefills a PRC proposal", async ({ page, step }) => {
+  await step("open deal d-nhs-ai", () => open(page, "/deals/d-nhs-ai"));
+  await step("click Propose initiative", async () => {
+    await page.getByRole("link", { name: /Propose initiative/ }).first().click();
+    await expect(page).toHaveURL(/\/initiatives\/new\?fromDeal=d-nhs-ai/);
+    await expect(toast(page, /Prefilled from deal/)).toBeVisible();
+    await expect(field(page, "Project name")).not.toHaveValue("");
   });
 });
 
@@ -564,7 +596,8 @@ journey("Issue drawer — open UAV-102 and set status with the 5 key", async ({ 
     await expect(page.getByRole("dialog", { name: /UAV-102/ })).toBeVisible();
   });
   await step("press 5 (Done) and close", async () => {
-    await page.getByRole("dialog", { name: /UAV-102/ }).getByText("UAV-102").first().click();
+    // focus the drawer itself (not a text field) so the 1–5 status hotkeys apply
+    await page.getByRole("dialog", { name: /UAV-102/ }).focus();
     await page.keyboard.press("5");
     await page.waitForTimeout(400);
     await page.keyboard.press("Escape");
@@ -622,11 +655,15 @@ journey("Backlog — quick-add an issue to the backlog", async ({ page, step }) 
 
 journey("Issues — bulk-select two issues and set status Done, then Undo", async ({ page, step, note }) => {
   await step("open /issues", () => open(page, "/issues"));
+  const keys = [];
+  const rowOf = (key) => page.locator("tbody tr").filter({ has: page.getByRole("checkbox", { name: `Select ${key}`, exact: true }) });
   await step("select the first two rows", async () => {
-    const boxes = page.getByRole("checkbox", { name: /^Select [A-Z]+-\d+$/ });
-    await expect(boxes.first()).toBeVisible();
-    await boxes.nth(0).check();
-    await boxes.nth(1).check();
+    // two rows that are not Done yet, so the bulk change really changes both
+    const rows = page.locator("tbody tr").filter({ has: page.getByRole("checkbox", { name: /^Select [A-Z]+-\d+$/ }) }).filter({ hasNot: page.getByText("Done", { exact: true }) });
+    await expect(rows.first()).toBeVisible();
+    for (const i of [0, 1]) keys.push(((await rows.nth(i).getByRole("checkbox").getAttribute("aria-label")) ?? "").replace("Select ", ""));
+    for (const k of keys) await rowOf(k).getByRole("checkbox").check();
+    note(`selected ${keys.join(", ")}`);
     await expect(page.getByText("2 selected")).toBeVisible();
   });
   await step("Status → Done", async () => {
@@ -640,6 +677,7 @@ journey("Issues — bulk-select two issues and set status Done, then Undo", asyn
     const undo = toast(page, /Status → Done/).getByRole("button");
     if (!(await undo.count())) throw new Error("bulk status toast has no Undo action");
     await undo.first().click();
+    for (const k of keys) await expect(rowOf(k).getByText("Done", { exact: true })).toHaveCount(0);
   });
 });
 
@@ -704,6 +742,7 @@ journey("Projects register — register a project, add people, figures, payment,
     await button(dlg, "Record payment", true).click();
     await expect(toast(page, /Payment recorded|Earned payment recorded/)).toBeVisible();
   });
+  const todayShort = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "Asia/Jakarta" }).format(new Date());
   await step("open PRC ratification", async () => {
     await button(page, /^PRC ratification/).click();
     const dlg = dialog(page, `PRC ratification — ${title}`);
@@ -717,6 +756,13 @@ journey("Projects register — register a project, add people, figures, payment,
       const blockers = await dlg.getByText(/^Fix first:/).innerText().catch(() => "(no reason shown)");
       note(`ratification blocked — ${blockers}`);
     }
+    await page.keyboard.press("Escape");
+  });
+  await step(`payment work period ends today (${todayShort}), the default "Work period to"`, async () => {
+    const row = page.locator("section", { has: page.getByRole("heading", { name: "Client payments" }) }).locator("tr", { hasText: "INV-QA-001" });
+    const period = (await row.locator("td").first().innerText()).replace(/\s+/g, " ").trim();
+    note(`work period shown: ${period}`);
+    expect(period, "workPeriodEnd = fromDateInput(to) (17:00 WIB) + 86 399 s → next day 16:59 WIB").toMatch(new RegExp(`– ${todayShort}\\b`));
   });
 });
 
@@ -806,8 +852,24 @@ journey("People — Add person dialog creates an HR record", async ({ page, step
     await button(dlg, /^Add person/).click();
     await expect(toast(page, /added — HR to confirm eligibility/)).toBeVisible();
   });
-  await step("person is listed", async () => {
+  await step("the new person's HR sheet opens and the list has the row", async () => {
+    await expect(page.getByRole("dialog").getByText(name).first()).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByText(name).first()).toBeVisible();
+  });
+  await step("a11y: the success toast is announced (not under aria-hidden while the sheet is open)", async () => {
+    await button(page, /^Add person/).click();
+    const dlg = dialog(page, "Add person");
+    const n2 = `${name} B`;
+    await field(dlg, "Full name").fill(n2);
+    await field(dlg, "Work email").fill(`${slug(n2)}@spectrumgroup.id`);
+    await field(dlg, "Job title").fill("Embedded Engineer");
+    await field(dlg, "Hire date").fill("2026-10-01");
+    await button(dlg, /^Add person/).click();
+    const t = toast(page, /added — HR to confirm eligibility/);
+    await expect(t).toBeVisible();
+    expect(await toastIsExposed(t), "toast role=status is inside an aria-hidden subtree while the HR sheet is open — screen readers never hear it").toBe(true);
   });
 });
 
@@ -843,7 +905,8 @@ journey("Policy — search highlights matches and anchors jump to sections", asy
     await expect.poll(() => page.evaluate(() => location.hash)).toMatch(/^#s-/);
     note(`hash: ${await page.evaluate(() => location.hash)}`);
   });
-  await step("deep link /policy#s-9-1 scrolls §9.1 into view", async () => {
+  await step("fresh deep link /policy#s-9-1 scrolls §9.1 into view", async () => {
+    await open(page, "/home");
     await open(page, "/policy#s-9-1");
     await page.waitForTimeout(800);
     await expect(page.locator('[id="s-9-1"]')).toBeInViewport();
@@ -855,6 +918,13 @@ journey("Policy — search highlights matches and anchors jump to sections", asy
     const target = values.find((v) => /annex-b/.test(v)) ?? values[values.length - 1];
     await jump.selectOption(target);
     await expect(page.locator(`[id="${target}"]`)).toBeInViewport();
+  });
+  await step("changing the hash while a search filter hides the target still jumps (clears the search)", async () => {
+    await page.getByLabel("Search the policy").fill("clawback");
+    await expect(page.locator('[id="s-9-1"]')).toHaveCount(0);
+    await page.evaluate(() => (window.location.hash = "#s-9-1"));
+    await page.waitForTimeout(800);
+    await expect(page.locator('[id="s-9-1"]'), "hashchange handler kept the first render's navigate() (stale query) — section stays filtered out").toBeInViewport();
   });
 });
 
