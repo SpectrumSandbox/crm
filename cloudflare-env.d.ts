@@ -26,4 +26,10 @@ interface CloudflareEnv {
   APP_URL: string;
   /** Secret (`wrangler secret put SEED_TOKEN`) enabling POST /api/admin/seed; absent = seeding disabled. */
   SEED_TOKEN?: string;
+  /** Cloudflare Access team domain, e.g. "spectrumgroup.cloudflareaccess.com" — required for shared data in production. */
+  CF_ACCESS_TEAM_DOMAIN?: string;
+  /** Application Audience (AUD) tag of the Access application. */
+  CF_ACCESS_AUD?: string;
+  /** "1" = demo: let unauthenticated browsers use the shared workspace (never with real data). */
+  ALLOW_ANONYMOUS_WORKSPACE?: string;
 }

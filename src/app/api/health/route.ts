@@ -1,3 +1,4 @@
+import { identify, type AccessConfig } from "@/lib/sync/access";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +25,7 @@ async function workspaceInfo(db: SgD1Database) {
 }
 
 /** Liveness + D1 connectivity: GET /api/health */
-export async function GET() {
+export async function GET(request: Request) {
   const started = Date.now();
   let envName = "unknown";
   try {
@@ -34,7 +35,10 @@ export async function GET() {
     const pingMs = Date.now() - started;
     const values = await Promise.all(COUNTED_TABLES.map((t) => count(env.DB, t)));
     const counts = Object.fromEntries(COUNTED_TABLES.map((t, i) => [t, values[i]])) as Record<(typeof COUNTED_TABLES)[number], number | null>;
-    const workspace = await workspaceInfo(env.DB);
+    // who last wrote the workspace is personal data — only for callers allowed to use the workspace
+    const who = await identify(request, env as unknown as AccessConfig);
+    const info = await workspaceInfo(env.DB);
+    const workspace = info && !who.ok ? { ...info, updatedBy: "hidden" } : info;
     return Response.json(
       { ok: true, env: envName, d1: { connected: true, pingMs, counts }, workspace, latencyMs: Date.now() - started },
       { headers: { "Cache-Control": "no-store" } },

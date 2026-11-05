@@ -1,5 +1,5 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
-import { actorLabel } from "@/lib/sync/access";
+import { actorLabel, identify, type AccessConfig } from "@/lib/sync/access";
 
 export const dynamic = "force-dynamic";
 
@@ -44,9 +44,11 @@ async function readRow(db: SgD1Database) {
 }
 
 /** GET /api/workspace → { version, data, updatedAt, updatedBy } | 404 { error: "not_found" } */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const { env } = await getCloudflareContext({ async: true });
+    const who = await identify(request, env as unknown as AccessConfig);
+    if (!who.ok) return json({ error: who.error, hint: who.hint }, who.status);
     const row = await readRow(env.DB);
     if (!row) return json({ error: "not_found" }, 404);
     return snapshotResponse(row);
@@ -71,6 +73,15 @@ function changes(result: SgD1Result): number {
  * (baseVersion 0 = create). 200 → { version, updatedAt, updatedBy }; 409 → current { version, data, … }.
  */
 export async function PUT(request: Request) {
+  let verifiedEmail: string | null = null;
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    const who = await identify(request, env as unknown as AccessConfig);
+    if (!who.ok) return json({ error: who.error, hint: who.hint }, who.status);
+    verifiedEmail = who.email;
+  } catch (err) {
+    return failure(err);
+  }
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (declared > MAX_BODY_BYTES) return json({ error: `Payload too large (max ${MAX_BODY_BYTES} bytes)` }, 413);
 
@@ -94,7 +105,7 @@ export async function PUT(request: Request) {
 
   const data = JSON.stringify(body.data);
   const updatedAt = new Date().toISOString();
-  const updatedBy = actorLabel(request);
+  const updatedBy = actorLabel(request, verifiedEmail);
 
   try {
     const { env } = await getCloudflareContext({ async: true });
