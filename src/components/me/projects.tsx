@@ -11,6 +11,7 @@ import {
   carriedForward,
   collectionWindow,
   computeRun,
+  cycleDates,
   effectiveWeight,
   isLiveMember,
   memberWeight,
@@ -294,7 +295,8 @@ export function CycleProjection({ userId }: { userId: string }) {
       <p className="mb-3 flex gap-1.5 text-2xs text-sg-muted">
         <Info className="mt-px size-3.5 shrink-0 text-sg-dim" />
         <span>
-          Salary cycle {cycleLabel(month)}: revenue collected {formatDate(data.window.from, "short")} – {formatDate(data.window.to, "short")} is paid with the {formatDate(paymentDate(month), "medium")} salary; collections after the {POLICY.cycle.cutoffDay}th move to next month (§8.2). Assumes the company passes the break-even test and cash check — if not, the PRC pays pro rata and carries the rest forward (§9.2). Type C standard bonuses are paid in full either way (§8.6).
+          Salary cycle {cycleLabel(month)}: revenue collected {formatDate(data.window.from, "short")} – {formatDate(data.window.to, "short")} is paid with the {formatDate(paymentDate(month), "medium")} salary; later collections move to next month (§8.2).
+          {cycleDates(month).notes.length > 0 && <> {cycleDates(month).notes.join(" · ")}.</>} Assumes the company passes the break-even test and cash check — if not, the PRC pays pro rata and carries the rest forward (§9.2). Type C standard bonuses are paid in full either way (§8.6).
         </span>
       </p>
       {data.rows.length === 0 ? (

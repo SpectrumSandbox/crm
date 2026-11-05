@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import type { Initiative } from "@/lib/initiatives/types";
-import { workPeriodFromDates, cycleMonth, monthEnd, monthKey, monthStart, netRevenue, paymentDate, projectCycles, projectPayments } from "@/lib/initiatives/engine";
+import { revenueEntryLock, workPeriodFromDates, cycleMonth, monthEnd, monthKey, monthStart, netRevenue, paymentDate, projectCycles, projectPayments } from "@/lib/initiatives/engine";
 import { cn, formatDate, formatIDR } from "@/lib/utils";
 import { ledgerDate, parseAmount, todayWib, wibDay } from "@/lib/initiatives/team-rules";
 import { paymentLocked } from "@/lib/slices/governance";
@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/overlays";
 import { PolicyRef } from "./shared";
+import { CorrectionDialog } from "./correction-dialog";
 
 const M = 1_000_000;
 
@@ -29,6 +30,7 @@ export function PaymentsCard({ ini }: { ini: Initiative }) {
   const notify = useUi((s) => s.notify);
   const [adding, setAdding] = useState(false);
   const [confirming, setConfirming] = useState<RevenueEntry | null>(null);
+  const [correcting, setCorrecting] = useState<RevenueEntry | null>(null);
 
   const mine = useMemo(() => entries.filter((e) => e.initiativeId === ini.id).sort((a, b) => (a.collectedAt ?? a.month).localeCompare(b.collectedAt ?? b.month)), [entries, ini.id]);
   const pools = useMemo(() => new Map(projectPayments(ini, entries, adjustments).map((p) => [p.entry.id, p])), [ini, entries, adjustments]);
@@ -81,8 +83,7 @@ export function PaymentsCard({ ini }: { ini: Initiative }) {
                           className="text-soft-orange hover:underline"
                           onClick={() => {
                             const at = new Date().toISOString();
-                            updateRevenueEntry(e.id, { received: true, collectedAt: at, month: cycleMonth(at) });
-                            notify("Marked as collected");
+                            notify(updateRevenueEntry(e.id, { received: true, collectedAt: at, month: cycleMonth(at) }) ? "Marked as collected" : "Refused — the cycle has been released; record a correction (§8.5)");
                           }}
                         >
                           Earned · mark collected
@@ -96,9 +97,9 @@ export function PaymentsCard({ ini }: { ini: Initiative }) {
                     <td className="px-4 py-2 text-xs text-sg-muted">{e.received ? formatDate(paymentDate(p?.month ?? e.month), "short") : "On collection"}</td>
                     <td className="pr-3">
                       {paymentLocked(e, runs) ? (
-                        <span className="text-2xs text-sg-dim" title={`The ${e.month} cycle has been released — record a correcting payment instead; it flows to the next cycle (§8.5)`}>
-                          Released
-                        </span>
+                        <Button size="xs" variant="ghost" title={revenueEntryLock(e, runs) ?? undefined} onClick={() => setCorrecting(e)}>
+                          Correction
+                        </Button>
                       ) : (
                         <Button size="icon-sm" variant="ghost" aria-label="Delete payment" onClick={() => setConfirming(e)}>
                           <Trash2 />
@@ -157,6 +158,7 @@ export function PaymentsCard({ ini }: { ini: Initiative }) {
         </div>
       ) : null}
       <PaymentDialog ini={ini} open={adding} onOpenChange={setAdding} />
+      <CorrectionDialog entry={correcting} onClose={() => setCorrecting(null)} />
       <Modal
         open={!!confirming}
         onOpenChange={(o) => !o && setConfirming(null)}

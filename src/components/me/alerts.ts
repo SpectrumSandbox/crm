@@ -9,7 +9,7 @@
  * Role checks use the HR record's governance roles (the same source as useAccess); amounts of other people's pay are
  * only ever shown to pay roles (§13.4).
  */
-import { addBusinessDays, approvalTier, breakEvenDeadline, businessDaysBetween, cycleMonth, memberWeight, monthKey, nextMonth } from "@/lib/initiatives/engine";
+import { addBusinessDays, approvalTier, breakEvenDeadline, businessDaysBetween, cutoffDate, cycleDates, cycleMonth, cycleTiming, memberWeight, monthKey, nextMonth, paymentDate } from "@/lib/initiatives/engine";
 import { POLICY, TIER_META } from "@/lib/initiatives/policy";
 import type { BonusRun, ChangeOrder, Clawback, CloseOutReport, CoiDeclaration, CompanySummary, CurveAdjustment, DeferredBonus, Dispute, EmployeeProfile, Initiative, InitiativeMember, ProbationOutcome, ProjectUpdate, TeamAmendment } from "@/lib/initiatives/types";
 import type { Activity, Company, Deal, Issue, IssueHistoryEntry, IssueLink, Pipeline, Product, Project, Quote, Ticket, User } from "@/lib/types";
@@ -267,8 +267,7 @@ export function deriveAlerts(inp: AlertInputs, now = Date.now()): Alert[] {
     const known = [...runs.map((r) => r.month), ...(inp.summaries ?? []).map((x) => x.month)].sort();
     const first = known[0] ?? monthKey(now);
     const floor = nextMonth(monthKey(now), -6);
-    for (let m = first < floor ? floor : first; m < open || (m === monthKey(now) && wibDay(now) >= POLICY.cycle.cutoffDay); m = nextMonth(m)) {
-      if (m > monthKey(now)) break;
+    for (let m = first < floor ? floor : first; m <= monthKey(now) && (m < open || cycleTiming(m, nowIso).cutoffPassed); m = nextMonth(m)) {
       const run = runs.find((r) => r.month === m);
       if (run && (run.status === "certified" || run.status === "released")) continue;
       const deadline = breakEvenDeadline(m);
@@ -278,7 +277,7 @@ export function deriveAlerts(inp: AlertInputs, now = Date.now()): Alert[] {
         kind: "break_even",
         tone: late ? "red" : "orange",
         title: late ? `Break-even test overdue for ${cycleLabel(m)}` : `Certify the break-even test and cash check for ${cycleLabel(m)}`,
-        detail: `${run ? (run.status === "failed" ? "A failed run is recorded — PRC applies §9.2 pro rata" : "Draft run recorded") : "No run recorded yet"} · CFO certifies by the 23rd using the latest three closed months; salary date ${formatDate(`${m}-${POLICY.cycle.salaryDay}T09:00:00+07:00`, "medium")}`,
+        detail: `${run ? (run.status === "failed" ? "A failed run is recorded — PRC applies §9.2 pro rata" : "Draft run recorded") : "No run recorded yet"} · CFO certifies by ${formatDate(deadline, "medium")} using the latest three closed months; salary date ${formatDate(paymentDate(m), "medium")}${cycleDates(m).notes.length ? ` · ${cycleDates(m).notes.join("; ")}` : ""}`,
         href: `/compensation?month=${m}`,
         at: deadline,
         cite: "9.1",
@@ -295,7 +294,7 @@ export function deriveAlerts(inp: AlertInputs, now = Date.now()): Alert[] {
         kind: "release",
         tone: "cyan",
         title: `Release ${r.month} bonuses — certified by the CFO`,
-        detail: `${formatIDR(r.totals.payable, "full")} payable${r.payoutPct < 1 ? ` · ${Math.round(r.payoutPct * 10_000) / 100}% pro rata, rest carried forward (§9.2)` : ""} · paid with the ${POLICY.cycle.salaryDay}th salary`,
+        detail: `${formatIDR(r.totals.payable, "full")} payable${r.payoutPct < 1 ? ` · ${Math.round(r.payoutPct * 10_000) / 100}% pro rata, rest carried forward (§9.2)` : ""} · paid with the salary on ${formatDate(paymentDate(r.month), "medium")}`,
         href: `/compensation?month=${r.month}`,
         at: r.certifiedAt,
         cite: "8.2",
@@ -478,7 +477,7 @@ export function deriveAlerts(inp: AlertInputs, now = Date.now()): Alert[] {
   /* ───────── governance: §6.1 status updates, Annex F, §5.1 rate resets, §8.3 close-out, §4.5 returns, §6.8 ledger ───────── */
   if (inp.projectUpdates) {
     const month = monthKey(now);
-    const cutoff = `${month}-${String(POLICY.cycle.cutoffDay).padStart(2, "0")}T17:00:00+07:00`;
+    const cutoff = cutoffDate(month); // §8.2 the 20th, or the previous business day
     // due 3 business days before the 20th collection cut-off, so the update lands before Finance runs the cycle (§8.2)
     let due = new Date(cutoff);
     for (let n = 0; n < 3; ) {
@@ -504,7 +503,7 @@ export function deriveAlerts(inp: AlertInputs, now = Date.now()): Alert[] {
         kind: "status_update",
         tone: st.state === "overdue" || pastCut ? "red" : late ? "orange" : "yellow",
         title: `${late ? "Status update overdue" : "Monthly status update due"} — ${i.title}`,
-        detail: `${cycleLabel(month)} update with RAG health${st.days != null ? ` · last one ${st.days} days ago` : " · none yet"} · due ${formatDate(dueIso, "medium")}, before the ${POLICY.cycle.cutoffDay}th cut-off (§6.1, §8.2)`,
+        detail: `${cycleLabel(month)} update with RAG health${st.days != null ? ` · last one ${st.days} days ago` : " · none yet"} · due ${formatDate(dueIso, "medium")}, before the ${formatDate(cutoff, "medium")} collection cut-off (§6.1, §8.2)`,
         href: `/projects/${i.id}`,
         at: dueIso,
         cite: "6.1",

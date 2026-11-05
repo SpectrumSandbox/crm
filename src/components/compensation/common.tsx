@@ -1,7 +1,7 @@
 "use client";
 
 /* Shared building blocks for the /compensation workspace (Policy v4.0 §8–§11). */
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { CircleAlert, Info, Lock, TriangleAlert, CircleCheck } from "lucide-react";
 import { useCrm } from "@/lib/store";
@@ -237,11 +237,19 @@ export function AmountInput({
   "aria-label"?: string;
   id?: string;
 }) {
+  // MoneyInput reports null while the text is empty or half-typed; keep that echo so the field is not reset mid-typing
+  const [shown, setShown] = useState<number | null>(value);
+  useEffect(() => {
+    setShown((cur) => ((cur ?? 0) === value ? cur : value));
+  }, [value]);
   return (
     <MoneyInput
       id={id}
-      value={value}
-      onValueChange={(n) => onChange(n === null ? 0 : min != null ? Math.max(min, n) : n)}
+      value={shown}
+      onValueChange={(n) => {
+        setShown(n);
+        onChange(n === null ? 0 : min != null ? Math.max(min, n) : n);
+      }}
       allowNegative={min == null}
       min={min ?? undefined}
       disabled={disabled}

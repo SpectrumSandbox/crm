@@ -30,7 +30,8 @@ export interface GovernanceSlice {
   recordRateReset: (changeOrderId: string, newRatePct: number, note: string) => void;
   /* §8.3 Annex G */
   submitCloseOut: (report: Omit<CloseOutReport, "id" | "submittedById" | "submittedAt">) => string;
-  reconcileCloseOut: (id: string) => void;
+  /** Annex G Finance sign-off — runs the engine's §8.3 final reconciliation, then marks the report reconciled */
+  reconcileCloseOut: (id: string, note?: string) => void;
   /* §12.2 Annex F */
   saveCoiDeclaration: (input: Omit<CoiDeclaration, "id" | "recordedById" | "prc">) => string;
   decideCoi: (id: string, decision: Omit<NonNullable<CoiDeclaration["prc"]>, "decidedById" | "decidedAt">) => void;
@@ -45,6 +46,8 @@ type Needs = GovernanceSlice &
   Pick<SeedData, "initiatives" | "initiativeMembers" | "auditLog" | "revenueEntries" | "bonusRuns" | "projectUpdates" | "changeOrders" | "closeOutReports" | "coiDeclarations" | "teamAmendments" | "users"> & {
     currentUserId: string;
     completeInitiative: (id: string) => void;
+    deleteRevenueEntry: (id: string) => boolean;
+    recordFinalReconciliation: (initiativeId: string, note?: string) => unknown;
     voteAmendment: (id: string, vote: "for" | "against", userId?: string) => void;
   };
 
@@ -154,11 +157,13 @@ export function createGovernanceSlice<S extends Needs>(set: SetFn<S>, get: GetFn
       if (i && i.status !== "completed") get().completeInitiative(report.initiativeId);
       return id;
     },
-    reconcileCloseOut: (id) => {
+    reconcileCloseOut: (id, note = "") => {
       const r = get().closeOutReports.find((x) => x.id === id);
       if (!r || r.reconciledAt) return;
+      // §8.3 Finance recalculates the pool on final figures (engine: top-ups to the next open cycle, overpayments off deferrals first)
+      if (!get().recordFinalReconciliation(r.initiativeId, note)) return;
       set((s) => ({ closeOutReports: s.closeOutReports.map((x) => (x.id === id ? { ...x, reconciledAt: now(), signOff: { ...x.signOff, financeId: x.signOff.financeId ?? s.currentUserId } } : x)) }) as Partial<S>);
-      log(audit(r.initiativeId, "Finance final reconciliation recorded (§8.3)", `by ${name(get().currentUserId)}`));
+      log(audit(r.initiativeId, "Annex G signed off by Finance after the final reconciliation (§8.3)", `by ${name(get().currentUserId)}`));
     },
 
     saveCoiDeclaration: (input) => {
@@ -180,8 +185,8 @@ export function createGovernanceSlice<S extends Needs>(set: SetFn<S>, get: GetFn
     deletePayment: (id) => {
       const e = get().revenueEntries.find((x) => x.id === id) ?? null;
       if (!e || paymentLocked(e, get().bonusRuns)) return null;
-      set((s) => ({ revenueEntries: s.revenueEntries.filter((x) => x.id !== id) }) as Partial<S>);
-      log(audit(e.initiativeId, `payment deleted (cycle ${e.month})`, `Was ${rp(e.revenue)} revenue / ${rp(e.directCosts)} direct costs · ${e.received ? `collected ${e.collectedAt?.slice(0, 10) ?? ""}` : "not collected"} · work ${e.workPeriodStart?.slice(0, 10) ?? "?"} → ${e.workPeriodEnd?.slice(0, 10) ?? "?"}${e.note ? ` · ${e.note}` : ""}`));
+      // the engine action refuses (false) when a released cycle paid it, and writes the audit entry itself
+      if (!get().deleteRevenueEntry(id)) return null;
       return e;
     },
     restorePayment: (entry) => {

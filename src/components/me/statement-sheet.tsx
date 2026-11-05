@@ -7,11 +7,11 @@ import { useCrm } from "@/lib/store";
 import { collectionWindow, estimatedTax, paymentDate, projectRate, topUpBalance } from "@/lib/initiatives/engine";
 import { POLICY, ROLE_META } from "@/lib/initiatives/policy";
 import type { BonusLine, BonusRun } from "@/lib/initiatives/types";
-import { formatDate } from "@/lib/utils";
+import { formatDate, formatIDR } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/overlays";
 import { RaiseDisputeButton } from "./disputes";
-import { cycleLabel, pct3 } from "./helpers";
+import { EXTRA_LABEL, cycleLabel, pct3 } from "./helpers";
 import { RpFull } from "./ui";
 
 const PRINT_CSS = `
@@ -86,9 +86,7 @@ export function StatementSheet({ open, onOpenChange, run, line }: { open: boolea
   const win = collectionWindow(run.month);
   const roles = [...new Set(d.rows.flatMap((m) => m.roles))].map((r) => ROLE_META[r].label).join(" + ");
   const alloc = [...new Set(d.rows.map((m) => m.allocationFactor ?? 1))].join(" / ");
-  const ext = line as BonusLine & { pph21?: number; net?: number; pph21Estimate?: number; netEstimate?: number };
-  const pph = ext.pph21 ?? ext.pph21Estimate;
-  const net = ext.net ?? ext.netEstimate;
+  const pph = line.pph21;
   const passed = run.status !== "failed" && run.payoutPct >= 1;
   const gross = line.payable;
   const paid = run.status === "released";
@@ -162,13 +160,20 @@ export function StatementSheet({ open, onOpenChange, run, line }: { open: boolea
               ["Held (probation)", <RpFull key="w" value={line.withheld} />],
               ["Held (Annex B, suspension, unpaid leave, PRC confirmation)", <RpFull key="h" value={line.held} />],
               ["Forfeited", <RpFull key="f" value={line.forfeited} />],
-              ["Adjustments, recoveries or clawback (project to date)", d.recovered ? <>−<RpFull value={d.recovered} /></> : "—"],
-              ["Gross bonus paid this salary", <RpFull key="gp" value={gross} className="text-soft-green" />],
-              ["PPh 21 withheld", pph != null ? <span key="p">{ext.pph21 == null ? "≈ " : ""}<RpFull value={pph} /></span> : "Withheld by payroll with the salary (§8.5)"],
-              ["Net bonus paid", net != null ? <span key="n">{ext.net == null ? "≈ " : ""}<RpFull value={net} /></span> : "Shown on the payslip"],
+              ...((line.extras ?? []).map((x) => [`+ ${EXTRA_LABEL[x.kind]}`, <RpFull key={x.refId} value={x.amount} className="text-soft-cyan" />]) as [string, React.ReactNode][]),
+              ["Adjustments, recoveries or clawback", line.recovered ? <span key="r">−<RpFull value={line.recovered} /></span> : d.recovered ? <span key="r2" className="text-sg-muted">— this period · <RpFull value={d.recovered} /> recovered on the project to date</span> : "—"],
+              ["Gross bonus paid this salary", <RpFull key="gp" value={pph?.gross ?? gross} className="text-soft-green" />],
+              ["PPh 21 withheld (estimate)", pph ? <span key="p" title={pph.note}>≈ <RpFull value={pph.withheld} /> <span className="text-2xs font-normal text-sg-dim">TER {pph.category} · {pph.ptkp} · {(pph.rate * 100).toFixed(2)}%</span></span> : "Withheld by payroll with the salary (§8.5)"],
+              ["Net bonus paid (estimate)", pph ? <span key="n">≈ <RpFull value={pph.net} /></span> : "Shown on the payslip"],
             ]}
           />
           {line.notes.length > 0 && <p className="mt-1 text-2xs text-sg-dim">{line.notes.join(" · ")}</p>}
+          {(line.heldItems ?? []).length > 0 && (
+            <p className="mt-1 text-2xs text-soft-orange">
+              Held amounts: {(line.heldItems ?? []).map((h) => `${formatIDR(h.amount, "full")} from the ${cycleLabel(h.fromMonth)} cycle${h.reason ? ` (${h.reason})` : ""}`).join("; ")} — paid in the first cycle after the condition clears (§10, §15.1).
+            </p>
+          )}
+          {pph && <p className="mt-1 text-2xs text-soft-yellow">PPh 21 and net are estimates ({pph.note}); payroll computes the final figures with the salary (§8.5, Annex E).</p>}
         </div>
         <div>
           <h3 className="sg-eyebrow mb-1">Balances to date</h3>

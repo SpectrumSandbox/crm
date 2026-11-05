@@ -192,7 +192,7 @@ function ClawbackRow({ c, profile, onModal, set }: { c: Clawback; profile: Emplo
   const amount = clawbackAmount(c, all);
   // §9.4 the 24-month window is tested when the trigger arises, not today
   const trigger = c.triggeredAt ?? c.createdAt;
-  const exempt = clawbackExempt(c, trigger, all);
+  const exempt = clawbackExempt(c, undefined, all);
   const sched = clawbackSchedule(Math.max(0, amount - c.recovered), profile?.annualBaseSalary ?? 0);
   const disputeDeadline = c.notifiedAt ? addBusinessDays(c.notifiedAt, POLICY.clawback.disputeBusinessDays) : null;
   const inWindow = disputeDeadline ? Date.parse(disputeDeadline) >= Date.now() : false;

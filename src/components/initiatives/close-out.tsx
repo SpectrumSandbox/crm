@@ -314,6 +314,7 @@ export function CloseOutCard({ ini }: { ini: Initiative }) {
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
   const access = useAccess();
+  const [recNote, setRecNote] = useState("");
   const r = reports.find((x) => x.initiativeId === ini.id);
   if (!r) {
     if (ini.status !== "completed") return null;
@@ -347,20 +348,40 @@ export function CloseOutCard({ ini }: { ini: Initiative }) {
         </span>
         <span className="text-2xs text-sg-dim">Submitted {formatDate(r.submittedAt, "datetime")} by {name(r.submittedById)}</span>
       </div>
+      {ini.reconciliation ? (
+        <div className="mt-3 rounded-md border border-sg-line p-2 text-xs text-sg-muted">
+          <span className="font-semibold text-sg-text">Final reconciliation</span> {formatDate(ini.reconciliation.at, "medium")} by {name(ini.reconciliation.byId)} · final pool <span className="sg-num text-sg-white">{formatIDR(ini.reconciliation.finalPool)}</span> at {(ini.reconciliation.finalRate * 100).toFixed(3)}% vs allocated <span className="sg-num">{formatIDR(ini.reconciliation.allocated)}</span> ·{" "}
+          {ini.reconciliation.difference >= 0 ? (
+            <span className="text-soft-green">
+              top-up {formatIDR(ini.reconciliation.difference)}
+              {ini.reconciliation.payMonth ? ` paid in the ${ini.reconciliation.payMonth} cycle` : ""}
+            </span>
+          ) : (
+            <span className="text-soft-orange">
+              overpayment {formatIDR(-ini.reconciliation.difference)}: {formatIDR(ini.reconciliation.offsetFromDeferred)} from deferrals, {formatIDR(ini.reconciliation.absorbedOrClawback)} to clawback review or absorbed
+            </span>
+          )}
+          {ini.reconciliation.note ? <div className="mt-0.5 text-2xs text-sg-dim">{ini.reconciliation.note}</div> : null}
+        </div>
+      ) : null}
       <div className={cn("mt-3 flex flex-wrap items-center gap-3 border-t border-sg-line pt-3")}>
-        <SlaTimer label="Finance final reconciliation" dueIso={due} doneIso={r.reconciledAt} cite="8.3" />
+        <SlaTimer label="Finance final reconciliation" dueIso={due} doneIso={r.reconciledAt ?? ini.reconciliation?.at} cite="8.3" />
         {!r.reconciledAt && access.certify ? (
-          <Button
-            size="sm"
-            variant="primary"
-            className="ml-auto"
-            onClick={() => {
-              reconcileCloseOut(r.id);
-              notify("Final reconciliation recorded (§8.3)");
-            }}
-          >
-            Record final reconciliation
-          </Button>
+          <span className="ml-auto flex flex-wrap items-center gap-2">
+            <Input value={recNote} onChange={(e) => setRecNote(e.target.value)} placeholder="Finance note (optional)" aria-label="Reconciliation note" className="h-7 w-56 text-xs" />
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => {
+                reconcileCloseOut(r.id, recNote.trim());
+                const rec = useCrm.getState().initiatives.find((x) => x.id === ini.id)?.reconciliation;
+                notify(rec ? `Final reconciliation recorded — ${rec.difference >= 0 ? `top-up ${formatIDR(rec.difference)}` : `overpayment ${formatIDR(-rec.difference)}`} (§8.3)` : "Final reconciliation refused — Finance records it (§8.3)");
+                setRecNote("");
+              }}
+            >
+              Recalculate &amp; record final reconciliation
+            </Button>
+          </span>
         ) : null}
         {!r.reconciledAt && !access.certify ? (
           <span className="ml-auto text-2xs text-sg-dim">Finance records it <Cite s="8.3" /></span>

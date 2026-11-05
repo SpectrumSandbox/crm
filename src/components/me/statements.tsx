@@ -9,12 +9,12 @@ import { addBusinessDays, clawbackAmount, paymentDate, probationBalance } from "
 import { POLICY } from "@/lib/initiatives/policy";
 import type { BonusLine, BonusRun, EmployeeProfile, LineStatus } from "@/lib/initiatives/types";
 import type { SpectrumColor } from "@/lib/types";
-import { cn, daysFromNow, formatDate } from "@/lib/utils";
+import { cn, daysFromNow, formatDate, formatIDR } from "@/lib/utils";
 import { Chip, EmptyState } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
 import { Cite, Metric } from "@/components/initiatives/shared";
 import { RaiseDisputeButton } from "./disputes";
-import { cycleLabel } from "./helpers";
+import { EXTRA_LABEL, cycleLabel } from "./helpers";
 import { StatementSheet } from "./statement-sheet";
 import { AnnexCite, Card, NumCell, RpFull, SampleChip, TH, THEAD_ROW } from "./ui";
 
@@ -119,6 +119,22 @@ export function StatementHistory({ userId }: { userId: string }) {
                         {run.payoutPct < 1 ? ` · ${Math.round(run.payoutPct * 10_000) / 100}% released (§9.2)` : ""}
                       </div>
                       {line.notes.length > 0 && <div className="mt-0.5 max-w-[320px] text-2xs text-sg-dim">{line.notes.join(" · ")}</div>}
+                      {(line.extras ?? []).map((x) => (
+                        <div key={`${x.kind}-${x.refId}`} className="text-2xs text-soft-cyan">
+                          + <RpFull value={x.amount} /> {EXTRA_LABEL[x.kind]}
+                          {x.note ? ` · ${x.note}` : ""}
+                        </div>
+                      ))}
+                      {line.recovered ? (
+                        <div className="text-2xs text-soft-red">
+                          − <RpFull value={line.recovered} /> clawback recovered from this bonus (§9.4)
+                        </div>
+                      ) : null}
+                      {(line.heldItems ?? []).length > 0 && (
+                        <div className="mt-0.5 max-w-[320px] text-2xs text-soft-orange">
+                          Held: {(line.heldItems ?? []).map((h) => `${formatIDR(h.amount, "full")} from ${cycleLabel(h.fromMonth, true)}${h.reason ? ` — ${h.reason}` : ""}`).join("; ")} · paid when the condition clears (§10, §15.1)
+                        </div>
+                      )}
                     </td>
                     <NumCell v={line.gross} />
                     <NumCell v={line.topUp} tone="text-soft-cyan" />
@@ -127,7 +143,12 @@ export function StatementHistory({ userId }: { userId: string }) {
                       {line.payable ? <RpFull value={line.payable} className="font-semibold text-soft-green" /> : <span className="text-sg-dim">—</span>}
                       {line.carriedIn > 0 && (
                         <div className="text-2xs text-sg-dim">
-                          incl. <RpFull value={line.carriedIn} /> carried in
+                          incl. <RpFull value={line.carriedIn} /> carried in{line.heldIn ? <> (<RpFull value={line.heldIn} /> held earlier, now cleared)</> : null}
+                        </div>
+                      )}
+                      {line.pph21 && (
+                        <div className="text-2xs text-sg-dim" title={`${line.pph21.note} · TER category ${line.pph21.category}, ${line.pph21.ptkp}, ${(line.pph21.rate * 100).toFixed(2)}%`}>
+                          PPh 21 ≈ <RpFull value={line.pph21.withheld} /> · net ≈ <RpFull value={line.pph21.net} className="text-sg-muted" /> <span className="text-soft-yellow">estimate</span>
                         </div>
                       )}
                     </td>

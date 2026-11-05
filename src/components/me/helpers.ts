@@ -1,7 +1,16 @@
 /* Pure helpers shared by /me and the notification centre (Policy v4.0). */
-import { addBusinessDays, cycleMonth, isLiveMember, type ProjectRate } from "@/lib/initiatives/engine";
-import { POLICY, POLICY_DATED, ROLE_META } from "@/lib/initiatives/policy";
-import type { EmployeeProfile, InitiativeMember, ProjectRole, TeamAmendment } from "@/lib/initiatives/types";
+import { addBusinessDays, annexBStatus, cycleMonth, isLiveMember, type ProjectRate } from "@/lib/initiatives/engine";
+import { POLICY, ROLE_META } from "@/lib/initiatives/policy";
+import type { EmployeeProfile, ExtraPaymentKind, InitiativeMember, ProjectRole, TeamAmendment } from "@/lib/initiatives/types";
+
+/** Payments added to a bonus line besides the revenue share (engine BonusLine.extras). */
+export const EXTRA_LABEL: Record<ExtraPaymentKind, string> = {
+  deferred_release: "deferred bonus released (§9.3)",
+  probation_completion: "Probation Completion Bonus (§11.4)",
+  probation_final_pay: "probation balance with final pay (§11.4)",
+  reconciliation_topup: "final reconciliation top-up (§8.3)",
+  underpayment_correction: "underpayment correction (§8.5)",
+};
 import type { User } from "@/lib/types";
 import { formatNumber } from "@/lib/utils";
 
@@ -58,8 +67,9 @@ export function describeAmendment(a: TeamAmendment, users: User[], members: Init
 /** Annex B state: missing, signed for an earlier version (re-sign before the first v4.0 payment, §15.1), or current. */
 export function annexBState(p: EmployeeProfile | undefined): "none" | "missing" | "stale" | "current" {
   if (!p) return "none";
-  if (!p.acknowledgmentSignedAt) return "missing";
-  return Date.parse(p.acknowledgmentSignedAt) < Date.parse(`${POLICY_DATED}T00:00:00+07:00`) ? "stale" : "current";
+  // one rule with the engine and /people: annexBStatus (v4.0 cut-over 00:00 WIB 29 Oct 2026)
+  const st = annexBStatus(p);
+  return !st.signed ? "missing" : st.current ? "current" : "stale";
 }
 
 /** Members on my side: every ledger row of mine, newest first. */

@@ -6,7 +6,7 @@ import { ArrowUpRight, Banknote, Check, ChevronDown, Coins, Info, Lock, Pencil, 
 import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
 import type { Initiative, Milestone, RevenueEntry } from "@/lib/initiatives/types";
-import { workPeriodFromDates, computeRun, cycleMonth, directCostTotal, monthEnd, monthKey, monthStart, netRevenue, paymentDate, projectCycles, projectPayments, proposalEconomics, rateReview, standardBonusOf } from "@/lib/initiatives/engine";
+import { revenueEntryLock, workPeriodFromDates, computeRun, cycleMonth, directCostTotal, monthEnd, monthKey, monthStart, netRevenue, paymentDate, projectCycles, projectPayments, proposalEconomics, rateReview, standardBonusOf } from "@/lib/initiatives/engine";
 import { POLICY } from "@/lib/initiatives/policy";
 import { cn, formatDate, fromDateInput, toDateInput } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import { Card, onCmdEnter } from "./ui";
 import { parseAmount } from "@/lib/initiatives/team-rules";
 import { paymentLocked } from "@/lib/slices/governance";
 import { ChangeOrdersCard } from "@/components/projects/change-orders";
+import { CorrectionDialog } from "@/components/projects/correction-dialog";
 
 const FIN_STATUSES = new Set(["approved", "active", "completed"]);
 /** Company figures large enough that the §9.1 checks pass in a per-project projection. */
@@ -89,6 +90,7 @@ function PaymentsCard({ ini }: { ini: Initiative }) {
   const [editing, setEditing] = useState<string | null>(null); // entry id or "new"
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [correcting, setCorrecting] = useState<RevenueEntry | null>(null);
 
   const econ = useMemo(() => proposalEconomics(ini, adjustments), [ini, adjustments]);
   const review = useMemo(() => rateReview(ini, allEntries, adjustments), [ini, allEntries, adjustments]);
@@ -169,7 +171,11 @@ function PaymentsCard({ ini }: { ini: Initiative }) {
       addRevenueEntry({ initiativeId: ini.id, ...payload });
       notify(payload.received ? `Payment collected — salary cycle ${payload.month}, paid ${formatDate(paymentDate(payload.month), "medium")}` : "Payment recorded as earned, awaiting collection");
     } else if (editing) {
-      updateRevenueEntry(editing, payload);
+      // the engine refuses (false) amount/date edits of a payment paid in a released cycle — record a correction instead (§8.5)
+      if (!updateRevenueEntry(editing, payload)) {
+        notify("Refused — this payment was paid in a released cycle; record a correction (§8.5)");
+        return;
+      }
       notify("Payment updated");
     }
     setEditing(null);
@@ -367,9 +373,9 @@ function PaymentsCard({ ini }: { ini: Initiative }) {
                   </td>
                   <td className="px-3 py-2 text-right">
                     {paymentLocked(r.e, runs) ? (
-                      <span className="inline-flex items-center gap-1 text-2xs text-sg-dim" title={`The ${r.e.month} cycle has been released — a correction is recorded as a new (negative or adjusting) payment and flows to the next cycle (§8.5)`}>
-                        <Lock className="size-3" /> Released
-                      </span>
+                      <Button size="xs" variant="ghost" title={revenueEntryLock(r.e, runs) ?? undefined} onClick={() => setCorrecting(r.e)}>
+                        <Lock /> Correction
+                      </Button>
                     ) : confirmDelete === r.e.id ? (
                       <div className="flex justify-end gap-1">
                         <Button
