@@ -53,11 +53,51 @@ function field(scope, label) {
 }
 
 const dialog = (page, name) => (name ? page.getByRole("dialog", { name }) : page.getByRole("dialog")).last();
-// CSS (not getByRole): a toast raised while a modal/sheet is open sits under aria-hidden — see toastIsExposed()
-const toast = (page, re) => page.locator('[role="status"]').filter({ hasText: re }).first();
-/** true when the toast is reachable by assistive tech (not inside an aria-hidden / inert subtree) */
+// The visible toast card (src/components/ui/toast.tsx). By test id, not role: while a modal/sheet is open the toast stack
+// sits under aria-hidden by design — screen readers hear it through the live region instead (see announced()).
+const toast = (page, re) => page.getByTestId("toast").filter({ hasText: re }).first();
+/** first line of a toast card: its message (the action button and dismiss icon follow it) */
+const toastMessage = async (t) => (await t.innerText()).split("\n")[0].trim();
+/** the screen-reader live region (role=status / alert) a toast was announced through */
+const announced = (page, re) => page.locator("[data-toast-announcer]").filter({ hasText: re }).first();
+/** true when the element is reachable by assistive tech (not inside an aria-hidden / inert subtree) */
 const toastIsExposed = (loc) => loc.evaluate((el) => !el.closest('[aria-hidden="true"], [inert]'));
 const button = (scope, name, exact = false) => scope.getByRole("button", { name, exact }).first();
+/** the ⌘K palette search box */
+const paletteInput = (page) => page.getByPlaceholder(/^Search records, people, projects/);
+/** digits of a formatted amount field ("1.234.000.000" → 1234000000) */
+const amountOf = async (loc) => Number((await loc.inputValue()).replace(/[^\d-]/g, ""));
+
+/**
+ * Pick from a searchable picker (ui/combobox or the initiatives PersonCombobox): open it, then click the first enabled
+ * option containing `text` (or the first enabled option). Options live in a popover portal, so they are found by CSS
+ * on the page rather than inside the dialog. Returns the picked option's first line.
+ */
+async function pickOption(page, trigger, text) {
+  await trigger.click();
+  const opts = page.locator('[role="option"]:not([aria-disabled="true"]):not([data-disabled="true"])');
+  await expect(opts.first()).toBeVisible();
+  let target = opts.first();
+  if (text) {
+    const hit = opts.filter({ hasText: text }).first();
+    if (await hit.count()) target = hit;
+  }
+  const label = (await target.innerText()).split("\n")[0].trim();
+  await target.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  return label;
+}
+
+/** Demo mode (no Cloudflare Access in CI): act as a workspace user, as the "Acting as" switcher does, before any page loads. */
+async function actAs(context, userId) {
+  await context.addInitScript((id) => {
+    try {
+      window.localStorage.setItem("sg-crm-acting-as", id);
+    } catch {
+      /* storage blocked */
+    }
+  }, userId);
+}
 
 async function open(page, path) {
   const res = await page.goto(BASE + path, { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -348,7 +388,7 @@ journey("Contacts — smart list tab + Export CSV downloads the rows in view", a
   await step("open /contacts", () => open(page, "/contacts"));
   let shown = 0;
   await step("switch to the Hot leads smart list", async () => {
-    await page.getByRole("button", { name: /^Hot leads/ }).click();
+    await page.getByRole("tab", { name: /^Hot leads/ }).click();
     await expect(page).toHaveURL(/view=hot-leads/);
     const counter = page.getByText(/^\d+ of \d+$/).first();
     await expect(counter).toBeVisible();
@@ -357,7 +397,9 @@ journey("Contacts — smart list tab + Export CSV downloads the rows in view", a
     expect(shown).toBeGreaterThan(0);
   });
   await step("Export CSV downloads a file with the same row count", async () => {
-    const [dl] = await Promise.all([page.waitForEvent("download"), button(page, /Export CSV/).click()]);
+    // Export CSV is a menu: comma CSV, or semicolons for Excel in the Indonesian locale
+    await button(page, /Export CSV/).click();
+    const [dl] = await Promise.all([page.waitForEvent("download"), page.getByRole("menuitem", { name: /CSV \(comma\)/ }).click()]);
     const name = dl.suggestedFilename();
     note(`downloaded ${name}`);
     expect(name).toMatch(/contacts-hot-leads.*\.csv$/);
@@ -442,7 +484,7 @@ journey("⌘K palette — search a contact and an issue, open them", async ({ pa
   await step("open /home", () => open(page, "/home"));
   await step("Ctrl+K, type 'Rina', pick the contact", async () => {
     await page.keyboard.press("Control+k");
-    const input = page.getByPlaceholder(/Search contacts, companies/);
+    const input = paletteInput(page);
     await expect(input).toBeFocused();
     await input.fill("Rina");
     await page.getByRole("option", { name: /Rina Susanto/ }).first().click();
@@ -450,7 +492,7 @@ journey("⌘K palette — search a contact and an issue, open them", async ({ pa
   });
   await step("Ctrl+K, type 'UAV-102', open the issue drawer", async () => {
     await page.keyboard.press("Control+k");
-    await page.getByPlaceholder(/Search contacts, companies/).fill("UAV-102");
+    await paletteInput(page).fill("UAV-102");
     await page.getByRole("option", { name: /UAV-102/ }).first().click();
     await expect(page.getByRole("dialog", { name: /UAV-102/ })).toBeVisible();
   });
@@ -540,7 +582,7 @@ journey(
     });
     await step("search button opens the palette", async () => {
       await page.getByRole("button", { name: "Search (Command K)" }).first().click();
-      await expect(page.getByPlaceholder(/Search contacts, companies/)).toBeVisible();
+      await expect(paletteInput(page)).toBeVisible();
     });
   },
   { mobile: true },
@@ -577,7 +619,7 @@ journey("Board — j/k focus and Shift+→ moves an issue to the next column", a
     await page.keyboard.press("Shift+ArrowRight");
     const t = toast(page, /→/);
     await expect(t).toBeVisible();
-    msg = (await t.innerText()).trim();
+    msg = await toastMessage(t);
     note(`toast: ${msg}`);
   });
   await step("the issue card now sits in the announced column", async () => {
@@ -616,7 +658,7 @@ journey("Backlog — create a sprint, complete the active one, start the new one
     await button(page, /^Create sprint/).click();
     const t = toast(page, /created/);
     await expect(t).toBeVisible();
-    sprintName = (await t.innerText()).replace(/\s*created.*$/, "").trim();
+    sprintName = (await toastMessage(t)).replace(/\s*created.*$/, "").trim();
     note(`created ${sprintName}`);
     await expect(page.getByRole("heading", { name: sprintName })).toBeVisible();
   });
@@ -648,7 +690,7 @@ journey("Backlog — quick-add an issue to the backlog", async ({ page, step }) 
     const input = page.getByLabel("New backlog issue summary");
     await input.fill(summary);
     await input.press("Enter");
-    await expect(toast(page, /Added to the .* backlog/)).toBeVisible();
+    await expect(toast(page, /\badded to the .* backlog/i)).toBeVisible();
     await expect(page.getByText(summary).first()).toBeVisible();
   });
 });
@@ -669,9 +711,9 @@ journey("Issues — bulk-select two issues and set status Done, then Undo", asyn
   await step("Status → Done", async () => {
     await button(page, /^Status/).click();
     await page.getByRole("menuitem", { name: "Done" }).click();
-    const t = toast(page, /Status → Done for 2 issues/);
+    const t = toast(page, /Status → Done — 2 of 2 selected/);
     await expect(t).toBeVisible();
-    note((await t.innerText()).trim());
+    note(await toastMessage(t));
   });
   await step("Undo from the toast", async () => {
     const undo = toast(page, /Status → Done/).getByRole("button");
@@ -702,9 +744,8 @@ journey("Projects register — register a project, add people, figures, payment,
     await button(page, /^Add person/).click();
     const dlg = dialog(page, "Add to the project team");
     await expect(dlg).toBeVisible();
-    const person = field(dlg, "Person");
-    const opt = await person.locator("option", { hasText: "Dimas Saputra" }).first().getAttribute("value").catch(() => null);
-    await person.selectOption(opt ? opt : { index: 1 });
+    const picked = await pickOption(page, dlg.getByLabel("Person", { exact: true }).first(), "Dimas Saputra");
+    note(`picked ${picked}`);
     await dlg.getByRole("button", { name: /^Engineer/ }).click(); // de-select default Engineer
     await dlg.getByRole("button", { name: /^Project Lead/ }).click();
     await button(dlg, /Add to register|Circulate amendment/).click();
@@ -791,18 +832,19 @@ journey("Initiatives — propose a team amendment and record a vote", async ({ p
     const dlg = dialog(page, "Propose an amendment");
     await expect(dlg).toBeVisible();
     await dlg.getByRole("radio", { name: "Add a member" }).click();
-    const who = field(dlg, "Joining member");
-    if (!(await who.inputValue())) await who.selectOption({ index: 1 });
-    const consent = dlg.getByRole("checkbox").first();
-    if (await consent.count()) await consent.check();
+    const picked = await pickOption(page, dlg.getByRole("button", { name: "Joining member", exact: true }), /^(?!.*Not eligible).*Eligible/s);
+    note(`joining: ${picked}`);
+    await dlg.getByRole("checkbox", { name: /consents to the role/ }).check();
+    await dlg.getByRole("checkbox", { name: /line manager agreed the time/ }).check();
     await field(dlg, "Reason").fill("QA: second reviewer for the data pipeline");
+    await expect(button(dlg, /Circulate to the team/)).toBeEnabled();
   });
   await step("circulate to the team", async () => {
     const dlg = dialog(page, "Propose an amendment");
     await button(dlg, /Circulate to the team/).click();
     const t = toast(page, /Amendment (circulated|passed)/);
     await expect(t).toBeVisible();
-    note((await t.innerText()).trim());
+    note(await toastMessage(t));
   });
   await step("record a For vote on the open amendment", async () => {
     let forBtn = page.getByRole("button", { name: "For", exact: true }).first();
@@ -815,14 +857,23 @@ journey("Initiatives — propose a team amendment and record a vote", async ({ p
   });
 });
 
-journey("Compensation — change monthly-cycle inputs and save provisional bonuses", async ({ page, step, note }) => {
-  await step("open /compensation", () => open(page, "/compensation"));
+journey("Compensation — change monthly-cycle inputs and save provisional bonuses", async ({ page, step, note, context }) => {
+  let before = 0;
+  await step("as the CEO (no certify role) the finance inputs are read-only", async () => {
+    await open(page, "/compensation");
+    await expect(field(page, "Operating overheads (3 months)")).toBeDisabled();
+  });
+  await step("open /compensation acting as Maria Gunadi (CFO / Finance)", async () => {
+    await actAs(context, "u-maria");
+    await open(page, "/compensation");
+  });
   await step("edit operating overheads", async () => {
     const input = field(page, "Operating overheads (3 months)");
     await expect(input).toBeEditable();
-    const before = Number(await input.inputValue());
+    before = await amountOf(input);
     note(`overheads before: ${before}`);
     await input.fill(String(before + 50_000_000));
+    await expect.poll(() => amountOf(input)).toBe(before + 50_000_000);
   });
   await step("Save provisional", async () => {
     await button(page, /^Save provisional|^Reopen as provisional/).click();
@@ -830,9 +881,9 @@ journey("Compensation — change monthly-cycle inputs and save provisional bonus
   });
   await step("value persists after reload", async () => {
     await open(page, "/compensation");
-    const v = Number(await field(page, "Operating overheads (3 months)").inputValue());
+    const v = await amountOf(field(page, "Operating overheads (3 months)"));
     note(`overheads after reload: ${v}`);
-    expect(v % 50_000_000 === 0 || v > 0).toBe(true);
+    expect(v).toBe(before + 50_000_000);
   });
 });
 
@@ -867,9 +918,11 @@ journey("People — Add person dialog creates an HR record", async ({ page, step
     await field(dlg, "Job title").fill("Embedded Engineer");
     await field(dlg, "Hire date").fill("2026-10-01");
     await button(dlg, /^Add person/).click();
-    const t = toast(page, /added — HR to confirm eligibility/);
-    await expect(t).toBeVisible();
-    expect(await toastIsExposed(t), "toast role=status is inside an aria-hidden subtree while the HR sheet is open — screen readers never hear it").toBe(true);
+    await expect(toast(page, new RegExp(`${esc(n2)} added — HR to confirm eligibility`))).toBeVisible();
+    const region = announced(page, new RegExp(`${esc(n2)} added — HR to confirm eligibility`));
+    await expect(region).toBeAttached();
+    expect(await region.getAttribute("role")).toMatch(/^(status|alert)$/);
+    expect(await toastIsExposed(region), "the toast's live region is inside an aria-hidden subtree while the HR sheet is open — screen readers never hear it").toBe(true);
   });
 });
 
@@ -883,10 +936,17 @@ journey("My compensation — sign the Project Participation Agreement (Annex B)"
     await page.getByRole("button", { name: /Sign (the v4\.0 agreement|Project Participation Agreement)/ }).first().click();
     await expect(page.getByRole("dialog").last()).toBeVisible();
   });
-  await step("tick the acknowledgement and sign", async () => {
+  await step("tick the acknowledgement, type the full name and sign", async () => {
     const dlg = page.getByRole("dialog").last();
+    await dlg.getByRole("radio", { name: "English" }).click();
     await dlg.getByRole("checkbox").first().check();
-    await button(dlg, /^Sign as/).click();
+    const sign = button(dlg, /^Sign electronically/);
+    await expect(sign, "signing needs the typed name too").toBeDisabled();
+    const typed = dlg.getByLabel(/Type your full name/);
+    await typed.fill("Lia Anggrain");
+    await expect(sign, "a typed name that does not match the HR record must not sign").toBeDisabled();
+    await typed.fill("Lia Anggraini");
+    await sign.click();
     await expect(toast(page, /Project Participation Agreement signed/)).toBeVisible();
     await expect(page.getByRole("button", { name: /View agreement/ }).first()).toBeVisible();
   });
@@ -920,6 +980,9 @@ journey("Policy — search highlights matches and anchors jump to sections", asy
     await expect(page.locator(`[id="${target}"]`)).toBeInViewport();
   });
   await step("changing the hash while a search filter hides the target still jumps (clears the search)", async () => {
+    // the previous step left the hash at #s-9-1 (or the jump target); park it elsewhere without an event, so the
+    // assignment below is a real change — assigning the same fragment fires no hashchange at all
+    await page.evaluate(() => history.replaceState(history.state, "", "#s-1-1"));
     await page.getByLabel("Search the policy").fill("clawback");
     await expect(page.locator('[id="s-9-1"]')).toHaveCount(0);
     await page.evaluate(() => (window.location.hash = "#s-9-1"));

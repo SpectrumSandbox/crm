@@ -77,8 +77,22 @@ const csvCell = (v: unknown) => {
   return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
+/**
+ * Can the server answer the admin endpoints? `ready` once /api/me has been asked; `blocked` says why not when the
+ * server locked this browser out (no Cloudflare Access sign-in) or there is no server at all — asking anyway only
+ * earns a 401 / network error, so the sections show the reason instead.
+ */
+function useServerTrail(): { ready: boolean; blocked: string | null } {
+  const identity = useCrm((s) => s.identity);
+  if (!identity.resolved) return { ready: false, blocked: null };
+  if (identity.mode === "locked") return { ready: true, blocked: identity.lockHint || "The server requires a Cloudflare Access sign-in before it serves the shared workspace." };
+  if (identity.mode === "offline") return { ready: true, blocked: "No shared server is reachable here — the trail lives on the server." };
+  return { ready: true, blocked: null };
+}
+
 export function AuditSection() {
   const admin = useWorkspaceAdmin();
+  const server = useServerTrail();
   const users = useCrm((s) => s.users);
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [next, setNext] = useState<number | null>(null);
@@ -118,8 +132,8 @@ export function AuditSection() {
   );
 
   useEffect(() => {
-    if (admin) void load();
-  }, [admin, load]);
+    if (admin && server.ready && !server.blocked) void load();
+  }, [admin, server.ready, server.blocked, load]);
 
   const exportCsv = () => {
     const head = ["id", "at", "actor", "source", "user_id", "scope", "action", "reason", "base_version", "version", "bytes", "changed", "protected", "note"];
@@ -148,7 +162,7 @@ export function AuditSection() {
           <Button size="sm" variant="ghost" onClick={exportCsv} disabled={!entries.length}>
             <FileDown /> CSV
           </Button>
-          <Button size="sm" variant="subtle" onClick={() => void load()} disabled={loading}>
+          <Button size="sm" variant="subtle" onClick={() => void load()} disabled={loading || !server.ready || !!server.blocked}>
             <RefreshCw className={loading ? "animate-spin" : undefined} /> Refresh
           </Button>
         </>
@@ -158,6 +172,7 @@ export function AuditSection() {
         className="flex flex-wrap items-end gap-2"
         onSubmit={(e: React.FormEvent) => {
           e.preventDefault();
+          if (!server.ready || server.blocked) return;
           if (actor.trim() === query) void load();
           else setQuery(actor.trim());
         }}
@@ -181,7 +196,7 @@ export function AuditSection() {
         </Button>
       </form>
 
-      {error && <Callout tone="warn">{error}</Callout>}
+      {server.blocked ? <Callout tone="info">Audit trail unavailable — {server.blocked}</Callout> : error && <Callout tone="warn">{error}</Callout>}
 
       <div className="overflow-x-auto rounded-lg border border-sg-line">
         <table className="w-full min-w-[640px] text-xs">
@@ -245,7 +260,7 @@ export function AuditSection() {
             {!entries.length && !loading && (
               <tr>
                 <td colSpan={5} className="px-3 py-6 text-center text-sg-dim">
-                  {error ? "No audit entries loaded." : "No writes recorded yet."}
+                  {error || server.blocked ? "No audit entries loaded." : "No writes recorded yet."}
                 </td>
               </tr>
             )}
@@ -273,6 +288,7 @@ interface VersionRow {
 
 export function HistorySection() {
   const admin = useWorkspaceAdmin();
+  const server = useServerTrail();
   const users = useCrm((s) => s.users);
   const notify = useUi((s) => s.notify);
   const [rows, setRows] = useState<VersionRow[]>([]);
@@ -301,8 +317,8 @@ export function HistorySection() {
   }, []);
 
   useEffect(() => {
-    if (admin) void load();
-  }, [admin, load]);
+    if (admin && server.ready && !server.blocked) void load();
+  }, [admin, server.ready, server.blocked, load]);
 
   const byDay = useMemo(() => {
     const days = new Map<string, number>();
@@ -343,12 +359,12 @@ export function HistorySection() {
       icon={History}
       subtitle="Last 20 versions + one per day for 30 days"
       actions={
-        <Button size="sm" variant="subtle" onClick={() => void load()} disabled={loading}>
+        <Button size="sm" variant="subtle" onClick={() => void load()} disabled={loading || !server.ready || !!server.blocked}>
           <RefreshCw className={loading ? "animate-spin" : undefined} /> Refresh
         </Button>
       }
     >
-      {error && <Callout tone="warn">{error}</Callout>}
+      {server.blocked ? <Callout tone="info">Version history unavailable — {server.blocked}</Callout> : error && <Callout tone="warn">{error}</Callout>}
       {current && (
         <p className="text-xs text-sg-muted">
           Current: <Chip color="green">v{current.version}</Chip> saved {relativeTime(current.savedAt)} by {describeActor(current.savedBy, users)} · {rows.length} earlier version

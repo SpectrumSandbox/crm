@@ -74,26 +74,52 @@ export function dismissToast(id: number) {
 
 /* ───────────── screen-reader announcements ───────────── */
 
-function announce(text: string, assertive: boolean) {
-  if (typeof document === "undefined") return;
-  const open = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]'));
+const OPEN_DIALOG = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
+
+/** The live region to speak through: inside the topmost open dialog (Radix hides everything else from AT), else on <body>. */
+function announcer(assertive: boolean): HTMLElement {
+  const open = Array.from(document.querySelectorAll<HTMLElement>(OPEN_DIALOG));
   const host = open[open.length - 1] ?? document.body;
-  let region = Array.from(host.children).find((c) => c instanceof HTMLElement && c.dataset.toastAnnouncer === (assertive ? "assertive" : "polite")) as HTMLElement | undefined;
+  const kind = assertive ? "assertive" : "polite";
+  let region = Array.from(host.children).find((c) => c instanceof HTMLElement && c.dataset.toastAnnouncer === kind) as HTMLElement | undefined;
   if (!region) {
     region = document.createElement("div");
-    region.dataset.toastAnnouncer = assertive ? "assertive" : "polite";
+    region.dataset.toastAnnouncer = kind;
     region.setAttribute("role", assertive ? "alert" : "status");
     region.setAttribute("aria-live", assertive ? "assertive" : "polite");
     region.setAttribute("aria-atomic", "true");
     region.className = "sr-only";
     host.appendChild(region);
   }
-  const el = region;
-  // a region that has just been created needs a beat before its content counts as a change
-  el.textContent = "";
-  window.setTimeout(() => {
-    el.textContent = text;
-  }, 80);
+  return region;
+}
+
+const hiddenFromAT = (el: Element) => !!el.closest('[aria-hidden="true"], [inert]');
+let latest = 0;
+
+function announce(text: string, assertive: boolean) {
+  if (typeof document === "undefined") return;
+  const id = ++latest;
+  let tries = 0;
+  const attempt = () => {
+    if (id !== latest) return; // a newer toast speaks instead
+    const region = announcer(assertive);
+    // a dialog that is still animating closed keeps the rest of the page aria-hidden for a moment — wait it out
+    if (hiddenFromAT(region) && tries++ < 15) {
+      window.setTimeout(attempt, 100);
+      return;
+    }
+    // a region that has just been created needs a beat before its content counts as a change
+    region.textContent = "";
+    window.setTimeout(() => {
+      if (id !== latest) return;
+      (region.isConnected && !hiddenFromAT(region) ? region : announcer(assertive)).textContent = text;
+    }, 80);
+  };
+  // Pick the region when speaking, not now: the action that raised the toast usually closes the dialog it came from
+  // (and may open another, e.g. the new record's sheet) in the same handler. A region placed in the closing dialog is
+  // removed with it before anything is read out.
+  window.setTimeout(attempt, 50);
 }
 
 /* ───────────── viewport ───────────── */
