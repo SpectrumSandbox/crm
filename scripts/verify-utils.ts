@@ -3,10 +3,10 @@
  * (src/lib/smart-lists.ts) against the seed data, and the command-palette ranking (src/lib/search.ts).
  *   npm run test:utils
  */
-import { formatIDR, fromDateInput, initials, relativeTime, titleCase, toDateInput } from "../src/lib/utils";
+import { countLabel, daysFromNow, dueLabel, endOfDayWib, formatIDR, formatNumber, fromDateInput, fromDateInputOrNull, fromDateTimeInput, groupIDR, initials, isDateInput, parseIDR, plural, relativeTime, startOfDayWib, titleCase, toDateInput, toDateTimeInput, todayInput, wibDayKey } from "../src/lib/utils";
 import { SMART_LISTS, type ContactContext } from "../src/lib/smart-lists";
 import { contacts, SEED_NOW } from "../src/lib/seed";
-import { tokenFilter } from "../src/lib/search";
+import { normalizePhone, phoneKeywords, tokenFilter } from "../src/lib/search";
 import type { Contact } from "../src/lib/types";
 
 let failures = 0;
@@ -24,16 +24,72 @@ function same<T>(label: string, actual: T, expected: T) {
 
 const DAY = 86_400_000;
 
-/* ── formatIDR ── */
-same("formatIDR compact billions", formatIDR(8_400_000_000), "Rp 8.4B");
-same("formatIDR compact millions", formatIDR(125_000_000), "Rp 125M");
-same("formatIDR compact thousands", formatIDR(1_500), "Rp 1.5K");
+/* ── formatIDR (Indonesian convention: "." groups thousands, "," is the decimal; rb / jt / M = miliar / T) ── */
+same("formatIDR compact miliar", formatIDR(8_400_000_000), "Rp 8,4 M");
+same("formatIDR compact juta", formatIDR(570_000_000), "Rp 570 jt");
+same("formatIDR compact juta decimal", formatIDR(9_500_000), "Rp 9,5 jt");
+same("formatIDR compact triliun", formatIDR(70_100_000_000_000), "Rp 70,1 T");
+same("formatIDR compact ribu", formatIDR(1_500), "Rp 1,5 rb");
 same("formatIDR compact small", formatIDR(950), "Rp 950");
 same("formatIDR compact zero", formatIDR(0), "Rp 0");
+same("formatIDR compact promotes 999,95 jt to 1 M", formatIDR(999_950_000), "Rp 1 M");
+same("formatIDR compact negative", formatIDR(-125_000_000), "-Rp 125 jt");
+same("formatIDR negative zero is Rp 0 (compact)", formatIDR(-0), "Rp 0");
+same("formatIDR negative zero is Rp 0 (full)", formatIDR(-0, "full"), "Rp 0");
+same("formatIDR tiny negative rounds to Rp 0", formatIDR(-0.3, "full"), "Rp 0");
 same("formatIDR full uses id-ID grouping", formatIDR(8_400_000_000, "full"), "Rp 8.400.000.000");
 same("formatIDR full rounds", formatIDR(1_234_567.6, "full"), "Rp 1.234.568");
+same("formatIDR full negative", formatIDR(-1_500_000, "full"), "-Rp 1.500.000");
 same("formatIDR NaN", formatIDR(Number.NaN), "—");
 same("formatIDR Infinity", formatIDR(Number.POSITIVE_INFINITY, "full"), "—");
+same("formatNumber id-ID grouping", formatNumber(3_200), "3.200");
+same("formatNumber decimals", formatNumber(1_234.56, 1), "1.234,6");
+same("formatNumber negative zero", formatNumber(-0), "0");
+same("groupIDR", groupIDR(7_200_000_000), "7.200.000.000");
+
+/* ── parseIDR ── */
+const parses: [string, number | null][] = [
+  ["7.200.000.000", 7_200_000_000],
+  ["7200000000", 7_200_000_000],
+  ["Rp 7.200.000.000", 7_200_000_000],
+  ["Rp7.200.000.000", 7_200_000_000],
+  ["7,2 M", 7_200_000_000],
+  ["7,2M", 7_200_000_000],
+  ["1,5 miliar", 1_500_000_000],
+  ["720 jt", 720_000_000],
+  ["720jt", 720_000_000],
+  ["720 juta", 720_000_000],
+  ["1.500 jt", 1_500_000_000],
+  ["7.2B", 7_200_000_000],
+  ["7.2 bn", 7_200_000_000],
+  ["9.5 mn", 9_500_000],
+  ["15 rb", 15_000],
+  ["70,1 T", 70_100_000_000_000],
+  ["7,200,000", 7_200_000],
+  ["7,200", 7_200],
+  ["1.234,5", 1_235],
+  ["-1.500.000", -1_500_000],
+  ["Rp -2 jt", -2_000_000],
+  ["0", 0],
+  ["", null],
+  ["   ", null],
+  ["Rp", null],
+  ["abc", null],
+  ["12xyz", null],
+  ["1.2.3", null],
+];
+for (const [text, want] of parses) same(`parseIDR ${JSON.stringify(text)}`, parseIDR(text), want);
+same("parseIDR number passthrough", parseIDR(42), 42);
+same("parseIDR null", parseIDR(null), null);
+for (const n of [0, 950, 1_500, 125_000_000, 7_200_000_000]) same(`parseIDR(formatIDR full) round-trip ${n}`, parseIDR(formatIDR(n, "full")), n);
+
+/* ── plural / countLabel ── */
+same("plural one", plural(1, "deal"), "deal");
+same("plural many", plural(3, "deal"), "deals");
+same("plural zero", plural(0, "task"), "tasks");
+same("plural irregular", plural(2, "person", "people"), "people");
+same("countLabel", countLabel(1_204, "contact"), "1.204 contacts");
+same("countLabel one", countLabel(1, "overdue task"), "1 overdue task");
 
 /* ── relativeTime ── */
 const now = Date.UTC(2026, 10, 4, 2, 0, 0);
@@ -59,6 +115,44 @@ for (const d of ["2026-01-01", "2026-02-28", "2026-12-31", "2027-06-15", "2028-0
   // any instant → date → back lands on 17:00 WIB of the same WIB calendar day
   const instant = "2026-11-04T20:15:00.000Z"; // 03:15 WIB on 5 Nov
   same("round-trip from instant keeps the WIB day", fromDateInput(toDateInput(instant)), "2026-11-05T10:00:00.000Z");
+}
+
+/* ── safe date inputs (never throw) ── */
+same("fromDateInput empty does not throw", fromDateInput(""), "");
+same("fromDateInput impossible date", fromDateInput("2026-02-30"), "");
+same("fromDateInput partial value", fromDateInput("2026-11"), "");
+same("fromDateInputOrNull empty", fromDateInputOrNull(""), null);
+same("fromDateInputOrNull valid", fromDateInputOrNull("2026-11-04"), "2026-11-04T10:00:00.000Z");
+ok("isDateInput accepts leap day", isDateInput("2028-02-29"));
+ok("isDateInput rejects non-leap 29 Feb", !isDateInput("2027-02-29"));
+ok("isDateInput rejects empty", !isDateInput(""));
+same("toDateInput garbage", toDateInput("not a date"), "");
+same("startOfDayWib", startOfDayWib("2026-11-05"), "2026-11-04T17:00:00.000Z");
+same("endOfDayWib", endOfDayWib("2026-11-05"), "2026-11-05T16:59:59.999Z");
+same("endOfDayWib invalid", endOfDayWib(""), "");
+same("todayInput at 01:00 WIB is the WIB day, not the UTC day", todayInput(Date.UTC(2026, 10, 4, 18, 0)), "2026-11-05");
+same("wibDayKey", wibDayKey("2026-11-04T17:00:00.000Z"), "2026-11-05");
+same("wibDayKey empty", wibDayKey(""), "");
+same("toDateTimeInput is WIB wall time", toDateTimeInput("2026-11-05T02:30:00.000Z"), "2026-11-05T09:30");
+same("fromDateTimeInput reads WIB", fromDateTimeInput("2026-11-05T09:30"), "2026-11-05T02:30:00.000Z");
+same("fromDateTimeInput empty", fromDateTimeInput(""), "");
+same("fromDateTimeInput bad hour", fromDateTimeInput("2026-11-05T25:10"), "");
+same("datetime round-trip", fromDateTimeInput(toDateTimeInput("2026-12-31T20:45:00.000Z")), "2026-12-31T20:45:00.000Z");
+
+/* ── WIB calendar days ── */
+{
+  // 5 Nov 00:02 WIB → 13 Nov 17:00 WIB is 8 calendar days (rounded 24 h spans said 9)
+  const at = Date.parse("2026-11-04T17:02:00.000Z");
+  same("daysFromNow counts WIB calendar days", daysFromNow("2026-11-13T10:00:00.000Z", at), 8);
+  // due yesterday 17:00 WIB, viewed at 04:00 WIB → -1 (rounded spans gave -0)
+  same("daysFromNow yesterday evening seen early morning", daysFromNow("2026-11-04T10:00:00.000Z", Date.parse("2026-11-04T21:00:00.000Z")), -1);
+  same("daysFromNow same WIB day", daysFromNow("2026-11-05T16:00:00.000Z", Date.parse("2026-11-04T17:30:00.000Z")), 0);
+  ok("daysFromNow invalid is NaN", Number.isNaN(daysFromNow("", at)));
+  same("dueLabel today", dueLabel("2026-11-05T10:00:00.000Z", at), "today");
+  same("dueLabel tomorrow", dueLabel("2026-11-06T10:00:00.000Z", at), "tomorrow");
+  same("dueLabel future", dueLabel("2026-11-13T10:00:00.000Z", at), "in 8 days");
+  same("dueLabel late", dueLabel("2026-11-02T10:00:00.000Z", at), "3 days late");
+  same("dueLabel none", dueLabel(null, at), "no date");
 }
 
 /* ── initials / titleCase ── */
@@ -123,6 +217,15 @@ same("tokenFilter searches keywords", tokenFilter("company c-bap Bina Aero", "ae
 same("tokenFilter every token must match (mixed)", tokenFilter("issue UAV-102 Telemetry dropouts", "uav tele"), 1);
 same("tokenFilter averages token scores", tokenFilter("issue UAV-102 Telemetry dropouts", "102 lemetry"), 0.75);
 ok("tokenFilter prefix beats mid-word", tokenFilter("nav Contacts", "con") > tokenFilter("nav Deals pipeline", "eal"));
+
+/* ── phone search keys ── */
+same("normalizePhone local 08", normalizePhone("0812 8919 8729"), "+6281289198729");
+same("normalizePhone +62 with dashes", normalizePhone("+62-812-8919-8729"), "+6281289198729");
+same("normalizePhone 62 prefix", normalizePhone("6281289198729"), "+6281289198729");
+same("normalizePhone landline", normalizePhone("(021) 555-0101"), "+62215550101");
+same("normalizePhone empty", normalizePhone(""), "");
+ok("phoneKeywords match the local form", phoneKeywords("+62 812-8919-8729").includes("081289198729"));
+ok("tokenFilter finds a contact by a typed local number", tokenFilter("contact k-1 Rina Kartika", "081289198729", phoneKeywords("+62 812-8919-8729")) > 0);
 
 console.log(`verify-utils: ${passes} passed, ${failures} failed`);
 if (failures) process.exit(1);

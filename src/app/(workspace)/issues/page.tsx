@@ -1,13 +1,13 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowDown, ArrowUp, ChevronDown, ClipboardList, Link2, Plus, Trash2, X } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
 import { ISSUE_PRIORITIES, ISSUE_STATUSES, type Issue } from "@/lib/types";
 import { issueStatusMeta, issueTypeMeta, priorityMeta } from "@/lib/meta";
-import { cn, relativeTime, softChip, softText, spectrumDot } from "@/lib/utils";
+import { cn, formatDate, relativeTime, softChip, softText, spectrumDot } from "@/lib/utils";
 import { PageHeader } from "@/components/shell/page-header";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
@@ -16,8 +16,10 @@ import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } fr
 import { JqlBar, useJql, useUrlQuery } from "@/components/agile/jql-bar";
 import { useProjectParam } from "@/components/agile/project-param";
 import { createIssueKey, useAgileHotkeys } from "@/components/agile/use-agile-hotkeys";
+import { BlockedBadge, DueChip, useIssueQuickKeys, useOpenBlockers } from "@/components/agile/agile-ui";
+import { ProjectPicker } from "@/components/agile/create-project-dialog";
 
-type SortKey = "key" | "type" | "summary" | "status" | "priority" | "assignee" | "sprint" | "epic" | "points" | "links" | "updated";
+type SortKey = "key" | "type" | "summary" | "status" | "priority" | "assignee" | "sprint" | "epic" | "points" | "due" | "links" | "updated";
 
 const COLS: { key: SortKey; label: string; className: string; numeric?: boolean }[] = [
   { key: "key", label: "Key", className: "w-[88px]" },
@@ -29,6 +31,7 @@ const COLS: { key: SortKey; label: string; className: string; numeric?: boolean 
   { key: "sprint", label: "Sprint", className: "w-[120px]" },
   { key: "epic", label: "Epic", className: "w-[150px]" },
   { key: "points", label: "Pts", className: "w-[52px]", numeric: true },
+  { key: "due", label: "Due", className: "w-[92px]" },
   { key: "links", label: "CRM", className: "w-[52px]", numeric: true },
   { key: "updated", label: "Updated", className: "w-[86px]" },
 ];
@@ -41,14 +44,21 @@ export default function IssuesPage() {
   const users = useCrm((s) => s.users);
   const crossLinks = useCrm((s) => s.crossLinks);
   const updateIssueTracked = useCrm((s) => s.updateIssueTracked);
+  const captureIssues = useCrm((s) => s.captureIssues);
+  const restoreIssueFields = useCrm((s) => s.restoreIssueFields);
   const deleteIssues = useCrm((s) => s.deleteIssues);
   const restoreIssues = useCrm((s) => s.restoreIssues);
   const openIssue = useUi((s) => s.openIssue);
   const openDialog = useUi((s) => s.openDialog);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
+  const blockersOf = useOpenBlockers();
+  const quickKeys = useIssueQuickKeys();
 
   const [projectId, setProjectId] = useProjectParam("all");
+  /** keyboard cursor row (j/k) */
+  const [cursor, setCursor] = useState(0);
+  const bodyRef = useRef<HTMLTableSectionElement>(null);
   const [q, setQ] = useUrlQuery();
   const jql = useJql(q);
   const [hideSubtasks, setHideSubtasks] = useState(false);
@@ -90,18 +100,40 @@ export default function IssuesPage() {
           return i.epicId ? (epicById.get(i.epicId)?.key ?? "") : "~";
         case "points":
           return i.storyPoints ?? -1;
+        case "due":
+          return i.dueDate ?? (sort.dir === 1 ? "~" : "");
         case "links":
           return linkCount.get(i.id) ?? 0;
         case "updated":
           return i.updatedAt;
       }
     };
-    return projectIssues
-      .filter((i) => (!hideSubtasks || i.type !== "subtask") && (!jql.active || jql.match(i)))
+    const filtered = projectIssues.filter((i) => (!hideSubtasks || i.type !== "subtask") && (!jql.active || jql.match(i)));
+    // ORDER BY in the query wins over the column headers
+    if (jql.order) return filtered.slice().sort((a, b) => jql.order!(a, b) || a.key.localeCompare(b.key));
+    return filtered
       .map((i) => ({ i, v: val(i) }))
       .sort((a, b) => (a.v < b.v ? -1 : a.v > b.v ? 1 : 0) * sort.dir || a.i.key.localeCompare(b.i.key))
       .map((x) => x.i);
   }, [projectIssues, hideSubtasks, jql, sort, projectById, userMap, sprintById, epicById, linkCount]);
+
+  // keep the cursor on a real row; drop selected rows that left the result set
+  useEffect(() => {
+    if (cursor >= rows.length) setCursor(Math.max(0, rows.length - 1));
+  }, [rows.length, cursor]);
+  const rowKey = rows.map((r) => r.id).join(",");
+  useEffect(() => {
+    setSelected((cur) => {
+      if (!cur.size) return cur;
+      const ids = new Set(rowKey.split(","));
+      const kept = new Set([...cur].filter((id) => ids.has(id)));
+      return kept.size === cur.size ? cur : kept;
+    });
+  }, [rowKey]);
+  const focusRow = (idx: number) => {
+    setCursor(idx);
+    requestAnimationFrame(() => bodyRef.current?.querySelector<HTMLElement>(`[data-row="${idx}"]`)?.focus({ preventScroll: false }));
+  };
 
   const chosen = rows.filter((r) => selected.has(r.id));
   const allOn = rows.length > 0 && chosen.length === rows.length;
@@ -113,6 +145,30 @@ export default function IssuesPage() {
       setSelected(new Set());
       return true;
     }
+    if (!rows.length) return false;
+    const k = e.key;
+    const onRow = !!(document.activeElement as HTMLElement | null)?.hasAttribute?.("data-row");
+    if (k === "j" || k === "ArrowDown") {
+      focusRow(onRow ? Math.min(rows.length - 1, cursor + 1) : cursor);
+      return true;
+    }
+    if (k === "k" || k === "ArrowUp") {
+      focusRow(onRow ? Math.max(0, cursor - 1) : cursor);
+      return true;
+    }
+    const current = rows[cursor];
+    if (!current) return false;
+    if (k === "x" || k === "X") {
+      toggleRow(cursor, e.shiftKey);
+      return true;
+    }
+    if (k === "Enter") {
+      const t = e.target as HTMLElement | null;
+      if (t && t !== document.body && !t.hasAttribute("data-row")) return false;
+      openIssue(current.id);
+      return true;
+    }
+    if (!e.shiftKey && (k === "i" || k === "p" || k === "e")) return quickKeys(current, k);
     return false;
   });
 
@@ -129,20 +185,21 @@ export default function IssuesPage() {
     setSelected(next);
   };
 
-  /** apply a patch to many issues, with Undo restoring each issue's previous values */
+  /** apply a patch to many issues, with Undo restoring every touched issue (incl. sub-tasks that moved along) */
   const bulkSet = <K extends keyof Issue>(field: K, value: Issue[K], label: string, only?: (i: Issue) => boolean) => {
-    const targets = chosen.filter((i) => (only ? only(i) : true) && i[field] !== value);
-    const skipped = only ? chosen.filter((i) => !only(i)).length : 0;
+    const eligible = chosen.filter((i) => (only ? only(i) : true));
+    const targets = eligible.filter((i) => i[field] !== value);
+    const skipped = chosen.length - eligible.length;
+    const already = eligible.length - targets.length;
+    const n = (x: number) => `${x} issue${x === 1 ? "" : "s"}`;
     if (!targets.length) {
-      notify(skipped ? `No change — ${skipped} selected issue${skipped === 1 ? "" : "s"} belong to another project` : "Nothing to change");
+      notify(already ? `No change — ${already === chosen.length ? `all ${n(already)} were` : `${n(already)} ${already === 1 ? "was" : "were"}`} already set${skipped ? ` · ${skipped} skipped (other project)` : ""}` : `No change — ${n(skipped)} belong to another project`);
       return;
     }
-    const prev = targets.map((i) => ({ id: i.id, value: i[field] }));
+    const snap = captureIssues(targets.map((i) => i.id));
     targets.forEach((i) => updateIssueTracked(i.id, { [field]: value } as Partial<Issue>));
-    notify(`${label} for ${targets.length} issue${targets.length === 1 ? "" : "s"}${skipped ? ` · ${skipped} skipped (other project)` : ""}`, {
-      label: "Undo",
-      run: () => prev.forEach((p) => updateIssueTracked(p.id, { [field]: p.value } as Partial<Issue>)),
-    });
+    const extras = [already ? `${already} already set` : "", skipped ? `${skipped} skipped (other project)` : ""].filter(Boolean).join(" · ");
+    notify(`${label} — ${targets.length} of ${n(chosen.length)} selected${extras ? ` · ${extras}` : ""}`, { label: "Undo", run: () => restoreIssueFields(snap) });
   };
 
   const bulkDelete = () => {
@@ -155,19 +212,13 @@ export default function IssuesPage() {
 
   const chosenProjects = new Set(chosen.map((i) => i.projectId));
   const sprintOptions = sprints.filter((s) => s.state !== "closed" && chosenProjects.has(s.projectId)).sort((a, b) => a.projectId.localeCompare(b.projectId) || (a.state === b.state ? a.startDate.localeCompare(b.startDate) : a.state === "active" ? -1 : 1));
+  const epicOptions = epics.filter((e) => chosenProjects.has(e.projectId));
   const projectEmpty = projectId !== "all" && projectIssues.length === 0;
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Issues" meta={<span className="text-sm text-sg-dim">{project ? project.name : "All projects"}</span>}>
-        <Select value={projectId} onChange={(e) => setProjectId(e.target.value)} wrapperClassName="w-48" aria-label="Project">
-          <option value="all">All projects</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.key} · {p.name}
-            </option>
-          ))}
-        </Select>
+        <ProjectPicker allowAll value={projectId} onChange={setProjectId} />
         <Button variant="primary" onClick={() => openDialog({ kind: "createIssue", projectId: projectId === "all" ? undefined : projectId })}>
           <Plus /> Create issue <Kbd className="ml-1 border-sg-bg/30 bg-transparent text-sg-bg/70">C</Kbd>
         </Button>
@@ -179,7 +230,17 @@ export default function IssuesPage() {
           <input type="checkbox" checked={hideSubtasks} onChange={(e) => setHideSubtasks(e.target.checked)} className="size-3.5 accent-white" />
           Hide sub-tasks
         </label>
-        <span className="ml-auto flex h-8 items-center text-sg-dim">
+        <span className="ml-auto flex h-8 items-center gap-3 text-sg-dim">
+          <span className="hidden items-center gap-1 md:flex" title="j/k move · x select · Enter open · i assign to me · p priority · e estimate">
+            <Kbd>j</Kbd>
+            <Kbd>k</Kbd>
+            <Kbd>x</Kbd>
+            <Kbd>↵</Kbd>
+            <Kbd>i</Kbd>
+            <Kbd>p</Kbd>
+            <Kbd>e</Kbd>
+          </span>
+          {jql.order && <span className="text-soft-cyan">sorted by ORDER BY</span>}
           {rows.length} of {projectIssues.length} issues
         </span>
       </div>
@@ -205,13 +266,23 @@ export default function IssuesPage() {
             ))}
           </BulkMenu>
           <BulkMenu label="Sprint">
-            <MenuItem onSelect={() => bulkSet("sprintId", null, "Moved to backlog")}>Backlog (no sprint)</MenuItem>
+            <MenuItem onSelect={() => bulkSet("sprintId", null, "Moved to backlog", (i) => i.type !== "subtask")}>Backlog (no sprint)</MenuItem>
             {sprintOptions.length > 0 && <MenuSeparator />}
             {sprintOptions.length > 0 && chosenProjects.size > 1 && <MenuLabel>Applies to that sprint's project only</MenuLabel>}
             {sprintOptions.map((s) => (
-              <MenuItem key={s.id} onSelect={() => bulkSet("sprintId", s.id, `Moved to ${s.name}`, (i) => i.projectId === s.projectId)}>
+              <MenuItem key={s.id} onSelect={() => bulkSet("sprintId", s.id, `Moved to ${s.name}`, (i) => i.projectId === s.projectId && i.type !== "subtask")}>
                 {s.name}
                 <span className="ml-auto text-2xs text-sg-dim">{s.state === "active" ? "active" : "future"}</span>
+              </MenuItem>
+            ))}
+          </BulkMenu>
+          <BulkMenu label="Epic">
+            <MenuItem onSelect={() => bulkSet("epicId", null, "Epic removed", (i) => i.type !== "subtask")}>No epic</MenuItem>
+            {epicOptions.length > 0 && <MenuSeparator />}
+            {epicOptions.length > 0 && chosenProjects.size > 1 && <MenuLabel>Applies to that epic's project only</MenuLabel>}
+            {epicOptions.map((ep) => (
+              <MenuItem key={ep.id} onSelect={() => bulkSet("epicId", ep.id, `Epic → ${ep.key}`, (i) => i.projectId === ep.projectId && i.type !== "subtask")}>
+                <span className={cn("size-2 rounded-sm", spectrumDot[ep.color])} /> {ep.key} · {ep.name}
               </MenuItem>
             ))}
           </BulkMenu>
@@ -279,17 +350,19 @@ export default function IssuesPage() {
                       <button
                         type="button"
                         onClick={() => setSort((s) => (s.key === c.key ? { key: c.key, dir: s.dir === 1 ? -1 : 1 } : { key: c.key, dir: c.key === "updated" || c.key === "priority" || c.numeric ? -1 : 1 }))}
-                        className={cn("inline-flex items-center gap-0.5 text-2xs uppercase tracking-[0.1em]", on ? "text-sg-white" : "text-sg-dim hover:text-sg-white")}
+                        disabled={!!jql.order}
+                        title={jql.order ? "Sorted by ORDER BY in the query" : undefined}
+                        className={cn("inline-flex items-center gap-0.5 text-2xs uppercase tracking-[0.1em] disabled:cursor-default", on && !jql.order ? "text-sg-white" : "text-sg-dim hover:text-sg-white")}
                       >
                         {c.label}
-                        {on && (sort.dir === 1 ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />)}
+                        {on && !jql.order && (sort.dir === 1 ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />)}
                       </button>
                     </th>
                   );
                 })}
               </tr>
             </thead>
-            <tbody>
+            <tbody ref={bodyRef}>
               {rows.map((i, idx) => {
                 const T = issueTypeMeta[i.type].icon;
                 const P = priorityMeta[i.priority].icon;
@@ -299,25 +372,55 @@ export default function IssuesPage() {
                 const links = linkCount.get(i.id) ?? 0;
                 const on = selected.has(i.id);
                 return (
-                  <tr key={i.id} onClick={() => openIssue(i.id)} className={cn("group h-8 cursor-pointer", on ? "bg-sg-card-2" : "hover:bg-sg-card")}>
+                  <tr
+                    key={i.id}
+                    data-row={idx}
+                    tabIndex={idx === cursor ? 0 : -1}
+                    aria-selected={on}
+                    onFocus={() => setCursor(idx)}
+                    onClick={() => {
+                      setCursor(idx);
+                      openIssue(i.id);
+                    }}
+                    className={cn("group h-8 cursor-pointer focus:outline-none focus-visible:bg-sg-card focus-visible:shadow-[inset_2px_0_0_0_var(--sg-white,#fff)]", on ? "bg-sg-card-2" : "hover:bg-sg-card", idx === cursor && "bg-sg-card/60")}
+                  >
                     <td className="border-b border-sg-line px-3" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={on}
                         onChange={() => undefined}
                         onClick={(e) => toggleRow(idx, e.shiftKey)}
+                        tabIndex={-1}
                         className="size-3.5 accent-white"
                         aria-label={`Select ${i.key}`}
                       />
                     </td>
-                    <td className="border-b border-sg-line px-2 font-semibold text-sg-muted">{i.key}</td>
+                    <td className="border-b border-sg-line px-2">
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openIssue(i.id);
+                        }}
+                        className="font-semibold text-sg-muted hover:text-sg-white hover:underline"
+                        aria-label={`Open ${i.key}`}
+                      >
+                        {i.key}
+                      </button>
+                    </td>
                     <td className="border-b border-sg-line px-2" title={issueTypeMeta[i.type].label}>
                       <T className={cn("size-3.5", softText[issueTypeMeta[i.type].color])} aria-label={issueTypeMeta[i.type].label} />
                     </td>
                     <td className="max-w-0 border-b border-sg-line px-2">
-                      <span className={cn("block truncate text-sm", i.status === "done" ? "text-sg-dim line-through" : "text-sg-text group-hover:text-sg-white")}>
-                        {i.type === "subtask" && <span className="text-sg-dim">↳ </span>}
-                        {i.summary}
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className={cn("block min-w-0 truncate text-sm", i.status === "done" ? "text-sg-dim line-through" : "text-sg-text group-hover:text-sg-white")}>
+                          {i.type === "subtask" && <span className="text-sg-dim">↳ </span>}
+                          {i.summary}
+                        </span>
+                        {i.status !== "done" && <BlockedBadge blockers={blockersOf.get(i.id)} />}
+                        {i.triage === "pending" && <span className="shrink-0 rounded-sm bg-soft-cyan/15 px-1 text-[10px] font-semibold text-soft-cyan">Triage</span>}
+                        {i.triage === "declined" && <span className="shrink-0 rounded-sm bg-sg-card-3 px-1 text-[10px] font-semibold text-sg-dim" title={i.triageNote}>Declined</span>}
                       </span>
                     </td>
                     <td className="border-b border-sg-line px-2">
@@ -348,6 +451,7 @@ export default function IssuesPage() {
                       )}
                     </td>
                     <td className="sg-num border-b border-sg-line px-2 text-right text-sg-muted">{i.storyPoints ?? "—"}</td>
+                    <td className="border-b border-sg-line px-2">{i.dueDate ? i.status === "done" ? <span className="text-sg-dim">{formatDate(i.dueDate, "short")}</span> : <DueChip issue={i} compact /> : <span className="text-sg-dim">—</span>}</td>
                     <td className="border-b border-sg-line px-2 text-right">
                       {links ? (
                         <span className="inline-flex items-center gap-0.5 text-soft-yellow" title={`${links} linked CRM record${links === 1 ? "" : "s"}`}>

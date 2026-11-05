@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { CircleAlert, Search, Star, X } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
-import { compileJql, parseJql, suggestJql, type JqlContext, type JqlSuggestion } from "@/lib/jql";
+import { compareJql, compileJql, parseJql, suggestJql, type JqlContext, type JqlSuggestion } from "@/lib/jql";
 import type { Issue } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -20,14 +20,19 @@ export function useJqlContext(): JqlContext {
   const crossLinks = useCrm((s) => s.crossLinks);
   const pipelines = useCrm((s) => s.pipelines);
   const currentUserId = useCrm((s) => s.currentUserId);
-  return useMemo(() => ({ users, sprints, epics, projects, deals, contacts, crossLinks, pipelines, currentUserId }), [users, sprints, epics, projects, deals, contacts, crossLinks, pipelines, currentUserId]);
+  const issueLinks = useCrm((s) => s.issueLinks);
+  const issues = useCrm((s) => s.issues);
+  return useMemo(
+    () => ({ users, sprints, epics, projects, deals, contacts, crossLinks, pipelines, currentUserId, issueLinks, issues }),
+    [users, sprints, epics, projects, deals, contacts, crossLinks, pipelines, currentUserId, issueLinks, issues],
+  );
 }
 
 export function useJql(q: string) {
   const ctx = useJqlContext();
   return useMemo(() => {
     const parsed = parseJql(q, ctx);
-    return { parsed, errors: parsed.errors, match: compileJql(parsed, ctx), active: parsed.terms.length > 0 || parsed.text.length > 0 };
+    return { parsed, errors: parsed.errors, match: compileJql(parsed, ctx), active: !!parsed.expr, order: compareJql(parsed, ctx) };
   }, [q, ctx]);
 }
 
@@ -162,7 +167,7 @@ export function JqlBar({ value, onChange, issues, className, errors }: { value: 
               else (e.target as HTMLInputElement).blur();
             }
           }}
-          placeholder='Filter: status:"in progress" assignee:me points:>3 …'
+          placeholder='Filter: assignee:me (type:bug OR is:blocked) due:<7d ORDER BY due …'
           aria-label="Issue query"
           aria-autocomplete="list"
           aria-expanded={open}

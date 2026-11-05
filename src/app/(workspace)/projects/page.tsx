@@ -11,11 +11,15 @@ import { RoleChips, StatusChip, TypeChip } from "@/components/initiatives/shared
 import { buildRegister, LIVE_PROJECT_STATUSES, pct, rateLabel, type ProjectRegister, type RegisterRow } from "@/components/projects/model";
 import { ComplianceSummary, PolicyRef, useRegisterInputs } from "@/components/projects/shared";
 import { RegisterProjectDialog } from "@/components/projects/register-project-dialog";
+import { PortfolioTable } from "@/components/projects/portfolio-table";
+import { HealthBadge } from "@/components/projects/status-updates";
+import { updateState } from "@/lib/initiatives/team-rules";
+import { useCrm } from "@/lib/store";
 import { POLICY_STATUS, POLICY_VERSION, ROLE_META } from "@/lib/initiatives/policy";
 import { csvFilename, downloadCsv } from "@/lib/csv";
 import { cn, formatIDR } from "@/lib/utils";
 
-type View = "projects" | "people";
+type View = "projects" | "health" | "people";
 
 export default function ProjectsRegisterPage() {
   const inp = useRegisterInputs();
@@ -34,6 +38,17 @@ export default function ProjectsRegisterPage() {
   const people = useMemo(() => registers.flatMap((r) => r.rows.map((row) => ({ reg: r, row }))), [registers]);
   const distinctPeople = useMemo(() => new Set(people.map((p) => p.row.member.userId)).size, [people]);
   const failing = registers.reduce((s, r) => s + (r.failing ? 1 : 0), 0);
+  const updates = useCrm((s) => s.projectUpdates);
+  const health = useMemo(() => {
+    let atRisk = 0;
+    let due = 0;
+    for (const r of registers) {
+      const st = updateState(r.ini, updates);
+      if (st.latest && st.latest.health !== "green") atRisk++;
+      if (st.state === "due" || st.state === "overdue") due++;
+    }
+    return { atRisk, due };
+  }, [registers, updates]);
 
   const exportCsv = () =>
     downloadCsv(csvFilename("project-register"), people, [
@@ -63,7 +78,6 @@ export default function ProjectsRegisterPage() {
     <div className="flex h-full flex-col overflow-hidden">
       <PageHeader
         title="Ongoing projects"
-        crumbs={[{ href: "/projects", label: "Ongoing projects" }]}
         meta={
           <span className="text-xs text-sg-dim">
             Policy v{POLICY_VERSION} · {POLICY_STATUS} · who works on each project, in what role, at what weight, and what share of revenue is their compensation
@@ -87,7 +101,7 @@ export default function ProjectsRegisterPage() {
           <Stat label="Ongoing projects" value={String(registers.length)} />
           <Stat label="People on projects" value={String(distinctPeople)} />
           <Stat label="Projects with gaps" value={String(failing)} tone={failing ? "red" : "green"} />
-          <Stat label="Revenue-share curve" value="40% → 10%" hint="at Rp1.5 bn projected annual net revenue (§5.1)" />
+          <Stat label="At risk / off track" value={String(health.atRisk)} tone={health.atRisk ? "red" : "green"} hint={health.due ? `${health.due} monthly update${health.due === 1 ? "" : "s"} due (§6.1)` : "All monthly updates in (§6.1)"} />
         </div>
 
         <Tabs<View>
@@ -95,6 +109,7 @@ export default function ProjectsRegisterPage() {
           onChange={setView}
           items={[
             { value: "projects", label: "By project", count: registers.length },
+            { value: "health", label: "Portfolio health" },
             { value: "people", label: "People register", count: people.length },
           ]}
         />
@@ -111,6 +126,8 @@ export default function ProjectsRegisterPage() {
               <ProjectCard key={r.ini.id} reg={r} />
             ))}
           </div>
+        ) : view === "health" ? (
+          <PortfolioTable registers={registers} />
         ) : (
           <PeopleTable rows={people} />
         )}
@@ -160,6 +177,7 @@ function ProjectCard({ reg }: { reg: ProjectRegister }) {
               </span>
             ) : null}
             <span>Tier {reg.tier.tier}</span>
+            <HealthBadge ini={ini} />
           </div>
         </div>
         <div className="flex items-center gap-3">

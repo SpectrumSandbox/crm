@@ -13,7 +13,7 @@ import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
 import type { Activity, Deal, LineItem, Pipeline, Product, Quote } from "@/lib/types";
 import type { ContractStatus, Initiative, InitiativeMember, Milestone, ProjectType, RiskCategory, RiskItem } from "@/lib/initiatives/types";
-import { addMonths, approvalTier, contractedMonths, deferralTriggers, directCostTotal, effectiveWeight, participationEligibility, projectedAnnualNet, proposalEconomics, proposalGaps, splitBonus } from "@/lib/initiatives/engine";
+import { addMonths, approvalTier, endDateForMonths, contractedMonths, deferralTriggers, directCostTotal, effectiveWeight, participationEligibility, projectedAnnualNet, proposalEconomics, proposalGaps, splitBonus } from "@/lib/initiatives/engine";
 import { ORIGINATION_META, POLICY, PROJECT_TYPE_META, RISK_CATEGORIES, TIER_META } from "@/lib/initiatives/policy";
 import { cn, formatDate, formatIDR, fromDateInput, toDateInput, uid } from "@/lib/utils";
 import { PageHeader } from "@/components/shell/page-header";
@@ -66,7 +66,7 @@ function blankForm(): FormState {
     exclusions: "",
     successCriteria: "",
     startDate: start,
-    endDate: addMonths(start, 3),
+    endDate: endDateForMonths(start, 6), // six contracted months (§5.1)
     milestones: [],
     companyId: null,
     dealId: null,
@@ -151,28 +151,38 @@ function formFromDeal(dealId: string, ctx: DealContext): { form: FormState; deal
   const base = blankForm();
   const close = Date.parse(deal.closeDate);
   const start = !won && close > Date.now() ? fromDateInput(toDateInput(deal.closeDate)) : base.startDate;
-  const end = addMonths(start, 6);
+  const end = endDateForMonths(start, 6);
   const name = (productId: string) => ctx.products.find((p) => p.id === productId)?.name ?? "Deliverable";
   const amount = (l: Pick<LineItem, "quantity" | "unitPrice" | "discountPct">) => Math.round(l.quantity * l.unitPrice * (1 - l.discountPct / 100));
   // a signed / sent quote is the best record of what was sold; otherwise the deal's line items
-  const quote = [...ctx.quotes.filter((q) => q.dealId === deal.id && q.status !== "expired")].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const quote = [...ctx.quotes.filter((q) => q.dealId === deal.id && q.status !== "expired" && !q.supersededById)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   const items = quote?.lineItems.length ? quote.lineItems.map((l) => ({ name: name(l.productId), amount: amount(l) })) : ctx.lineItems.filter((l) => l.dealId === deal.id).map((l) => ({ name: name(l.productId), amount: amount(l) }));
   const span = Date.parse(end) - Date.parse(start);
-  const milestones: Milestone[] = items.map((it, i) => ({
-    id: uid("ms"),
-    name: it.name,
-    dueDate: fromDateInput(toDateInput(new Date(Date.parse(start) + (span * (i + 1)) / items.length).toISOString())),
-    paymentAmount: it.amount,
-    done: false,
-  }));
+  const quoteTotal = items.reduce((s, it) => s + it.amount, 0);
+  // the quote's payment schedule (W3) is the agreed billing plan; otherwise one milestone per line item
+  const milestones: Milestone[] = quote?.paymentSchedule?.length
+    ? quote.paymentSchedule.map((p, i, all) => ({
+        id: uid("ms"),
+        name: p.label,
+        dueDate: p.dueAt ? fromDateInput(toDateInput(p.dueAt)) : fromDateInput(toDateInput(new Date(Date.parse(start) + (span * (i + 1)) / all.length).toISOString())),
+        paymentAmount: Math.round((quoteTotal * p.pct) / 100),
+        done: false,
+      }))
+    : items.map((it, i) => ({
+        id: uid("ms"),
+        name: it.name,
+        dueDate: fromDateInput(toDateInput(new Date(Date.parse(start) + (span * (i + 1)) / items.length).toISOString())),
+        paymentAmount: it.amount,
+        done: false,
+      }));
   return {
     deal,
     form: {
       ...base,
       title: deal.name.replace(/^[A-Z][A-Za-z0-9&]{1,6}\s+[—–-]\s+/, ""),
       type: guessType(deal),
-      origination: "personal",
-      firstContactAt: earliestContact(deal, ctx.activities),
+      origination: deal.origination?.channel ?? "personal",
+      firstContactAt: deal.origination?.firstContactAt ?? earliestContact(deal, ctx.activities),
       summary: deal.description,
       companyId: deal.companyId,
       dealId: deal.id,
@@ -252,6 +262,7 @@ export function ProposalForm({ editId, fromDealId = null }: { editId: string | n
   const activities = useCrm((s) => s.activities);
   const currentUserId = useCrm((s) => s.currentUserId);
   const saveInitiative = useCrm((s) => s.saveInitiative);
+  const syncDraftTeamStart = useCrm((s) => s.syncDraftTeamStart);
   const submitInitiative = useCrm((s) => s.submitInitiative);
   const updateMember = useCrm((s) => s.updateMember);
   const notify = useUi((s) => s.notify);
@@ -347,6 +358,8 @@ export function ProposalForm({ editId, fromDealId = null }: { editId: string | n
     const payload: Partial<Initiative> = { ...form, title: form.title.trim() || "Untitled initiative", standardBonus: form.type === "C" ? Math.max(POLICY.typeCMinimum.standardBonus, form.standardBonus) : undefined };
     const savedId = saveInitiative(id ? { ...payload, id } : payload);
     if (id) syncInitiatorRole(savedId, form.origination, existing?.initiatorId ?? currentUserId);
+    // §6.5 while the proposal is a draft, every team row starts with the project — move them with a changed start date
+    if (form.startDate) syncDraftTeamStart(savedId, form.startDate);
     if (!id) {
       ownIdRef.current = savedId;
       setOwnId(savedId);

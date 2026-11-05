@@ -6,7 +6,7 @@ import { ArrowUpRight, Banknote, Check, ChevronDown, Coins, Info, Lock, Pencil, 
 import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
 import type { Initiative, Milestone, RevenueEntry } from "@/lib/initiatives/types";
-import { computeRun, cycleMonth, directCostTotal, monthEnd, monthKey, monthStart, netRevenue, paymentDate, projectCycles, projectPayments, proposalEconomics, rateReview, standardBonusOf } from "@/lib/initiatives/engine";
+import { revenueEntryLock, workPeriodFromDates, computeRun, cycleMonth, directCostTotal, monthEnd, monthKey, monthStart, netRevenue, paymentDate, projectCycles, projectPayments, proposalEconomics, rateReview, standardBonusOf } from "@/lib/initiatives/engine";
 import { POLICY } from "@/lib/initiatives/policy";
 import { cn, formatDate, fromDateInput, toDateInput } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -15,6 +15,10 @@ import { Avatar, Chip, EmptyState } from "@/components/ui/misc";
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger } from "@/components/ui/overlays";
 import { Cite, Money, Rate, milestoneWorkPeriods } from "@/components/initiatives/shared";
 import { Card, onCmdEnter } from "./ui";
+import { parseAmount } from "@/lib/initiatives/team-rules";
+import { paymentLocked } from "@/lib/slices/governance";
+import { ChangeOrdersCard } from "@/components/projects/change-orders";
+import { CorrectionDialog } from "@/components/projects/correction-dialog";
 
 const FIN_STATUSES = new Set(["approved", "active", "completed"]);
 /** Company figures large enough that the §9.1 checks pass in a per-project projection. */
@@ -37,13 +41,13 @@ const toDraft = (e: RevenueEntry): Draft => ({
   directCosts: String(e.directCosts),
   note: e.note ?? "",
 });
+/** Rupiah amount typed in id-ID or en style ("7.200.000", "7,2" …) — team-rules.parseAmount. */
 const num = (s: string) => {
-  const n = Number(String(s).replace(/[^\d.-]/g, ""));
+  const n = parseAmount(String(s));
   return Number.isFinite(n) ? n : 0;
 };
 /** Collected at 12:00 WIB on the chosen day (the cut-off is the 20th, §8.2). */
 const collectedIso = (d: string) => new Date(`${d}T12:00:00+07:00`).toISOString();
-const dayStartIso = (d: string) => new Date(`${d}T00:00:00+07:00`).toISOString();
 
 export function FinancialsTab({ ini }: { ini: Initiative }) {
   if (!FIN_STATUSES.has(ini.status)) {
@@ -58,6 +62,7 @@ export function FinancialsTab({ ini }: { ini: Initiative }) {
   return (
     <div className="space-y-4">
       <PaymentsCard ini={ini} />
+      <ChangeOrdersCard ini={ini} />
       {ini.type === "C" ? <TypeCCyclesCard ini={ini} /> : null}
       <BonusByMember ini={ini} />
     </div>
@@ -78,11 +83,14 @@ function PaymentsCard({ ini }: { ini: Initiative }) {
   const adjustments = useCrm((s) => s.curveAdjustments);
   const addRevenueEntry = useCrm((s) => s.addRevenueEntry);
   const updateRevenueEntry = useCrm((s) => s.updateRevenueEntry);
-  const deleteRevenueEntry = useCrm((s) => s.deleteRevenueEntry);
+  const deletePayment = useCrm((s) => s.deletePayment);
+  const restorePayment = useCrm((s) => s.restorePayment);
+  const runs = useCrm((s) => s.bonusRuns);
   const notify = useUi((s) => s.notify);
   const [editing, setEditing] = useState<string | null>(null); // entry id or "new"
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [correcting, setCorrecting] = useState<RevenueEntry | null>(null);
 
   const econ = useMemo(() => proposalEconomics(ini, adjustments), [ini, adjustments]);
   const review = useMemo(() => rateReview(ini, allEntries, adjustments), [ini, allEntries, adjustments]);
@@ -136,7 +144,10 @@ function PaymentsCard({ ini }: { ini: Initiative }) {
   };
   const cancel = () => setEditing(null);
   const errors: string[] = [];
-  if (draft.revenue.trim() === "" || num(draft.revenue) < 0) errors.push("Revenue");
+  if (draft.revenue.trim() === "" || !Number.isFinite(parseAmount(draft.revenue)) || num(draft.revenue) < 0) errors.push("Revenue");
+  if (draft.directCosts.trim() && !Number.isFinite(parseAmount(draft.directCosts))) errors.push("Direct costs is not a number");
+  const editingEntry = editing && editing !== "new" ? allEntries.find((e) => e.id === editing) : undefined;
+  if (editingEntry && paymentLocked(editingEntry, runs)) errors.push(`The ${editingEntry.month} cycle has been released — record a correcting payment instead (§8.5)`);
   if (num(draft.directCosts) < 0) errors.push("Direct costs");
   if (!draft.workStart || !draft.workEnd || draft.workEnd < draft.workStart) errors.push("Work period");
   if (draft.received && !draft.collectedAt) errors.push("Collection date");
@@ -150,8 +161,8 @@ function PaymentsCard({ ini }: { ini: Initiative }) {
       basis: draft.basis,
       received: draft.received,
       collectedAt: draft.received ? collectedIso(draft.collectedAt) : null,
-      workPeriodStart: dayStartIso(draft.workStart),
-      workPeriodEnd: fromDateInput(draft.workEnd),
+      workPeriodStart: workPeriodFromDates(draft.workStart, draft.workEnd).start,
+      workPeriodEnd: workPeriodFromDates(draft.workStart, draft.workEnd).end,
       revenue: num(draft.revenue),
       directCosts: num(draft.directCosts),
       note: draft.note.trim(),
@@ -160,7 +171,11 @@ function PaymentsCard({ ini }: { ini: Initiative }) {
       addRevenueEntry({ initiativeId: ini.id, ...payload });
       notify(payload.received ? `Payment collected — salary cycle ${payload.month}, paid ${formatDate(paymentDate(payload.month), "medium")}` : "Payment recorded as earned, awaiting collection");
     } else if (editing) {
-      updateRevenueEntry(editing, payload);
+      // the engine refuses (false) amount/date edits of a payment paid in a released cycle — record a correction instead (§8.5)
+      if (!updateRevenueEntry(editing, payload)) {
+        notify("Refused — this payment was paid in a released cycle; record a correction (§8.5)");
+        return;
+      }
       notify("Payment updated");
     }
     setEditing(null);
@@ -357,16 +372,19 @@ function PaymentsCard({ ini }: { ini: Initiative }) {
                     {r.p ? <Money value={r.p.pool} className="font-semibold text-soft-cyan" /> : <span className="text-2xs text-sg-dim">not collected</span>}
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {confirmDelete === r.e.id ? (
+                    {paymentLocked(r.e, runs) ? (
+                      <Button size="xs" variant="ghost" title={revenueEntryLock(r.e, runs) ?? undefined} onClick={() => setCorrecting(r.e)}>
+                        <Lock /> Correction
+                      </Button>
+                    ) : confirmDelete === r.e.id ? (
                       <div className="flex justify-end gap-1">
                         <Button
                           size="xs"
                           variant="danger"
                           onClick={() => {
-                            const removed = r.e;
-                            deleteRevenueEntry(removed.id);
+                            const removed = deletePayment(r.e.id);
                             setConfirmDelete(null);
-                            notify("Payment deleted", { label: "Undo", run: () => addRevenueEntry({ ...removed }) });
+                            if (removed) notify("Payment deleted — recorded in the audit trail", { label: "Undo", run: () => restorePayment(removed) });
                           }}
                         >
                           Delete
@@ -376,7 +394,7 @@ function PaymentsCard({ ini }: { ini: Initiative }) {
                         </Button>
                       </div>
                     ) : (
-                      <div className="flex justify-end gap-1 opacity-60 group-hover:opacity-100">
+                      <div className="flex justify-end gap-1 opacity-60 group-hover:opacity-100 focus-within:opacity-100">
                         <Button size="icon-sm" variant="ghost" onClick={() => startEdit(r.e)} aria-label="Edit payment">
                           <Pencil />
                         </Button>
@@ -422,6 +440,7 @@ function PaymentsCard({ ini }: { ini: Initiative }) {
         Rate <Rate value={review.rate} /> · a payment counts once it is earned (milestone accepted or period billed) and collected. Each payment&apos;s pool = y × cumulative net revenue − pool already allocated, never negative (early losses are recovered first)<Cite s="8.1" />. Collected by the {POLICY.cycle.cutoffDay}th → paid with that month&apos;s salary on the {POLICY.cycle.salaryDay}th; after the {POLICY.cycle.cutoffDay}th → the following month<Cite s="8.2" />. The pool is shared by effective weight-days in the payment&apos;s work period<Cite s="6.5" />.
         {costRatio > 0 ? ` Milestone prefill uses the proposal's cost ratio (${(costRatio * 100).toFixed(1)}% of revenue).` : ""}
       </p>
+      <CorrectionDialog entry={correcting} onClose={() => setCorrecting(null)} />
     </Card>
   );
 }

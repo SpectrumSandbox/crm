@@ -4,10 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDown, ArrowUp, Columns3, Download, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { downloadCsv, type CsvColumn } from "@/lib/csv";
+import { CSV_FORMATS, downloadCsv, getCsvFormat, setCsvFormat, type CsvColumn, type CsvFormat } from "@/lib/csv";
 import { Kbd } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
+import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger, Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
 
 export interface Column<T> {
   id: string;
@@ -48,6 +48,9 @@ function writeHidden(tableId: string | undefined, hidden: string[]) {
  *  j / k (or ↑ ↓) move the cursor, Enter opens, x toggles selection, / focuses the filter.
  * Pass `tableId` to persist column visibility per table, and `exportCsv` to offer an
  * "Export CSV" of exactly the rows in view (filters + search + sort applied).
+ * The selection only ever holds rows that are in view: changing a filter, list or search drops the others,
+ * so a bulk action can never touch records the user cannot see.
+ * Pass `query` + `onQueryChange` to control the search box (e.g. to keep it in the URL).
  */
 export function SmartTable<T extends { id: string }>({
   rows,
@@ -60,6 +63,8 @@ export function SmartTable<T extends { id: string }>({
   emptyText = "No records match these filters.",
   tableId,
   exportCsv,
+  query,
+  onQueryChange,
 }: {
   rows: T[];
   columns: Column<T>[];
@@ -72,9 +77,17 @@ export function SmartTable<T extends { id: string }>({
   /** stable id used to persist column visibility in localStorage */
   tableId?: string;
   exportCsv?: { filename: string | (() => string); columns: CsvColumn<T>[] };
+  /** controlled search text */
+  query?: string;
+  onQueryChange?: (q: string) => void;
 }) {
   const router = useRouter();
-  const [q, setQ] = useState("");
+  const [localQ, setLocalQ] = useState("");
+  const q = query ?? localQ;
+  const setQ = (v: string) => {
+    if (onQueryChange) onQueryChange(v);
+    if (query === undefined) setLocalQ(v);
+  };
   const [sort, setSort] = useState(initialSort ?? { id: columns[0].id, dir: 1 as 1 | -1 });
   const [cursor, setCursor] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -102,9 +115,26 @@ export function SmartTable<T extends { id: string }>({
     });
   }, [rows, q, sort, columns, searchText]);
 
+  /* membership of the view (order-insensitive): when it changes, drop selected rows that left it */
+  const membership = useMemo(() => visible.map((r) => r.id).sort().join("|"), [visible]);
   useEffect(() => {
-    setCursor((c) => Math.min(c, Math.max(0, visible.length - 1)));
-  }, [visible.length]);
+    const inView = new Set(membership ? membership.split("|") : []);
+    setSelected((s) => {
+      if (!s.size) return s;
+      const next = new Set(Array.from(s).filter((id) => inView.has(id)));
+      return next.size === s.size ? s : next;
+    });
+    setCursor((c) => Math.min(c, Math.max(0, inView.size - 1)));
+  }, [membership]);
+
+  const [csvFormat, setFormat] = useState<CsvFormat>("comma");
+  useEffect(() => setFormat(getCsvFormat()), []);
+  const exportAs = (format: CsvFormat) => {
+    if (!exportCsv) return;
+    setCsvFormat(format);
+    setFormat(format);
+    downloadCsv(typeof exportCsv.filename === "function" ? exportCsv.filename() : exportCsv.filename, visible, exportCsv.columns, format);
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -195,17 +225,7 @@ export function SmartTable<T extends { id: string }>({
               )}
             </PopoverContent>
           </Popover>
-          {exportCsv && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={!visible.length}
-              title={`Export the ${visible.length} rows in view`}
-              onClick={() => downloadCsv(typeof exportCsv.filename === "function" ? exportCsv.filename() : exportCsv.filename, visible, exportCsv.columns)}
-            >
-              <Download /> Export CSV
-            </Button>
-          )}
+          {exportCsv && <CsvExportMenu count={visible.length} format={csvFormat} onExport={exportAs} />}
           <span className="hidden items-center gap-1 lg:flex">
             <Kbd>J</Kbd>
             <Kbd>K</Kbd> move · <Kbd>↵</Kbd> open · <Kbd>X</Kbd> select
@@ -282,5 +302,29 @@ export function SmartTable<T extends { id: string }>({
         {!visible.length && <p className="px-5 py-12 text-center text-sm text-sg-muted">{emptyText}</p>}
       </div>
     </div>
+  );
+}
+
+/** "Export CSV" with a choice of dialect (comma, or semicolon for Excel on Indonesian-locale Windows); remembers the last one */
+export function CsvExportMenu({ count, format, onExport, size = "sm", variant = "ghost" }: { count: number; format: CsvFormat; onExport: (format: CsvFormat) => void; size?: "sm" | "md"; variant?: "ghost" | "outline" }) {
+  return (
+    <Menu>
+      <MenuTrigger asChild>
+        <Button variant={variant} size={size} disabled={!count} title={`Export the ${count} rows in view`}>
+          <Download /> Export CSV
+        </Button>
+      </MenuTrigger>
+      <MenuContent align="end">
+        <MenuLabel>Export {count} rows as</MenuLabel>
+        {CSV_FORMATS.map((f) => (
+          <MenuItem key={f.id} active={f.id === format} onSelect={() => onExport(f.id)}>
+            <span className="flex flex-col">
+              <span>{f.label}</span>
+              <span className="text-2xs text-sg-dim">{f.hint}</span>
+            </span>
+          </MenuItem>
+        ))}
+      </MenuContent>
+    </Menu>
   );
 }

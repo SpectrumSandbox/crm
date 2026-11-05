@@ -13,6 +13,7 @@ import { Avatar, Chip } from "@/components/ui/misc";
 import { TeamEditor } from "@/components/initiatives/team-editor";
 import { CapacityMeter, RoleChips, StatusChip, TypeChip } from "@/components/initiatives/shared";
 import { Card } from "./ui";
+import { CoiCard } from "@/components/initiatives/coi";
 
 const LIVE = new Set(["approved", "active", "completed", "conditional"]);
 
@@ -20,6 +21,7 @@ export function TeamTab({ ini }: { ini: Initiative }) {
   return (
     <div className="space-y-4">
       <TeamEditor initiativeId={ini.id} mode={LIVE.has(ini.status) ? "live" : "proposal"} />
+      <CoiCard ini={ini} />
       <LeadershipCapacity ini={ini} />
     </div>
   );

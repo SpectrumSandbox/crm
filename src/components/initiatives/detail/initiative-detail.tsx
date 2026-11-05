@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Search } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { PageHeader } from "@/components/shell/page-header";
@@ -27,7 +28,13 @@ export function InitiativeDetail({ id }: { id: string }) {
   const auditLog = useCrm((s) => s.auditLog);
   const revenueEntries = useCrm((s) => s.revenueEntries);
   const amendments = useCrm((s) => s.teamAmendments);
-  const [tab, setTab] = useState<Tab>("overview");
+  const params = useSearchParams();
+  const linked = params.get("tab");
+  const [tab, setTab] = useState<Tab>(() => (TAB_ORDER as string[]).includes(linked ?? "") ? (linked as Tab) : "overview");
+  // deep links such as /initiatives/[id]?tab=team (from the projects register) select the tab
+  useEffect(() => {
+    if (linked && (TAB_ORDER as string[]).includes(linked)) setTab(linked as Tab);
+  }, [linked]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

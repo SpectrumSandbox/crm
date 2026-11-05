@@ -5,11 +5,16 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { Check, Menu, Search } from "lucide-react";
+import { Handshake, Kanban, Menu, Phone, Plus, Search, User, X } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
-import { Kbd, SpectrumRule } from "@/components/ui/misc";
+import { Kbd } from "@/components/ui/misc";
+import { Menu as DropMenu, MenuContent, MenuItem, MenuLabel, MenuTrigger } from "@/components/ui/overlays";
+import { ShellSkeleton } from "@/components/ui/skeletons";
+import { ToastViewport } from "@/components/ui/toast";
+import { ConfirmHost } from "@/components/ui/confirm";
+import { NotificationBell } from "./notifications";
 import { Sidebar } from "./sidebar";
-import { COMPACT_QUERY, useGlobalHotkeys, useMobileNav, useRecentTracker } from "./hotkeys";
+import { COMPACT_QUERY, recordFromPath, useGlobalHotkeys, useMobileNav, useRecentTracker } from "./hotkeys";
 import { WorkspaceSync } from "./sync";
 
 /* Heavy overlays are split into their own chunks and mounted after first paint (or the moment they're needed). */
@@ -39,10 +44,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return unsub;
   }, []);
 
-  if (!hydrated) return <BootScreen />;
+  useRememberSidebar(hydrated);
+
+  // the shell skeleton is server-rendered, so the layout is on screen before the bundle and local data are ready
+  if (!hydrated) return <ShellSkeleton />;
 
   return (
-    <div className="flex h-dvh overflow-hidden">
+    <div data-shell-root className="flex h-dvh overflow-hidden">
       <a
         href="#main"
         onClick={(e) => {
@@ -57,7 +65,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         Skip to content
       </a>
       {/* desktop rail */}
-      <div className="hidden h-full shrink-0 lg:flex">
+      <div data-shell-chrome className="hidden h-full shrink-0 lg:flex">
         <Suspense fallback={<div className="w-[232px] border-r border-sg-line" />}>
           <Sidebar />
         </Suspense>
@@ -66,7 +74,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <Suspense fallback={null}>
         <MobileNavDrawer />
       </Suspense>
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div data-shell-content className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <MobileTopBar />
         <main id="main" tabIndex={-1} className="flex min-w-0 flex-1 flex-col overflow-hidden focus:outline-none">
           <Suspense fallback={null}>{children}</Suspense>
@@ -85,35 +93,92 @@ function MobileTopBar() {
   const setOpen = useMobileNav((s) => s.setOpen);
   const navOpen = useMobileNav((s) => s.open);
   const setPaletteOpen = useUi((s) => s.setPaletteOpen);
+  const openDialog = useUi((s) => s.openDialog);
+  const pathname = usePathname();
+  const target = recordFromPath(pathname);
   return (
-    <div className="flex h-12 shrink-0 items-center gap-2 border-b border-sg-line bg-sg-bg px-2 lg:hidden">
+    <div data-shell-chrome className="flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center gap-1.5 border-b border-sg-line bg-sg-bg px-2 pt-[env(safe-area-inset-top)] lg:hidden">
       <button
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Open navigation"
         aria-expanded={navOpen}
         aria-haspopup="dialog"
-        className="flex size-9 items-center justify-center rounded text-sg-muted hover:bg-sg-card-2 hover:text-sg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70"
+        className="flex size-10 items-center justify-center rounded text-sg-muted hover:bg-sg-card-2 hover:text-sg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70"
       >
         <Menu className="size-5" />
       </button>
-      <Link href="/home" aria-label="Spectrum CRM home" className="flex items-center gap-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70">
+      <Link href="/home" aria-label="Spectrum CRM home" className="flex min-w-0 items-center gap-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/brand/spectrum-logo.png" alt="Spectrum Group" width={104} height={20} className="h-5 w-auto" />
-        <span className="rounded-sm border border-sg-line-2 px-1 text-[9px] font-bold uppercase tracking-[0.14em] text-sg-muted">CRM</span>
+        <span className="hidden rounded-sm border border-sg-line-2 px-1 text-[9px] font-bold uppercase tracking-[0.14em] text-sg-muted min-[380px]:inline">CRM</span>
       </Link>
       <button
         type="button"
         onClick={() => setPaletteOpen(true)}
         aria-label="Search (Command K)"
-        className="ml-auto flex h-9 items-center gap-2 rounded border border-sg-line bg-sg-card px-2.5 text-sm text-sg-dim hover:border-sg-line-2 hover:text-sg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70"
+        className="ml-auto flex h-10 min-w-10 items-center justify-center gap-2 rounded border border-sg-line bg-sg-card px-2.5 text-sm text-sg-dim hover:border-sg-line-2 hover:text-sg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70"
       >
         <Search className="size-4" />
         <span className="hidden sm:inline">Search</span>
         <Kbd className="hidden sm:inline-flex">⌘K</Kbd>
       </button>
+      <DropMenu>
+        <MenuTrigger asChild>
+          <button
+            type="button"
+            aria-label="Create"
+            className="flex size-10 items-center justify-center rounded text-sg-muted hover:bg-sg-card-2 hover:text-sg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70"
+          >
+            <Plus className="size-5" />
+          </button>
+        </MenuTrigger>
+        <MenuContent align="end">
+          <MenuLabel>Create</MenuLabel>
+          <MenuItem onSelect={() => openDialog({ kind: "createDeal", companyId: target?.type === "company" ? target.id : undefined })}>
+            <Handshake className="size-4 text-soft-yellow" /> Deal
+          </MenuItem>
+          <MenuItem onSelect={() => openDialog({ kind: "createContact", companyId: target?.type === "company" ? target.id : undefined })}>
+            <User className="size-4 text-soft-blue" /> Contact
+          </MenuItem>
+          <MenuItem onSelect={() => openDialog({ kind: "createIssue", link: target ? { crmType: target.type, crmId: target.id, linkType: target.type === "ticket" ? "escalated_from" : "relates_to" } : undefined })}>
+            <Kanban className="size-4 text-soft-cyan" /> Issue{target ? " (linked)" : ""}
+          </MenuItem>
+          <MenuItem onSelect={() => openDialog({ kind: "logActivity", activityType: "call", target })}>
+            <Phone className="size-4 text-soft-green" /> Log a call{target ? " here" : ""}
+          </MenuItem>
+        </MenuContent>
+      </DropMenu>
+      <div className="flex shrink-0 items-center [&>button]:size-10">
+        <NotificationBell collapsed />
+      </div>
     </div>
   );
+}
+
+/** Remember the desktop rail's collapsed state per viewer (local convenience only). */
+const COLLAPSED_KEY = "sg-crm-sidebar-collapsed";
+function useRememberSidebar(hydrated: boolean) {
+  const collapsed = useUi((s) => s.sidebarCollapsed);
+  const restored = useRef(false);
+  useEffect(() => {
+    if (!hydrated || restored.current) return;
+    restored.current = true;
+    try {
+      if (window.localStorage.getItem(COLLAPSED_KEY) === "1" && !useUi.getState().sidebarCollapsed) useUi.getState().toggleSidebar();
+    } catch {
+      /* storage unavailable */
+    }
+  }, [hydrated]);
+  useEffect(() => {
+    // the mobile drawer temporarily expands the rail — don't remember that
+    if (!restored.current || useMobileNav.getState().open) return;
+    try {
+      window.localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
+    } catch {
+      /* storage unavailable */
+    }
+  }, [collapsed]);
 }
 
 function MobileNavDrawer() {
@@ -163,7 +228,15 @@ function MobileNavDrawer() {
           className="fixed inset-y-0 left-0 z-40 flex max-w-[85vw] shadow-pop focus:outline-none data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left-full data-[state=open]:animate-in data-[state=open]:slide-in-from-left-full lg:hidden"
         >
           <DialogPrimitive.Title className="sr-only">Navigation</DialogPrimitive.Title>
-          <Sidebar />
+          <div className="flex h-full pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+            <Sidebar />
+          </div>
+          <DialogPrimitive.Close
+            aria-label="Close navigation"
+            className="absolute -right-12 top-[calc(0.5rem+env(safe-area-inset-top))] flex size-10 items-center justify-center rounded-full border border-sg-line-2 bg-sg-card-2 text-sg-white shadow-pop focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70"
+          >
+            <X className="size-5" />
+          </DialogPrimitive.Close>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
@@ -205,47 +278,8 @@ function Overlays() {
           <IssueDrawer />
         </>
       ) : null}
-      <Toast />
+      <ConfirmHost />
+      <ToastViewport />
     </>
-  );
-}
-
-function BootScreen() {
-  return (
-    <div className="flex h-dvh flex-col items-center justify-center gap-4" role="status" aria-label="Loading workspace">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src="/brand/spectrum-logo.png" alt="Spectrum Group" width={160} height={31} className="h-[31px] w-auto opacity-90" />
-      <SpectrumRule className="w-40 animate-pulse" />
-    </div>
-  );
-}
-
-function Toast() {
-  const toast = useUi((s) => s.toast);
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    if (!toast) return;
-    setVisible(true);
-    const t = window.setTimeout(() => setVisible(false), toast.action ? 6000 : 2400);
-    return () => window.clearTimeout(t);
-  }, [toast]);
-  if (!toast || !visible) return null;
-  return (
-    <div role="status" className="fixed bottom-5 left-1/2 z-[70] flex max-w-[calc(100vw-24px)] -translate-x-1/2 items-center gap-2 rounded-pill border border-sg-line-2 bg-sg-card-2 px-4 py-2 text-sm font-semibold text-sg-white shadow-pop animate-in fade-in-0 slide-in-from-bottom-2">
-      <Check className="size-4 shrink-0 text-soft-green" aria-hidden />
-      <span className="min-w-0 truncate">{toast.message}</span>
-      {toast.action && (
-        <button
-          type="button"
-          onClick={() => {
-            toast.action?.run();
-            setVisible(false);
-          }}
-          className="ml-1 shrink-0 rounded-pill border border-sg-line-2 px-2 py-0.5 text-xs text-sg-white hover:bg-sg-white hover:text-sg-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70"
-        >
-          {toast.action.label}
-        </button>
-      )}
-    </div>
   );
 }

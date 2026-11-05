@@ -1,16 +1,17 @@
 "use client";
 
 /* Shared building blocks for the /compensation workspace (Policy v4.0 §8–§11). */
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { CircleAlert, Info, TriangleAlert, CircleCheck } from "lucide-react";
+import { CircleAlert, Info, Lock, TriangleAlert, CircleCheck } from "lucide-react";
 import { useCrm } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
-import type { BonusRun, ClawbackTrigger, GovernanceRole, LineStatus } from "@/lib/initiatives/types";
+import type { BonusRun, ClawbackTrigger, LineStatus } from "@/lib/initiatives/types";
 import type { ProjectRate } from "@/lib/initiatives/engine";
 import type { SpectrumColor } from "@/lib/types";
 import { cn, formatIDR } from "@/lib/utils";
 import { Avatar, Chip } from "@/components/ui/misc";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Cite } from "@/components/initiatives/shared";
 
 /** §9.1 inputs entered by Finance each month (rolling three closed months). */
@@ -85,13 +86,6 @@ export function SampleChip({ demo }: { demo?: boolean }) {
       <Chip color="blue">Sample</Chip>
     </span>
   );
-}
-
-/** Governance roles of the signed-in user (from their HR record). */
-export function useMyRoles(): { userId: string; roles: GovernanceRole[] } {
-  const currentUserId = useCrm((s) => s.currentUserId);
-  const profiles = useCrm((s) => s.employeeProfiles);
-  return useMemo(() => ({ userId: currentUserId, roles: profiles.find((p) => p.userId === currentUserId)?.governanceRoles ?? [] }), [currentUserId, profiles]);
 }
 
 /** Bordered workspace card with an eyebrow-style header. */
@@ -212,8 +206,109 @@ export function dueText(iso: string, now = Date.now()) {
   return `${-days} day${days === -1 ? "" : "s"} overdue`;
 }
 
-/** Numeric input that keeps IDR whole numbers. */
+/** Plain numeric input (counts, percentages). For rupiah use parseIdr / AmountInput. */
 export function parseAmount(v: string) {
   const n = Number(String(v).replace(/[^\d.-]/g, ""));
   return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Rupiah input for the compensation and HR forms — the shared W2 MoneyInput (id-ID grouping, "7,2 M" miliar,
+ * "720 jt"), adapted to number state: an empty or unreadable field leaves the last valid amount (0 when cleared).
+ */
+export function AmountInput({
+  value,
+  onChange,
+  disabled,
+  className,
+  placeholder = "0",
+  autoFocus,
+  min = 0,
+  "aria-label": ariaLabel,
+  id,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  disabled?: boolean;
+  className?: string;
+  placeholder?: string;
+  autoFocus?: boolean;
+  min?: number | null;
+  "aria-label"?: string;
+  id?: string;
+}) {
+  // MoneyInput reports null while the text is empty or half-typed; keep that echo so the field is not reset mid-typing
+  const [shown, setShown] = useState<number | null>(value);
+  useEffect(() => {
+    setShown((cur) => ((cur ?? 0) === value ? cur : value));
+  }, [value]);
+  return (
+    <MoneyInput
+      id={id}
+      value={shown}
+      onValueChange={(n) => {
+        setShown(n);
+        onChange(n === null ? 0 : min != null ? Math.max(min, n) : n);
+      }}
+      allowNegative={min == null}
+      min={min ?? undefined}
+      disabled={disabled}
+      placeholder={placeholder}
+      autoFocus={autoFocus}
+      aria-label={ariaLabel}
+      className={className}
+    />
+  );
+}
+
+/** Exact whole rupiah ("Rp 4.137.512"), never "Rp -0" (§8.4–8.5 statements show exact amounts). */
+export function exactIdr(n: number) {
+  const v = Math.abs(n) < 0.5 ? 0 : n;
+  return formatIDR(v, "full");
+}
+
+export function ExactMoney({ value, className }: { value: number; className?: string }) {
+  return <span className={cn("sg-num", className)}>{exactIdr(value)}</span>;
+}
+
+/** The profile holding the CFO role (§9.1) — the certifier the Finance team records on behalf of. */
+export function useCfoId(): string | null {
+  const profiles = useCrm((s) => s.employeeProfiles);
+  return useMemo(() => profiles.find((p) => p.governanceRoles.includes("cfo"))?.userId ?? null, [profiles]);
+}
+
+/** §13.4 restricted screen for viewers without a Finance, HR or PRC role. */
+export function NoAccess({ what, children }: { what: string; children?: React.ReactNode }) {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center p-8">
+      <div className="max-w-lg rounded-xl border border-sg-line bg-sg-card p-6 text-center">
+        <span className="mx-auto mb-3 flex size-10 items-center justify-center rounded-full bg-sg-card-3 text-sg-muted">
+          <Lock className="size-5" />
+        </span>
+        <h2 className="font-display text-lg font-extrabold text-sg-white">{what} is restricted</h2>
+        <p className="mt-2 text-sm leading-relaxed text-sg-muted">
+          Individual bonus amounts and employment status are personal data. Access is limited to Finance, HR, the PRC and the employee concerned <Cite s="13.4" />. Your own statements, deferred and held balances are on your page.
+        </p>
+        {children ? <div className="mt-3 text-xs text-sg-dim">{children}</div> : null}
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          <Link href="/me" className="inline-flex h-8 items-center rounded-pill bg-sg-white px-4 text-sm font-semibold text-sg-bg hover:bg-sg-white/90">
+            Go to my compensation
+          </Link>
+          <Link href="/policy#s-13-4" className="inline-flex h-8 items-center rounded-pill border border-sg-line px-4 text-sm font-semibold text-sg-text hover:border-sg-line-2">
+            Read §13.4
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Inline explanation shown under a disabled governance action (§13.2). */
+export function RoleNote({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="flex items-start gap-1 text-2xs text-sg-dim">
+      <Lock className="mt-px size-3 shrink-0" />
+      <span>{children}</span>
+    </p>
+  );
 }

@@ -1,24 +1,32 @@
 "use client";
 
-/* Workspace settings — sync, identity, data backup, system health and admin seeding (platform workstream). */
+/* Workspace settings — sync, identity & security, data, inventory, audit trail, version history, health and admin seeding. */
+import { useMemo } from "react";
 import { PageHeader } from "@/components/shell/page-header";
-import { AdminSeedSection, DataSection, HealthSection } from "./data-sections";
+import { AuditSection, HistorySection } from "./audit-section";
+import { AdminSeedSection, DataSection, HealthSection, InventorySection, useHealth, useWorkspaceAdmin } from "./data-sections";
 import { IdentitySection, SyncSection } from "./workspace-sections";
 
 const NAV = [
   { id: "sync", label: "Workspace sync" },
-  { id: "identity", label: "Identity" },
-  { id: "data", label: "Data" },
+  { id: "identity", label: "Identity & security" },
+  { id: "data", label: "Data", admin: true },
+  { id: "inventory", label: "Inventory" },
+  { id: "audit", label: "Audit trail", admin: true },
+  { id: "history", label: "Version history", admin: true },
   { id: "health", label: "System health" },
-  { id: "admin", label: "Admin" },
+  { id: "admin", label: "Admin", admin: true },
 ];
 
 export default function SettingsPage() {
+  const admin = useWorkspaceAdmin();
+  const health = useHealth();
+  const nav = useMemo(() => NAV.filter((n) => admin || !n.admin), [admin]);
   return (
     <>
       <PageHeader title="Settings">
-        <nav className="flex flex-wrap items-center gap-1">
-          {NAV.map((n) => (
+        <nav className="flex flex-wrap items-center gap-1" aria-label="Settings sections">
+          {nav.map((n) => (
             <a key={n.id} href={`#${n.id}`} className="rounded px-2 py-1 text-xs font-semibold text-sg-muted hover:bg-sg-card hover:text-sg-white">
               {n.label}
             </a>
@@ -28,9 +36,12 @@ export default function SettingsPage() {
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-5xl space-y-4 px-5 py-5">
           <SyncSection />
-          <IdentitySection />
+          <IdentitySection health={health} />
           <DataSection />
-          <HealthSection />
+          <InventorySection />
+          {admin && <AuditSection />}
+          {admin && <HistorySection />}
+          <HealthSection state={health} />
           <AdminSeedSection />
         </div>
       </div>

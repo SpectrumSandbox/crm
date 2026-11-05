@@ -32,6 +32,8 @@ function classifyConsoleError(text, resourceUrl, pageUrl) {
   if (/React DevTools/i.test(text)) return "ignore";
   const is404 = /status of 404/.test(text);
   if (is404 && /favicon/i.test(resourceUrl || text)) return "ignore";
+  // CI runs `next start` without the D1 binding: /api/workspace answers 503 and the app switches to offline mode by design
+  if (/status of 503/.test(text) && pathOf(resourceUrl) === "/api/workspace") return "ignore";
   if (is404 && pathOf(resourceUrl || pageUrl) === NOT_FOUND_PATH) return "ignore";
   if (is404 && (isOptionalPath(pathOf(resourceUrl)) || (!resourceUrl && isOptionalPath(pathOf(pageUrl))))) return "warn";
   return "fail";

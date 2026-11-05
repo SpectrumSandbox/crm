@@ -4,12 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { DragDropContext, Draggable, Droppable, type DropResult } from "@hello-pangea/dnd";
-import { Gauge, Handshake, Kanban, Keyboard, ListTree, OctagonAlert, Plus, Target, Ticket, X } from "lucide-react";
+import { Gauge, Handshake, Kanban, Keyboard, ListTodo, ListTree, OctagonAlert, Plus, Target, Ticket, X } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useStageMap, useUserMap } from "@/lib/selectors";
-import { ISSUE_STATUSES, type Issue, type IssueStatus, type SpectrumColor } from "@/lib/types";
+import { ISSUE_STATUSES, type Deal, type Epic, type Issue, type IssueStatus, type SpectrumColor } from "@/lib/types";
 import { issueStatusMeta, issueTypeMeta, priorityMeta } from "@/lib/meta";
-import { cn, daysFromNow, formatIDR, softText, spectrumDot } from "@/lib/utils";
+import { wibDaysUntil } from "@/lib/slices/agile-extras";
+import { cn, formatIDR, softText, spectrumDot } from "@/lib/utils";
 import { PageHeader } from "@/components/shell/page-header";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
@@ -19,6 +20,10 @@ import { JqlBar, useJql, useUrlQuery } from "@/components/agile/jql-bar";
 import { Burndown } from "@/components/agile/burndown";
 import { useProjectParam } from "@/components/agile/project-param";
 import { createIssueKey, useAgileHotkeys } from "@/components/agile/use-agile-hotkeys";
+import { BlockedBadge, DueChip, dueState, hiddenByTriage, useIssueQuickKeys, useOpenBlockers } from "@/components/agile/agile-ui";
+import { ProjectPicker } from "@/components/agile/create-project-dialog";
+import { TriageInbox, useTriageQueue } from "@/components/agile/triage";
+import { assignedPoints } from "@/components/agile/sprint-dialogs";
 
 type GroupBy = "status" | "sprint" | "dealStage";
 type Swimlane = "none" | "epic" | "assignee" | "account";
@@ -36,42 +41,17 @@ interface LaneDef {
   color?: SpectrumColor;
   avatar?: string;
 }
+interface LinkInfo {
+  dealId?: string;
+  ticketIds: string[];
+  companyIds: Set<string>;
+  blocks: boolean;
+}
 
 const NONE = "__none__";
-
-/* ───────────── WIP limits (localStorage, per project selection) ───────────── */
-
+const EMPTY: Issue[] = [];
 type WipStatus = "in_progress" | "in_review";
-type WipLimits = Partial<Record<WipStatus, number>>;
 const WIP_STATUSES: WipStatus[] = ["in_progress", "in_review"];
-const wipKey = (projectId: string) => `sg-board-wip:${projectId}`;
-
-function readWip(projectId: string): WipLimits {
-  try {
-    const raw = window.localStorage.getItem(wipKey(projectId));
-    const v = raw ? (JSON.parse(raw) as WipLimits) : {};
-    return v && typeof v === "object" ? v : {};
-  } catch {
-    return {};
-  }
-}
-
-function useWipLimits(projectId: string): [WipLimits, (status: WipStatus, limit: number | null) => void] {
-  const [limits, setLimits] = useState<WipLimits>({});
-  useEffect(() => setLimits(readWip(projectId)), [projectId]);
-  const set = (status: WipStatus, limit: number | null) => {
-    const next = { ...limits };
-    if (limit && limit > 0) next[status] = Math.round(limit);
-    else delete next[status];
-    setLimits(next);
-    try {
-      window.localStorage.setItem(wipKey(projectId), JSON.stringify(next));
-    } catch {
-      /* ignore */
-    }
-  };
-  return [limits, set];
-}
 
 export default function BoardPage() {
   const params = useSearchParams();
@@ -86,12 +66,17 @@ export default function BoardPage() {
   const pipelines = useCrm((s) => s.pipelines);
   const currentUserId = useCrm((s) => s.currentUserId);
   const moveIssueTracked = useCrm((s) => s.moveIssueTracked);
+  const captureIssues = useCrm((s) => s.captureIssues);
+  const restoreIssueFields = useCrm((s) => s.restoreIssueFields);
+  const setProjectWip = useCrm((s) => s.setProjectWip);
   const moveDeal = useCrm((s) => s.moveDeal);
   const openIssue = useUi((s) => s.openIssue);
   const openDialog = useUi((s) => s.openDialog);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
   const stageMap = useStageMap();
+  const blockersOf = useOpenBlockers();
+  const quickKeys = useIssueQuickKeys();
 
   const [scope, setScope] = useState<Scope>("active");
   const [projectId, setProjectId] = useProjectParam("all", (pid) => {
@@ -99,17 +84,26 @@ export default function BoardPage() {
     if (!sprints.some((s) => s.projectId === pid && s.state === "active")) setScope("all");
     else setScope((cur) => (cur === "active" || cur === "all" ? cur : "active"));
   });
-  const [groupBy, setGroupBy] = useState<GroupBy>("status");
+  const [groupBy, setGroupByRaw] = useState<GroupBy>("status");
   const [lane, setLane] = useState<Swimlane>("none");
   const [q, setQ] = useUrlQuery();
   const jql = useJql(q);
-  const [epicFilter, setEpicFilter] = useState<string | null>(null);
+  const [epicFilter, setEpicFilter] = useState<string | null>(() => params.get("epic"));
   const [onlyMine, setOnlyMine] = useState(false);
   const [onlyCrm, setOnlyCrm] = useState(false);
   const [onlyBlocking, setOnlyBlocking] = useState(false);
+  const [onlyBlocked, setOnlyBlocked] = useState(false);
+  const [onlyDueSoon, setOnlyDueSoon] = useState(false);
   const [showSubtasks, setShowSubtasks] = useState(false);
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  const [wip, setWip] = useWipLimits(projectId);
+  const [triageOpen, setTriageOpen] = useState(false);
+  const triage = useTriageQueue(projectId);
+
+  /** Columns = Sprint shows every open sprint, so a sprint picked in Scope must not keep filtering. */
+  const setGroupBy = (g: GroupBy) => {
+    setGroupByRaw(g);
+    if (g === "sprint" && scope !== "active" && scope !== "all") setScope("active");
+  };
 
   // deep link: /board?issue=UAV-102
   const issueParam = params.get("issue");
@@ -124,51 +118,81 @@ export default function BoardPage() {
     if (epicFilter && projectId !== "all" && epics.find((e) => e.id === epicFilter)?.projectId !== projectId) setEpicFilter(null);
   }, [projectId, epicFilter, epics]);
 
+  const dealById = useMemo(() => new Map(deals.map((d) => [d.id, d])), [deals]);
+  const epicById = useMemo(() => new Map(epics.map((e) => [e.id, e])), [epics]);
+  const sprintById = useMemo(() => new Map(sprints.map((s) => [s.id, s])), [sprints]);
+  const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
+  /** sub-task counts per parent, computed once per store change instead of once per card */
+  const subtaskStats = useMemo(() => {
+    const m = new Map<string, { done: number; total: number }>();
+    issues.forEach((i) => {
+      if (!i.parentId) return;
+      const st = m.get(i.parentId) ?? { done: 0, total: 0 };
+      st.total += 1;
+      if (i.status === "done") st.done += 1;
+      m.set(i.parentId, st);
+    });
+    return m;
+  }, [issues]);
+
   /* derived link info per issue */
   const linkInfo = useMemo(() => {
-    const m = new Map<string, { dealId?: string; ticketIds: string[]; companyIds: Set<string>; blocks: boolean }>();
+    const m = new Map<string, LinkInfo>();
     crossLinks.forEach((x) => {
       if (x.agileType !== "issue") return;
       const info = m.get(x.agileId) ?? { ticketIds: [], companyIds: new Set<string>(), blocks: false };
       if (x.crmType === "deal") {
         info.dealId ??= x.crmId;
-        const d = deals.find((dd) => dd.id === x.crmId);
+        const d = dealById.get(x.crmId);
         if (d?.companyId) info.companyIds.add(d.companyId);
         if (x.linkType === "blocks") info.blocks = true;
       }
-      if (x.crmType === "ticket") {
-        info.ticketIds.push(x.crmId);
-      }
+      if (x.crmType === "ticket") info.ticketIds.push(x.crmId);
       if (x.crmType === "company") info.companyIds.add(x.crmId);
       m.set(x.agileId, info);
     });
     return m;
-  }, [crossLinks, deals]);
+  }, [crossLinks, dealById]);
 
-  const project = projects.find((p) => p.id === projectId);
+  const project = projectById.get(projectId);
   const projectIssueCount = useMemo(() => (projectId === "all" ? issues.length : issues.filter((i) => i.projectId === projectId).length), [issues, projectId]);
   const activeSprintIds = useMemo(() => new Set(sprints.filter((s) => s.state === "active").map((s) => s.id)), [sprints]);
   const selectionHasActiveSprint = sprints.some((s) => s.state === "active" && (projectId === "all" || s.projectId === projectId));
-  const projectSprints = sprints.filter((s) => (projectId === "all" || s.projectId === projectId) && s.state !== "closed");
+  const projectSprints = useMemo(() => sprints.filter((s) => (projectId === "all" || s.projectId === projectId) && s.state !== "closed"), [sprints, projectId]);
+
+  /** project + scope only (no filters) — what WIP limits count against */
+  const inScope = (i: Issue) => {
+    if (projectId !== "all" && i.projectId !== projectId) return false;
+    if (hiddenByTriage(i)) return false;
+    if (groupBy === "sprint") return sprintById.get(i.sprintId ?? "")?.state !== "closed";
+    if (scope === "active") return !!i.sprintId && activeSprintIds.has(i.sprintId);
+    if (scope !== "all") return i.sprintId === scope;
+    return true;
+  };
+  const scopeIssues = useMemo(
+    () => issues.filter(inScope),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [issues, projectId, scope, groupBy, activeSprintIds, sprintById],
+  );
+  const now = Date.now();
 
   /** everything except the epic filter — feeds the epic strip */
   const baseVisible = useMemo(() => {
-    return issues.filter((i) => {
-      if (projectId !== "all" && i.projectId !== projectId) return false;
+    return scopeIssues.filter((i) => {
       if (!showSubtasks && i.type === "subtask") return false;
-      if (scope === "active" && groupBy !== "sprint" && !(i.sprintId && activeSprintIds.has(i.sprintId))) return false;
-      if (scope !== "active" && scope !== "all" && i.sprintId !== scope) return false;
-      if (groupBy === "sprint") {
-        const sp = sprints.find((s) => s.id === i.sprintId);
-        if (sp?.state === "closed") return false;
-      }
       if (onlyMine && i.assigneeId !== currentUserId && i.reporterId !== currentUserId) return false;
       if (onlyCrm && !linkInfo.has(i.id)) return false;
       if (onlyBlocking && !linkInfo.get(i.id)?.blocks) return false;
+      if (onlyBlocked && !blockersOf.get(i.id)?.length) return false;
+      if (onlyDueSoon) {
+        const st = dueState(i, now);
+        if (st !== "overdue" && !(i.dueDate && i.status !== "done" && wibDaysUntil(i.dueDate, now) <= 6)) return false;
+      }
       if (jql.active && !jql.match(i)) return false;
       return true;
     });
-  }, [issues, projectId, scope, groupBy, jql, onlyMine, onlyCrm, onlyBlocking, showSubtasks, activeSprintIds, sprints, currentUserId, linkInfo]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeIssues, jql, onlyMine, onlyCrm, onlyBlocking, onlyBlocked, onlyDueSoon, showSubtasks, currentUserId, linkInfo, blockersOf]);
 
   const visible = useMemo(() => (epicFilter ? baseVisible.filter((i) => i.epicId === epicFilter) : baseVisible), [baseVisible, epicFilter]);
 
@@ -176,10 +200,14 @@ export default function BoardPage() {
   const epicStrip = useMemo(() => {
     const present = new Set(baseVisible.map((i) => i.epicId).filter((x): x is string => !!x));
     if (epicFilter) present.add(epicFilter);
+    const per = new Map<string, Issue[]>();
+    issues.forEach((i) => {
+      if (i.epicId && present.has(i.epicId) && i.type !== "subtask") per.set(i.epicId, [...(per.get(i.epicId) ?? []), i]);
+    });
     return epics
       .filter((e) => present.has(e.id))
       .map((e) => {
-        const its = issues.filter((i) => i.epicId === e.id && i.type !== "subtask");
+        const its = per.get(e.id) ?? [];
         const done = its.filter((i) => i.status === "done");
         const pts = its.reduce((a, i) => a + (i.storyPoints ?? 0), 0);
         const donePts = done.reduce((a, i) => a + (i.storyPoints ?? 0), 0);
@@ -196,7 +224,15 @@ export default function BoardPage() {
         ...projectSprints
           .slice()
           .sort((a, b) => (a.state === b.state ? a.startDate.localeCompare(b.startDate) : a.state === "active" ? -1 : 1))
-          .map((s) => ({ id: s.id, label: s.name, color: (s.state === "active" ? "cyan" : "blue") as SpectrumColor, hint: s.state === "active" ? `ends in ${daysFromNow(s.endDate)}d` : "future" })),
+          .map((s) => {
+            const d = wibDaysUntil(s.endDate, now);
+            return {
+              id: s.id,
+              label: s.name,
+              color: (s.state === "active" ? "cyan" : "blue") as SpectrumColor,
+              hint: s.state === "active" ? (d < 0 ? `${-d}d over` : `${d}d left`) : "future",
+            };
+          }),
         { id: NONE, label: "Backlog", color: "magenta" as SpectrumColor },
       ];
     }
@@ -205,13 +241,14 @@ export default function BoardPage() {
       return [{ id: NONE, label: "No linked deal", color: "blue" as SpectrumColor }, ...stages.map((s) => ({ id: s.id, label: s.name, color: s.color, hint: `${Math.round(s.probability * 100)}%` }))];
     }
     return ISSUE_STATUSES.filter((s) => s !== "backlog" || scope === "all").map((s) => ({ id: s, label: issueStatusMeta[s].label, color: issueStatusMeta[s].color }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupBy, projectSprints, newBusiness, renewals, scope]);
 
   const columnOf = (i: Issue): string => {
-    if (groupBy === "sprint") return i.sprintId ?? NONE;
+    if (groupBy === "sprint") return i.sprintId && sprintById.has(i.sprintId) ? i.sprintId : NONE;
     if (groupBy === "dealStage") {
       const dealId = linkInfo.get(i.id)?.dealId;
-      return dealId ? deals.find((d) => d.id === dealId)?.stageId ?? NONE : NONE;
+      return dealId ? (dealById.get(dealId)?.stageId ?? NONE) : NONE;
     }
     return i.status;
   };
@@ -222,6 +259,22 @@ export default function BoardPage() {
     if (lane === "account") return [...(linkInfo.get(i.id)?.companyIds ?? [])][0] ?? NONE;
     return "all";
   };
+
+  /** every (lane, column) cell, computed once per change */
+  const cells = useMemo(() => {
+    const m = new Map<string, Issue[]>();
+    visible.forEach((i) => {
+      const k = `${laneOf(i)}::${columnOf(i)}`;
+      const list = m.get(k);
+      if (list) list.push(i);
+      else m.set(k, [i]);
+    });
+    const order = jql.order;
+    m.forEach((list) => list.sort(order ?? ((a, b) => a.rank - b.rank || priorityMeta[b.priority].weight - priorityMeta[a.priority].weight)));
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, lane, groupBy, linkInfo, dealById, sprintById, jql.order]);
+  const cell = (laneId: string, colId: string) => cells.get(`${laneId}::${colId}`) ?? EMPTY;
 
   const lanes: LaneDef[] = useMemo(() => {
     if (lane === "none") return [{ id: "all", label: "" }];
@@ -235,67 +288,119 @@ export default function BoardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lane, visible, epics, users, companies, linkInfo]);
 
-  const cell = (laneId: string, colId: string) =>
-    visible
-      .filter((i) => (lane === "none" || laneOf(i) === laneId) && columnOf(i) === colId)
-      .sort((a, b) => a.rank - b.rank || priorityMeta[b.priority].weight - priorityMeta[a.priority].weight);
-
   /** column → issues top-to-bottom across lanes (keyboard navigation order) */
-  const navColumns = columns.map((c) => lanes.flatMap((l) => cell(l.id, c.id)));
+  const navColumns = useMemo(() => columns.map((c) => lanes.flatMap((l) => cell(l.id, c.id))), [columns, lanes, cells]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const wipState = (status: string, count: number): "ok" | "at" | "over" => {
-    const limit = groupBy === "status" ? wip[status as WipStatus] : undefined;
+  /* ───────────── WIP limits: shared on the project, counted against everything in scope (filters ignored) ───────────── */
+  const wip = project?.wipLimits ?? {};
+  const wipCount = useMemo(() => {
+    const m = new Map<string, number>();
+    scopeIssues.forEach((i) => i.type !== "subtask" && m.set(i.status, (m.get(i.status) ?? 0) + 1));
+    return m;
+  }, [scopeIssues]);
+  const wipState = (status: string): "ok" | "at" | "over" => {
+    const limit = groupBy === "status" && project ? wip[status as WipStatus] : undefined;
     if (!limit) return "ok";
+    const count = wipCount.get(status) ?? 0;
     return count > limit ? "over" : count === limit ? "at" : "ok";
   };
-  const warnWip = (status: IssueStatus, addingTo: number) => {
-    const limit = groupBy === "status" ? wip[status as WipStatus] : undefined;
-    if (limit && addingTo + 1 > limit) notify(`${issueStatusMeta[status].label} is over its WIP limit (${addingTo + 1}/${limit})`);
+  const warnWip = (issue: Issue, status: IssueStatus) => {
+    const limit = project ? project.wipLimits?.[status] : projectById.get(issue.projectId)?.wipLimits?.[status];
+    if (!limit || issue.status === status || issue.type === "subtask") return;
+    const count = issues.filter((i) => i.projectId === issue.projectId && i.status === status && i.type !== "subtask" && !!i.sprintId && activeSprintIds.has(i.sprintId) && !hiddenByTriage(i)).length + 1;
+    if (count > limit) notify(`${issueStatusMeta[status].label} is over its WIP limit (${count}/${limit}) — finish work before pulling more`);
+  };
+
+  /* ───────────── moves (with Undo) ───────────── */
+
+  const withUndo = (issue: Issue, message: string, run: () => void) => {
+    const snap = captureIssues([issue.id]);
+    run();
+    notify(message, { label: "Undo", run: () => restoreIssueFields(snap) });
   };
 
   const onDragEnd = (r: DropResult) => {
     if (!r.destination) return;
-    const [toLane, toCol] = r.destination.droppableId.split("::");
-    const [fromLane, fromCol] = r.source.droppableId.split("::");
+    const [toLane, toCol] = r.destination.droppableId.split("::") as [string, string];
+    const [fromLane, fromCol] = r.source.droppableId.split("::") as [string, string];
     const issue = issues.find((i) => i.id === r.draggableId);
     if (!issue) return;
     if (toLane === fromLane && toCol === fromCol && r.destination.index === r.source.index) return;
+    const pkey = projectById.get(issue.projectId)?.key ?? "its project";
 
     const patch: Partial<Issue> = {};
+    const parts: string[] = [];
     if (toCol !== fromCol) {
       if (groupBy === "status") {
         patch.status = toCol as IssueStatus;
-        warnWip(toCol as IssueStatus, visible.filter((i) => i.status === toCol).length);
+        warnWip(issue, toCol as IssueStatus);
+        parts.push(issueStatusMeta[toCol as IssueStatus].label);
       }
-      if (groupBy === "sprint") patch.sprintId = toCol === NONE ? null : toCol;
+      if (groupBy === "sprint") {
+        const target = toCol === NONE ? null : sprintById.get(toCol);
+        if (target && target.projectId !== issue.projectId) {
+          notify(`${issue.key} belongs to ${pkey} — it can't be planned into ${target.name}`);
+          return;
+        }
+        if (issue.type === "subtask") {
+          notify(`Sub-tasks follow their parent — move ${issues.find((i) => i.id === issue.parentId)?.key ?? "the parent"} instead`);
+          return;
+        }
+        patch.sprintId = target ? target.id : null;
+        parts.push(target ? target.name : "Backlog");
+      }
       if (groupBy === "dealStage") {
         const dealId = linkInfo.get(issue.id)?.dealId;
         if (!dealId || toCol === NONE) {
           notify(dealId ? "Unlink the deal from the issue drawer instead" : `${issue.key} has no linked deal — link one first`);
           return;
         }
-        const deal = deals.find((d) => d.id === dealId);
+        const deal = dealById.get(dealId);
         const target = stageMap.get(toCol);
         if (deal && target && target.pipelineId !== deal.pipelineId) {
           notify(`${deal.name.split(" — ")[0]} is in a different pipeline`);
           return;
         }
-        moveDeal(dealId, toCol);
-        notify(`Deal moved to ${target?.name ?? "stage"} from the board`);
+        if (deal) {
+          const prevStage = deal.stageId;
+          moveDeal(dealId, toCol);
+          notify(`${deal.name.split(" — ")[0]} moved to ${target?.name ?? "stage"} from the board`, { label: "Undo", run: () => moveDeal(dealId, prevStage) });
+        }
       }
     }
     if (toLane !== fromLane) {
-      if (lane === "epic") patch.epicId = toLane === NONE ? null : toLane;
-      if (lane === "assignee") patch.assigneeId = toLane === NONE ? null : toLane;
+      if (lane === "epic") {
+        const target = toLane === NONE ? null : epicById.get(toLane);
+        if (target && target.projectId !== issue.projectId) {
+          notify(`${issue.key} belongs to ${pkey} — it can't join epic ${target.key}`);
+          return;
+        }
+        if (issue.type === "subtask") {
+          notify("Sub-tasks follow their parent's epic — change the parent instead");
+          return;
+        }
+        patch.epicId = target ? target.id : null;
+        parts.push(target ? `epic ${target.key}` : "no epic");
+      }
+      if (lane === "assignee") {
+        patch.assigneeId = toLane === NONE ? null : toLane;
+        parts.push(toLane === NONE ? "unassigned" : (userMap.get(toLane)?.name ?? "assignee"));
+      }
       if (lane === "account") {
         notify("Customer account comes from CRM links — link a record to change it");
         if (toCol === fromCol) return;
       }
     }
-    // re-rank the destination cell in its new visual order
+    if (jql.order && !Object.keys(patch).length) {
+      notify("Ranking is off while the query has ORDER BY — remove it to reorder cards");
+      return;
+    }
+    // rank between the new neighbours in the destination cell (hidden issues keep their order)
     const dest = cell(toLane, toCol).filter((i) => i.id !== issue.id);
     dest.splice(r.destination.index, 0, issue);
-    moveIssueTracked(issue.id, patch, dest.map((i) => i.id));
+    const ordered = jql.order ? [] : dest.map((i) => i.id);
+    if (groupBy === "dealStage" && !Object.keys(patch).length && toCol !== fromCol) return;
+    withUndo(issue, parts.length ? `${issue.key} → ${parts.join(" · ")}` : `${issue.key} re-ranked`, () => moveIssueTracked(issue.id, patch, ordered));
     setFocusedId(issue.id);
   };
 
@@ -310,13 +415,9 @@ export default function BoardPage() {
       notify(dir === 1 ? `${issue.key} is already in the last column` : `${issue.key} is already in the first column`);
       return;
     }
-    const destList =
-      groupBy === "status"
-        ? cell(laneOf(issue), next).filter((i) => i.id !== issue.id)
-        : visible.filter((i) => i.status === next && i.id !== issue.id).sort((a, b) => a.rank - b.rank);
-    warnWip(next, visible.filter((i) => i.status === next && i.id !== issue.id).length);
-    moveIssueTracked(issue.id, { status: next }, [...destList.map((i) => i.id), issue.id]);
-    notify(`${issue.key} → ${issueStatusMeta[next].label}`);
+    const destList = groupBy === "status" ? cell(laneOf(issue), next).filter((i) => i.id !== issue.id) : visible.filter((i) => i.status === next && i.id !== issue.id).sort((a, b) => a.rank - b.rank);
+    warnWip(issue, next);
+    withUndo(issue, `${issue.key} → ${issueStatusMeta[next].label}`, () => moveIssueTracked(issue.id, { status: next }, [...destList.map((i) => i.id), issue.id]));
   };
 
   useAgileHotkeys((e) => {
@@ -366,16 +467,25 @@ export default function BoardPage() {
       if (issue) shiftStatus(issue, k === "ArrowRight" ? 1 : -1);
       return true;
     }
+    if (!e.shiftKey && pos && (k === "i" || k === "p" || k === "e")) {
+      const issue = issues.find((i) => i.id === focusedId);
+      return issue ? quickKeys(issue, k) : false;
+    }
     if (k === "Escape" && focusedId) {
       setFocusedId(null);
+      (document.activeElement as HTMLElement | null)?.blur?.();
       return true;
     }
     return false;
   });
 
+  // j/k/h/l move real focus (screen readers follow), not just the highlight
   useEffect(() => {
     if (!focusedId) return;
-    document.querySelector<HTMLElement>(`[data-issue-card="${focusedId}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const el = document.querySelector<HTMLElement>(`[data-issue-card="${focusedId}"]`);
+    if (!el) return;
+    if (document.activeElement !== el) el.focus({ preventScroll: true });
+    el.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [focusedId]);
 
   /* sprint header for the active scope */
@@ -385,15 +495,17 @@ export default function BoardPage() {
     const total = its.reduce((a, i) => a + (i.storyPoints ?? 0), 0);
     const done = its.filter((i) => i.status === "done").reduce((a, i) => a + (i.storyPoints ?? 0), 0);
     const inProgress = its.filter((i) => i.status === "in_progress" || i.status === "in_review").reduce((a, i) => a + (i.storyPoints ?? 0), 0);
-    return { s, total, done, inProgress, daysLeft: daysFromNow(s.endDate) };
+    return { s, total, done, inProgress, daysLeft: wibDaysUntil(s.endDate, now) };
   });
 
-  const filtersOn = jql.active || onlyMine || onlyCrm || onlyBlocking || !!epicFilter;
+  const filtersOn = jql.active || onlyMine || onlyCrm || onlyBlocking || onlyBlocked || onlyDueSoon || !!epicFilter;
   const clearFilters = () => {
     setQ("");
     setOnlyMine(false);
     setOnlyCrm(false);
     setOnlyBlocking(false);
+    setOnlyBlocked(false);
+    setOnlyDueSoon(false);
     setEpicFilter(null);
   };
   const backlogHref = `/backlog${projectId !== "all" ? `?project=${projectId}` : ""}`;
@@ -402,23 +514,15 @@ export default function BoardPage() {
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Agile Board" meta={project ? <span className="text-sm text-sg-dim">{project.name}</span> : undefined}>
-        <Select
+        <ProjectPicker
+          allowAll
           value={projectId}
-          onChange={(e) => {
-            const pid = e.target.value;
+          onChange={(pid) => {
             setProjectId(pid);
             if (scope !== "active" && scope !== "all") setScope("active");
           }}
-          wrapperClassName="w-48"
-        >
-          <option value="all">All projects</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.key} · {p.name}
-            </option>
-          ))}
-        </Select>
-        <Select value={scope} onChange={(e) => setScope(e.target.value)} wrapperClassName="w-44" disabled={groupBy === "sprint"}>
+        />
+        <Select value={scope} onChange={(e) => setScope(e.target.value)} wrapperClassName="w-44" disabled={groupBy === "sprint"} aria-label="Scope" title={groupBy === "sprint" ? "Columns show every open sprint" : undefined}>
           <option value="active">Active sprints</option>
           <option value="all">All open work</option>
           {projectSprints.map((s) => (
@@ -427,6 +531,10 @@ export default function BoardPage() {
             </option>
           ))}
         </Select>
+        <Button variant="outline" onClick={() => setTriageOpen(true)} title="Escalations and requests waiting for the team">
+          <ListTodo /> Triage
+          {triage.pending.length > 0 && <span className="rounded-sm bg-soft-cyan/20 px-1 text-2xs font-bold text-soft-cyan">{triage.pending.length}</span>}
+        </Button>
         <Link href={backlogHref} className="flex h-8 items-center rounded border border-sg-line-2 px-3 text-sm font-semibold text-sg-text hover:border-sg-white hover:text-sg-white">
           Backlog
         </Link>
@@ -465,6 +573,12 @@ export default function BoardPage() {
           <Toggle on={onlyMine} onClick={() => setOnlyMine((v) => !v)}>
             My issues
           </Toggle>
+          <Toggle on={onlyDueSoon} onClick={() => setOnlyDueSoon((v) => !v)}>
+            Due this week
+          </Toggle>
+          <Toggle on={onlyBlocked} onClick={() => setOnlyBlocked((v) => !v)}>
+            Blocked
+          </Toggle>
           <Toggle on={onlyCrm} onClick={() => setOnlyCrm((v) => !v)}>
             CRM-linked
           </Toggle>
@@ -480,13 +594,16 @@ export default function BoardPage() {
             </button>
           )}
           <span className="ml-auto flex items-center gap-3 text-sg-dim">
-            <span className="hidden items-center gap-1 md:flex" title="Board keyboard: j/k up-down, h/l left-right, Enter opens, Shift+→/← moves status, Esc clears focus">
+            <span className="hidden items-center gap-1 md:flex" title="Board keyboard: j/k up-down, h/l left-right, Enter opens, Shift+→/← moves status, i assign to me, p priority, e estimate, Esc clears focus">
               <Keyboard className="size-3.5" />
               <Kbd>j</Kbd>
               <Kbd>k</Kbd>
               <Kbd>h</Kbd>
               <Kbd>l</Kbd>
               <Kbd>⇧→</Kbd>
+              <Kbd>i</Kbd>
+              <Kbd>p</Kbd>
+              <Kbd>e</Kbd>
             </span>
             {visible.length} issues
           </span>
@@ -496,8 +613,10 @@ export default function BoardPage() {
       {groupBy !== "sprint" && sprintStats.length > 0 && !projectEmpty && (
         <div className="flex shrink-0 gap-3 overflow-x-auto border-b border-sg-line px-5 py-2.5">
           {sprintStats.map(({ s, total, done, inProgress, daysLeft }) => {
-            const p = projects.find((pp) => pp.id === s.projectId);
+            const p = projectById.get(s.projectId);
             const over = total > s.capacity;
+            const assigned = assignedPoints(s.id, issues);
+            const members = Object.entries(s.memberCapacity ?? {});
             return (
               <div key={s.id} className="flex min-w-[340px] flex-1 gap-3 rounded-lg border border-sg-line bg-sg-card px-3 py-2">
                 <div className="min-w-0 flex-1">
@@ -506,7 +625,7 @@ export default function BoardPage() {
                     <Link href={`/backlog?project=${s.projectId}`} className="font-bold text-sg-white hover:underline">
                       {s.name}
                     </Link>
-                    <span className={cn("ml-auto", daysLeft < 0 ? "text-soft-red" : daysLeft <= 2 ? "text-soft-orange" : "text-sg-dim")}>{daysLeft < 0 ? `${-daysLeft}d over` : `${daysLeft}d left`}</span>
+                    <span className={cn("ml-auto", daysLeft < 0 ? "text-soft-red" : daysLeft <= 2 ? "text-soft-orange" : "text-sg-dim")}>{daysLeft < 0 ? `${-daysLeft}d over` : daysLeft === 0 ? "ends today" : `${daysLeft}d left`}</span>
                   </div>
                   <div className="mt-0.5 flex items-center gap-1 truncate text-2xs text-sg-dim">
                     <Target className="size-3 shrink-0" /> {s.goal || "No sprint goal"}
@@ -523,10 +642,22 @@ export default function BoardPage() {
                       {total}/{s.capacity} capacity{over ? " · over" : ""}
                     </span>
                   </div>
+                  {members.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1" aria-label="Points assigned per person against their capacity">
+                      {members.map(([uid, cap]) => {
+                        const a = assigned.get(uid) ?? 0;
+                        return (
+                          <span key={uid} title={`${userMap.get(uid)?.name}: ${a} pts assigned of ${cap} capacity`} className={cn("rounded-sm px-1 text-[10px] font-semibold", a > cap ? "bg-soft-orange/15 text-soft-orange" : "bg-sg-card-3 text-sg-muted")}>
+                            {userMap.get(uid)?.name.split(" ")[0]} {a}/{cap}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-                <div className="w-[120px] shrink-0 self-center" title="Burndown (approximation)">
+                <div className="w-[120px] shrink-0 self-center" title="Burndown from recorded status changes">
                   <Burndown sprint={s} issues={issues} mini />
-                  <div className="mt-0.5 text-center text-[10px] text-sg-dim">burndown ≈</div>
+                  <div className="mt-0.5 text-center text-[10px] text-sg-dim">burndown</div>
                 </div>
               </div>
             );
@@ -599,12 +730,13 @@ export default function BoardPage() {
               {/* column headers */}
               <div className="sticky top-0 z-10 -mt-4 flex gap-3 bg-sg-bg pb-2 pt-4">
                 {columns.map((c) => {
-                  const items = visible.filter((i) => columnOf(i) === c.id);
+                  const items = lanes.flatMap((l) => cell(l.id, c.id));
                   const pts = items.reduce((a, i) => a + (i.storyPoints ?? 0), 0);
-                  const wipable = groupBy === "status" && (WIP_STATUSES as string[]).includes(c.id);
+                  const wipable = groupBy === "status" && !!project && (WIP_STATUSES as string[]).includes(c.id);
                   const limit = wipable ? wip[c.id as WipStatus] : undefined;
-                  const state = wipState(c.id, items.length);
-                  const tip = limit ? (state === "over" ? `Over WIP limit: ${items.length}/${limit} — finish work before pulling more` : state === "at" ? `At WIP limit: ${items.length}/${limit}` : `WIP limit ${limit} (${items.length} now)`) : undefined;
+                  const state = wipState(c.id);
+                  const inScopeCount = wipCount.get(c.id) ?? 0;
+                  const tip = limit ? (state === "over" ? `Over WIP limit: ${inScopeCount}/${limit} — finish work before pulling more` : state === "at" ? `At WIP limit: ${inScopeCount}/${limit}` : `WIP limit ${limit} (${inScopeCount} now)`) + (inScopeCount !== items.length ? ` · ${items.length} shown with the current filters` : "") : undefined;
                   return (
                     <div
                       key={c.id}
@@ -619,10 +751,9 @@ export default function BoardPage() {
                       {c.hint && <span className="text-2xs text-sg-dim">{c.hint}</span>}
                       <span className="ml-auto text-2xs text-sg-dim">{pts} pts</span>
                       <span className={cn("rounded-sm px-1.5 text-2xs font-semibold", state === "over" ? "bg-soft-red/20 text-soft-red" : state === "at" ? "bg-soft-orange/20 text-soft-orange" : "bg-sg-card-3 text-sg-muted")}>
-                        {items.length}
-                        {limit ? `/${limit}` : ""}
+                        {limit ? `${inScopeCount}/${limit}` : items.length}
                       </span>
-                      {wipable && <WipPopover label={c.label} limit={limit} onSave={(n) => setWip(c.id as WipStatus, n)} />}
+                      {wipable && project && <WipPopover label={c.label} projectKey={project.key} limit={limit} onSave={(n) => setProjectWip(project.id, c.id as IssueStatus, n)} />}
                     </div>
                   );
                 })}
@@ -635,7 +766,7 @@ export default function BoardPage() {
                       {l.color && <span className={cn("size-2 rounded-sm", spectrumDot[l.color])} />}
                       {l.avatar && <Avatar user={userMap.get(l.avatar)} size="xs" />}
                       {l.label}
-                      <span className="text-sg-dim">({visible.filter((i) => laneOf(i) === l.id).length})</span>
+                      <span className="text-sg-dim">({columns.reduce((a, c) => a + cell(l.id, c.id).length, 0)})</span>
                     </div>
                   )}
                   <div className="flex gap-3">
@@ -649,24 +780,49 @@ export default function BoardPage() {
                               {...provided.droppableProps}
                               className={cn("flex w-[280px] shrink-0 flex-col gap-2 rounded-lg p-1.5 transition-colors", lane === "none" ? "min-h-[60vh]" : "min-h-[72px]", snapshot.isDraggingOver ? "bg-sg-card-2" : "bg-sg-card/40")}
                             >
-                              {items.map((issue, index) => (
-                                <Draggable key={issue.id} draggableId={issue.id} index={index}>
-                                  {(p, s) => (
-                                    <div ref={p.innerRef} {...p.draggableProps} {...p.dragHandleProps} style={p.draggableProps.style}>
-                                      <IssueCard
-                                        issue={issue}
-                                        dragging={s.isDragging}
-                                        focused={focusedId === issue.id}
-                                        info={linkInfo.get(issue.id)}
-                                        onOpen={() => {
-                                          setFocusedId(issue.id);
-                                          openIssue(issue.id);
+                              {items.map((issue, index) => {
+                                const info = linkInfo.get(issue.id);
+                                const open = () => {
+                                  setFocusedId(issue.id);
+                                  openIssue(issue.id);
+                                };
+                                return (
+                                  <Draggable key={issue.id} draggableId={issue.id} index={index}>
+                                    {(p, s) => (
+                                      // one focusable element per card: the drag handle is the card itself
+                                      <div
+                                        ref={p.innerRef}
+                                        {...p.draggableProps}
+                                        {...p.dragHandleProps}
+                                        style={p.draggableProps.style}
+                                        data-issue-card={issue.id}
+                                        aria-label={`${issue.key} ${issue.summary}`}
+                                        onClick={open}
+                                        onFocus={() => setFocusedId(issue.id)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Enter") {
+                                            e.preventDefault();
+                                            open();
+                                          }
                                         }}
-                                      />
-                                    </div>
-                                  )}
-                                </Draggable>
-                              ))}
+                                        className="rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70"
+                                      >
+                                        <IssueCard
+                                          issue={issue}
+                                          dragging={s.isDragging}
+                                          focused={focusedId === issue.id}
+                                          info={info}
+                                          epic={issue.epicId ? epicById.get(issue.epicId) : undefined}
+                                          deal={info?.dealId ? dealById.get(info.dealId) : undefined}
+                                          subtasks={subtaskStats.get(issue.id)}
+                                          blockers={blockersOf.get(issue.id)}
+                                          assignee={issue.assigneeId ? userMap.get(issue.assigneeId) : null}
+                                        />
+                                      </div>
+                                    )}
+                                  </Draggable>
+                                );
+                              })}
                               {provided.placeholder}
                               {groupBy === "status" && lane === "none" && c.id !== "done" && (
                                 <button type="button" onClick={() => openDialog({ kind: "createIssue", status: c.id as IssueStatus, projectId: projectId === "all" ? undefined : projectId })} className="flex h-8 items-center gap-1.5 rounded px-2 text-xs text-sg-dim hover:bg-sg-card-2 hover:text-sg-white">
@@ -697,7 +853,10 @@ export default function BoardPage() {
                     </>
                   ) : (
                     <>
-                      <p>No issues match.{scope === "active" ? " Try “All open work”" : ""}{filtersOn ? " or clear the filters." : "."}</p>
+                      <p>
+                        No issues match.{scope === "active" ? " Try “All open work”" : ""}
+                        {filtersOn ? " or clear the filters." : "."}
+                      </p>
                       {filtersOn && (
                         <Button size="sm" variant="outline" className="mt-3" onClick={clearFilters}>
                           Clear filters
@@ -711,11 +870,12 @@ export default function BoardPage() {
           </div>
         </DragDropContext>
       )}
+      <TriageInbox open={triageOpen} onOpenChange={setTriageOpen} projectId={projectId} />
     </div>
   );
 }
 
-function WipPopover({ label, limit, onSave }: { label: string; limit?: number; onSave: (n: number | null) => void }) {
+function WipPopover({ label, projectKey, limit, onSave }: { label: string; projectKey: string; limit?: number; onSave: (n: number | null) => void }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(limit ? String(limit) : "");
   useEffect(() => {
@@ -741,7 +901,7 @@ function WipPopover({ label, limit, onSave }: { label: string; limit?: number; o
           }}
         >
           <div className="sg-eyebrow mb-1">WIP limit · {label}</div>
-          <p className="mb-2 text-2xs text-sg-dim">The header turns orange at the limit and red above it. Saved in this browser for the current project selection.</p>
+          <p className="mb-2 text-2xs text-sg-dim">Shared with everyone on {projectKey}. Counts every issue in the board scope, whatever filters are on. The header turns orange at the limit and red above it.</p>
           <Input autoFocus type="number" min={1} max={99} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="No limit" />
           <div className="mt-2 flex justify-between">
             <Button size="xs" variant="ghost" onClick={() => save(null)} disabled={!limit}>
@@ -757,28 +917,35 @@ function WipPopover({ label, limit, onSave }: { label: string; limit?: number; o
   );
 }
 
-function IssueCard({ issue, dragging, focused, info, onOpen }: { issue: Issue; dragging: boolean; focused: boolean; info?: { dealId?: string; ticketIds: string[]; blocks: boolean }; onOpen: () => void }) {
-  const userMap = useUserMap();
-  const epics = useCrm((s) => s.epics);
-  const deals = useCrm((s) => s.deals);
-  const issues = useCrm((s) => s.issues);
-  const epic = epics.find((e) => e.id === issue.epicId);
-  const deal = info?.dealId ? deals.find((d) => d.id === info.dealId) : undefined;
-  const subtasks = issues.filter((i) => i.parentId === issue.id);
+function IssueCard({
+  issue,
+  dragging,
+  focused,
+  info,
+  epic,
+  deal,
+  subtasks,
+  blockers,
+  assignee,
+}: {
+  issue: Issue;
+  dragging: boolean;
+  focused: boolean;
+  info?: LinkInfo;
+  epic?: Epic;
+  deal?: Deal;
+  subtasks?: { done: number; total: number };
+  blockers?: Issue[];
+  assignee?: { initials: string; color: SpectrumColor; name: string } | null;
+}) {
   const TypeIcon = issueTypeMeta[issue.type].icon;
   const PrioIcon = priorityMeta[issue.priority].icon;
+  const blockedOpen = !!blockers?.length && issue.status !== "done";
   return (
     <div
-      role="button"
-      tabIndex={0}
-      data-issue-card={issue.id}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") onOpen();
-      }}
       className={cn(
-        "cursor-pointer rounded-md border bg-sg-card p-2.5 transition-[border-color,box-shadow] hover:border-sg-line-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70",
-        info?.blocks && issue.status !== "done" ? "border-soft-red/40" : "border-sg-line",
+        "cursor-pointer rounded-md border bg-sg-card p-2.5 transition-[border-color,box-shadow] hover:border-sg-line-2",
+        (info?.blocks || blockedOpen) && issue.status !== "done" ? "border-soft-red/40" : "border-sg-line",
         focused && "border-sg-white/70 ring-2 ring-sg-white/80 ring-offset-2 ring-offset-sg-bg",
         dragging && "rotate-[1.5deg] border-sg-white/50 shadow-pop",
       )}
@@ -807,19 +974,25 @@ function IssueCard({ issue, dragging, focused, info, onOpen }: { issue: Issue; d
           )}
         </div>
       )}
+      {(blockedOpen || (issue.dueDate && issue.status !== "done")) && (
+        <div className="mt-2 flex flex-wrap items-center gap-1">
+          {blockedOpen && <BlockedBadge blockers={blockers} />}
+          {issue.status !== "done" && <DueChip issue={issue} compact />}
+        </div>
+      )}
       <div className="mt-2 flex items-center gap-1.5">
         <TypeIcon className={cn("size-3.5", softText[issueTypeMeta[issue.type].color])} aria-label={issueTypeMeta[issue.type].label} />
         <span className="text-2xs font-semibold text-sg-dim">{issue.key}</span>
-        {subtasks.length > 0 && (
-          <span className="flex items-center gap-0.5 text-2xs text-sg-dim">
+        {subtasks && subtasks.total > 0 && (
+          <span className="flex items-center gap-0.5 text-2xs text-sg-dim" title={`${subtasks.done} of ${subtasks.total} sub-tasks done`}>
             <ListTree className="size-3" />
-            {subtasks.filter((s) => s.status === "done").length}/{subtasks.length}
+            {subtasks.done}/{subtasks.total}
           </span>
         )}
         <span className="ml-auto flex items-center gap-1.5">
           <PrioIcon className={cn("size-3.5", softText[priorityMeta[issue.priority].color])} aria-label={priorityMeta[issue.priority].label} />
           {issue.storyPoints != null && <span className="min-w-[18px] rounded-full bg-sg-card-3 px-1.5 text-center text-[10px] font-bold text-sg-muted">{issue.storyPoints}</span>}
-          <Avatar user={issue.assigneeId ? userMap.get(issue.assigneeId) : null} size="xs" />
+          <Avatar user={assignee ?? null} size="xs" />
         </span>
       </div>
     </div>
@@ -832,7 +1005,7 @@ function Segmented<T extends string>({ label, value, onChange, options }: { labe
       <span className="sg-eyebrow">{label}</span>
       <div className="flex rounded border border-sg-line p-0.5">
         {options.map((o) => (
-          <button key={o.value} type="button" onClick={() => onChange(o.value)} className={cn("h-6 rounded-sm px-2 text-xs font-semibold", value === o.value ? "bg-sg-card-3 text-sg-white" : "text-sg-muted hover:text-sg-white")}>
+          <button key={o.value} type="button" aria-pressed={value === o.value} onClick={() => onChange(o.value)} className={cn("h-6 rounded-sm px-2 text-xs font-semibold", value === o.value ? "bg-sg-card-3 text-sg-white" : "text-sg-muted hover:text-sg-white")}>
             {o.label}
           </button>
         ))}
@@ -843,7 +1016,7 @@ function Segmented<T extends string>({ label, value, onChange, options }: { labe
 
 function Toggle({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button type="button" onClick={onClick} className={cn("h-6 rounded-pill border px-2.5 text-xs font-semibold transition-colors", on ? "border-sg-white bg-sg-white text-sg-bg" : "border-sg-line text-sg-muted hover:border-sg-line-2 hover:text-sg-white")}>
+    <button type="button" aria-pressed={on} onClick={onClick} className={cn("h-6 rounded-pill border px-2.5 text-xs font-semibold transition-colors", on ? "border-sg-white bg-sg-white text-sg-bg" : "border-sg-line text-sg-muted hover:border-sg-line-2 hover:text-sg-white")}>
       {children}
     </button>
   );

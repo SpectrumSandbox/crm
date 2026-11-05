@@ -2,6 +2,7 @@
 
 import { seed, type SeedData } from "@/lib/seed";
 import { useCrm, type CrmState } from "@/lib/store";
+import { isRestrictedKey } from "./server-policy";
 
 /** Persisted/synced collections — always derived from the seed bundle so new collections sync automatically. */
 export const COLLECTION_KEYS = Object.keys(seed) as (keyof SeedData)[];
@@ -80,4 +81,35 @@ export function describeActor(updatedBy: string | null | undefined, users: { ema
   const email = demo ? updatedBy.slice(5) : updatedBy;
   const user = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
   return `${user?.name ?? email}${demo ? " (demo)" : ""}`;
+}
+
+/** Synced collections that hold individual pay or HR status data (same classification the server applies). */
+export function restrictedCollectionKeys(): string[] {
+  return COLLECTION_KEYS.filter((k) => isRestrictedKey(k));
+}
+
+/**
+ * Drop the restricted collections from a backup's data (used when the restorer has no full data scope, §13.4):
+ * the current local copies are kept instead, and the server would ignore them anyway.
+ */
+export function withoutRestricted(data: SeedData, current: CrmState): SeedData {
+  const out = { ...data } as Record<string, unknown>;
+  for (const k of restrictedCollectionKeys()) out[k] = current[k as keyof SeedData];
+  return out as SeedData;
+}
+
+export interface InventoryRow {
+  key: string;
+  rows: number;
+  bytes: number;
+  restricted: boolean;
+}
+
+/** Record count and JSON size of every synced collection, largest first. */
+export function dataInventory(state: CrmState): InventoryRow[] {
+  const enc = new TextEncoder();
+  return COLLECTION_KEYS.map((k) => {
+    const v = state[k] as unknown;
+    return { key: k as string, rows: Array.isArray(v) ? v.length : 0, bytes: enc.encode(JSON.stringify(v ?? [])).byteLength, restricted: isRestrictedKey(k as string) };
+  }).sort((a, b) => b.bytes - a.bytes);
 }

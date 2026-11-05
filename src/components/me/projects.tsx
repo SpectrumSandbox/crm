@@ -11,10 +11,10 @@ import {
   carriedForward,
   collectionWindow,
   computeRun,
+  cycleDates,
   effectiveWeight,
   isLiveMember,
   memberWeight,
-  monthKey,
   paymentDate,
   projectRate,
   topUpBalance,
@@ -24,9 +24,10 @@ import type { Initiative, InitiativeMember } from "@/lib/initiatives/types";
 import { cn, formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Chip, EmptyState } from "@/components/ui/misc";
-import { Cite, Money, RoleChips, StatusChip, TypeChip } from "@/components/initiatives/shared";
-import { pct3, rateBasis } from "./helpers";
-import { Card, NumCell, SampleChip, TH, THEAD_ROW } from "./ui";
+import { Cite, RoleChips, StatusChip, TypeChip } from "@/components/initiatives/shared";
+import { RaiseDisputeButton } from "./disputes";
+import { currentCycle, cycleLabel, pct3, rateBasis } from "./helpers";
+import { Card, NumCell, RpFull, SampleChip, TH, THEAD_ROW } from "./ui";
 
 const projectLabel = (i: Initiative) => i.code || i.trackingNo || "Draft";
 /** statuses after which a role no longer counts as live */
@@ -56,7 +57,8 @@ export function MyProjects({ userId }: { userId: string }) {
   const adjustments = useCrm((s) => s.curveAdjustments);
   const setConsent = useCrm((s) => s.setConsent);
   const notify = useUi((s) => s.notify);
-  const month = useMemo(() => monthKey(Date.now()), []);
+  // §8.2 the salary cycle open today (21st → 20th), not the calendar month
+  const month = useMemo(() => currentCycle(), []);
 
   const rows = useMemo<ProjectRow[]>(() => {
     const mine = members.filter((m) => m.userId === userId);
@@ -185,7 +187,7 @@ export function MyProjects({ userId }: { userId: string }) {
                     <StatusChip status={r.ini.status} />
                   </td>
                   <td className="px-2 py-2 text-right">
-                    {r.topUp == null ? <span className="text-2xs text-sg-dim">n/a</span> : r.topUp > 0 ? <Money value={r.topUp} className="text-soft-yellow" /> : <span className="text-sg-dim">Rp 0</span>}
+                    {r.topUp == null ? <span className="text-2xs text-sg-dim">n/a</span> : r.topUp > 0 ? <RpFull value={r.topUp} className="text-soft-yellow" /> : <span className="text-sg-dim">Rp 0</span>}
                   </td>
                   <td className="py-2 pl-2 pr-4">
                     {r.row.consent === "pending" && r.live ? (
@@ -202,9 +204,23 @@ export function MyProjects({ userId }: { userId: string }) {
                     ) : (
                       <div className="space-y-0.5">
                         <Chip color="green">Signed</Chip>
-                        {r.live && !r.row.prcApproved && <div className="text-2xs text-soft-yellow">Awaiting PRC check (§6.7)</div>}
+                        {r.live && !r.row.prcApproved && <div className="text-2xs text-soft-yellow">{r.ini.status === "draft" ? "Submit the proposal first — the PRC checks the team after submission (§4.5, §6.7)" : "Awaiting PRC check (§6.7)"}</div>}
                         {r.live && !r.row.managerApproved && <div className="text-2xs text-soft-yellow">Line manager agreement pending (§3.1)</div>}
                       </div>
+                    )}
+                    {LEDGER.has(r.ini.status) && r.row.consent !== "pending" && (
+                      <RaiseDisputeButton
+                        className="mt-1 -ml-1.5"
+                        label="Dispute ledger"
+                        prefill={{
+                          category: "ledger",
+                          subject: `Ledger entry — ${r.ini.title}`,
+                          initiativeId: r.ini.id,
+                          lineRef: `member:${r.row.id}`,
+                          eventAt: r.row.joinedAt,
+                          source: `${r.ini.title} · ${r.row.roles.join(" + ").replace(/_/g, " ")} · W ${r.w.toFixed(2)} × A ${r.a.toFixed(2)} · from ${formatDate(r.row.joinedAt, "medium")}`,
+                        }}
+                      />
                     )}
                   </td>
                 </tr>
@@ -228,7 +244,7 @@ export function CycleProjection({ userId }: { userId: string }) {
   const profiles = useCrm((s) => s.employeeProfiles);
   const adjustments = useCrm((s) => s.curveAdjustments);
   const runs = useCrm((s) => s.bonusRuns);
-  const month = useMemo(() => monthKey(Date.now()), []);
+  const month = useMemo(() => currentCycle(), []);
 
   const data = useMemo(() => {
     const myIni = new Set(members.filter((m) => m.userId === userId).map((m) => m.initiativeId));
@@ -272,21 +288,22 @@ export function CycleProjection({ userId }: { userId: string }) {
           <Chip color="yellow" title="Company figures are assumed generous: the §9.1 break-even test and cash check may still reduce what is paid (§9.2)">
             Projection — before the break-even test
           </Chip>
-          {data.run && <Chip color={data.run.status === "released" ? "green" : data.run.status === "certified" ? "cyan" : data.run.status === "failed" ? "red" : "blue"}>{month} run {data.run.status}</Chip>}
+          {data.run && <Chip color={data.run.status === "released" ? "green" : data.run.status === "certified" ? "cyan" : data.run.status === "failed" ? "red" : "blue"}>{cycleLabel(month)} run {data.run.status}</Chip>}
         </>
       }
     >
       <p className="mb-3 flex gap-1.5 text-2xs text-sg-muted">
         <Info className="mt-px size-3.5 shrink-0 text-sg-dim" />
         <span>
-          Salary cycle {month}: revenue collected {formatDate(data.window.from, "short")} – {formatDate(data.window.to, "short")} is paid with the {formatDate(paymentDate(month), "medium")} salary; collections after the {POLICY.cycle.cutoffDay}th move to next month (§8.2). Assumes the company passes the break-even test and cash check — if not, the PRC pays pro rata and carries the rest forward (§9.2). Type C standard bonuses are paid in full either way (§8.6).
+          Salary cycle {cycleLabel(month)}: revenue collected {formatDate(data.window.from, "short")} – {formatDate(data.window.to, "short")} is paid with the {formatDate(paymentDate(month), "medium")} salary; later collections move to next month (§8.2).
+          {cycleDates(month).notes.length > 0 && <> {cycleDates(month).notes.join(" · ")}.</>} Assumes the company passes the break-even test and cash check — if not, the PRC pays pro rata and carries the rest forward (§9.2). Type C standard bonuses are paid in full either way (§8.6).
         </span>
       </p>
       {data.rows.length === 0 ? (
         <p className="py-4 text-center text-xs text-sg-dim">No collected payment on your projects in this cycle&apos;s window{data.pending.length ? ` yet — ${data.pending.length} payment${data.pending.length === 1 ? " is" : "s are"} still expected` : ""}.</p>
       ) : (
         <div className="-mx-4 -mb-4 overflow-x-auto">
-          <table className="w-full min-w-[860px] text-xs">
+          <table className="w-full min-w-[1080px] text-xs">
             <thead>
               <tr className={THEAD_ROW}>
                 <th className={cn(TH, "pl-4")}>Project</th>
@@ -340,7 +357,7 @@ export function CycleProjection({ userId }: { userId: string }) {
               </tr>
             </tfoot>
           </table>
-          {total("carriedIn") > 0 && <p className="px-4 py-2 text-2xs text-sg-dim">Includes <Money value={total("carriedIn")} /> carried forward from an earlier failed month, paid first (§9.2).</p>}
+          {total("carriedIn") > 0 && <p className="px-4 py-2 text-2xs text-sg-dim">Includes <RpFull value={total("carriedIn")} /> carried forward from an earlier failed month, paid first (§9.2).</p>}
         </div>
       )}
     </Card>

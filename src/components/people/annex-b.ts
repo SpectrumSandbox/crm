@@ -26,20 +26,31 @@ export function reminderBody(senderName: string) {
 
 type AddActivity = (input: { type: "note"; subject: string; body: string; links: ActivityLinks }) => string;
 
-/**
- * Opens a mailto draft with every recipient in BCC and records an audit-style activity note.
- * Returns the number of recipients (0 when nobody has an email address).
- */
-export function sendAnnexBReminder(recipients: Pick<User, "name" | "email">[], senderName: string, addActivity: AddActivity) {
+/** Mail clients (Outlook, Gmail) drop mailto links over ~2,000 characters — send BCC drafts in batches of this size. */
+export const REMINDER_BATCH = 10;
+
+export function reminderBatches(recipients: Pick<User, "name" | "email">[]) {
+  const withEmail = recipients.filter((r) => r.email.trim());
+  const out: Pick<User, "name" | "email">[][] = [];
+  for (let i = 0; i < withEmail.length; i += REMINDER_BATCH) out.push(withEmail.slice(i, i + REMINDER_BATCH));
+  return out;
+}
+
+/** A short mailto draft (BCC + subject + link) that stays well under the mailto length limit. */
+export function reminderHref(batch: Pick<User, "email">[]) {
+  const bcc = batch.map((r) => r.email.trim()).join(",");
+  const short = `Please sign the Project Participation Agreement (Annex B, Policy v${POLICY_VERSION}) before the first v${POLICY_VERSION} payment on 25 January 2027 — until it is signed, project bonuses are held (§3.1, §15.1). Sign here: ${SIGN_URL}`;
+  return `mailto:?bcc=${encodeURIComponent(bcc)}&subject=${encodeURIComponent(REMINDER_SUBJECT)}&body=${encodeURIComponent(short)}`;
+}
+
+/** Records that HR sent the reminder (one activity note for all batches). Returns the number of recipients. */
+export function logAnnexBReminder(recipients: Pick<User, "name" | "email">[], senderName: string, addActivity: AddActivity, how: string) {
   const withEmail = recipients.filter((r) => r.email.trim());
   if (!withEmail.length) return 0;
-  const bcc = withEmail.map((r) => r.email.trim()).join(",");
-  const href = `mailto:?bcc=${encodeURIComponent(bcc)}&subject=${encodeURIComponent(REMINDER_SUBJECT)}&body=${encodeURIComponent(reminderBody(senderName))}`;
-  if (typeof window !== "undefined") window.location.href = href;
   addActivity({
     type: "note",
     subject: `Annex B reminder sent to ${withEmail.length} ${withEmail.length === 1 ? "person" : "people"} (Policy v${POLICY_VERSION} §15.1)`,
-    body: `${senderName} drafted the reminder "${REMINDER_SUBJECT}" (BCC) to: ${withEmail.map((r) => `${r.name} <${r.email.trim()}>`).join(", ")}. Payments stay held until each person signs the Project Participation Agreement (§3.1, §15.1). Signing link: ${SIGN_URL}`,
+    body: `${senderName} ${how} "${REMINDER_SUBJECT}" to: ${withEmail.map((r) => `${r.name} <${r.email.trim()}>`).join(", ")}. Payments stay held until each person signs the Project Participation Agreement (§3.1, §15.1). Signing link: ${SIGN_URL}`,
     links: { contactIds: [], companyIds: [], dealIds: [], ticketIds: [] },
   });
   return withEmail.length;

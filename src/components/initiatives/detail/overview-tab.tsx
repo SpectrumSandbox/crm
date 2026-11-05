@@ -12,6 +12,7 @@ import { cn, formatDate, formatIDR } from "@/lib/utils";
 import { Chip, RecordAvatar } from "@/components/ui/misc";
 import { Cite, Money, Pct, Rate, RateCurve, SampleChip, StatusChip, TierChip, milestoneWorkPeriods, rateSourceLabel } from "@/components/initiatives/shared";
 import { Card, KV, Prose, RiskLevelChip } from "./ui";
+import { CloseOutCard } from "@/components/initiatives/close-out";
 
 const contractLabel: Record<Initiative["contractStatus"], string> = { none: "No contract yet", verbal: "Verbal agreement", loi: "Letter of intent", signed: "Signed contract" };
 const levelOrder: Record<RiskItem["level"], number> = { high: 0, medium: 1, low: 2 };
@@ -20,6 +21,7 @@ export function OverviewTab({ ini }: { ini: Initiative }) {
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_400px]">
       <div className="min-w-0 space-y-4">
+        <CloseOutCard ini={ini} />
         <ProposalCard ini={ini} />
         <MilestonesCard ini={ini} />
         <EconomicsCard ini={ini} />

@@ -2,9 +2,8 @@
 
 /* Small layout pieces for /me. */
 import Link from "next/link";
-import { cn } from "@/lib/utils";
+import { cn, formatIDR } from "@/lib/utils";
 import { Chip } from "@/components/ui/misc";
-import { Money } from "@/components/initiatives/shared";
 
 export function Card({ title, action, children, className, id }: { title: React.ReactNode; action?: React.ReactNode; children: React.ReactNode; className?: string; id?: string }) {
   return (
@@ -18,11 +17,16 @@ export function Card({ title, action, children, className, id }: { title: React.
   );
 }
 
-/** Right-aligned money cell; zero renders as a dim dash. */
+/** Exact whole-rupiah amount (§8.4, §8.5 — statements show the exact figure, never a rounded one). */
+export function RpFull({ value, className }: { value: number; className?: string }) {
+  return <span className={cn("sg-num", className)}>{formatIDR(Math.floor(value + 1e-6), "full")}</span>;
+}
+
+/** Right-aligned money cell in exact rupiah; zero renders as a dim dash. */
 export function NumCell({ v, tone, strong }: { v: number; tone?: string; strong?: boolean }) {
   return (
     <td className={cn("whitespace-nowrap px-2 py-1.5 text-right", v ? tone ?? "text-sg-text" : "text-sg-dim", strong && v ? "font-semibold text-sg-white" : "")}>
-      {v ? <Money value={v} /> : "—"}
+      {v ? <RpFull value={v} /> : "—"}
     </td>
   );
 }

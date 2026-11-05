@@ -131,4 +131,43 @@ export const POLICY = {
   deathPayoutDays: 60, // §10
   curveNoticeDays: 30, // §9.5
   removalWarningDays: { verbal: 14, written: 7 }, // §7.5
+  /** §5.4 turnover alert levels against the Rp4.8bn UMKM limit */
+  umkmAlerts: { watch: 0.7, warning: 0.9 },
+  /** §13.1 a quorum is a majority of PRC members including the CFO or a named Finance delegate */
+  prcQuorum: { majority: 0.5, requireFinance: true },
 };
+
+/**
+ * PPh 21 monthly effective rates (Tarif Efektif Rata-rata, TER) — PP 58/2023 Annex, PMK 168/2023. Each bracket is
+ * [upper bound of monthly gross income (inclusive), rate]. Category A: TK/0, TK/1, K/0; B: TK/2, TK/3, K/1, K/2;
+ * C: K/3. Used only for the "estimate" shown on bonus lines and statements (§8.5, Annex E) — payroll withholds the
+ * actual tax, and December uses the annual Article 17 true-up.
+ */
+const J = 1_000_000;
+export const PPH21_TER: Record<"A" | "B" | "C", [number, number][]> = {
+  A: [
+    [5.4 * J, 0], [5.65 * J, 0.0025], [5.95 * J, 0.005], [6.3 * J, 0.0075], [6.75 * J, 0.01], [7.5 * J, 0.0125], [8.55 * J, 0.015], [9.65 * J, 0.0175],
+    [10.05 * J, 0.02], [10.35 * J, 0.0225], [10.7 * J, 0.025], [11.05 * J, 0.03], [11.6 * J, 0.035], [12.5 * J, 0.04], [13.75 * J, 0.05], [15.1 * J, 0.06],
+    [16.95 * J, 0.07], [19.75 * J, 0.08], [24.15 * J, 0.09], [26.45 * J, 0.1], [28 * J, 0.11], [30.05 * J, 0.12], [32.4 * J, 0.13], [35.4 * J, 0.14],
+    [39.1 * J, 0.15], [43.85 * J, 0.16], [47.8 * J, 0.17], [51.4 * J, 0.18], [56.3 * J, 0.19], [62.2 * J, 0.2], [68.6 * J, 0.21], [77.5 * J, 0.22],
+    [89 * J, 0.23], [103 * J, 0.24], [125 * J, 0.25], [157 * J, 0.26], [206 * J, 0.27], [337 * J, 0.28], [454 * J, 0.29], [550 * J, 0.3],
+    [695 * J, 0.31], [910 * J, 0.32], [1_400 * J, 0.33], [Number.POSITIVE_INFINITY, 0.34],
+  ],
+  B: [
+    [6.2 * J, 0], [6.5 * J, 0.0025], [6.85 * J, 0.005], [7.3 * J, 0.0075], [9.2 * J, 0.01], [10.75 * J, 0.015], [11.25 * J, 0.02], [11.6 * J, 0.025],
+    [12.6 * J, 0.03], [13.6 * J, 0.04], [14.95 * J, 0.05], [16.4 * J, 0.06], [18.45 * J, 0.07], [21.85 * J, 0.08], [26 * J, 0.09], [27.7 * J, 0.1],
+    [29.35 * J, 0.11], [31.45 * J, 0.12], [33.95 * J, 0.13], [37.1 * J, 0.14], [41.1 * J, 0.15], [45.8 * J, 0.16], [49.5 * J, 0.17], [53.8 * J, 0.18],
+    [58.5 * J, 0.19], [64 * J, 0.2], [71 * J, 0.21], [80 * J, 0.22], [93 * J, 0.23], [109 * J, 0.24], [129 * J, 0.25], [163 * J, 0.26],
+    [211 * J, 0.27], [374 * J, 0.28], [459 * J, 0.29], [555 * J, 0.3], [704 * J, 0.31], [957 * J, 0.32], [1_405 * J, 0.33], [Number.POSITIVE_INFINITY, 0.34],
+  ],
+  C: [
+    [6.6 * J, 0], [6.95 * J, 0.0025], [7.35 * J, 0.005], [7.8 * J, 0.0075], [8.85 * J, 0.01], [9.8 * J, 0.0125], [10.95 * J, 0.015], [11.2 * J, 0.0175],
+    [12.05 * J, 0.02], [12.95 * J, 0.03], [14.15 * J, 0.04], [15.55 * J, 0.05], [17.05 * J, 0.06], [19.5 * J, 0.07], [22.7 * J, 0.08], [26.6 * J, 0.09],
+    [28.1 * J, 0.1], [30.1 * J, 0.11], [32.6 * J, 0.12], [35.4 * J, 0.13], [38.9 * J, 0.14], [43 * J, 0.15], [47.4 * J, 0.16], [51.2 * J, 0.17],
+    [55.8 * J, 0.18], [60.4 * J, 0.19], [66.7 * J, 0.2], [74.5 * J, 0.21], [83.2 * J, 0.22], [95.6 * J, 0.23], [110 * J, 0.24], [134 * J, 0.25],
+    [169 * J, 0.26], [221 * J, 0.27], [390 * J, 0.28], [463 * J, 0.29], [561 * J, 0.3], [709 * J, 0.31], [965 * J, 0.32], [1_419 * J, 0.33], [Number.POSITIVE_INFINITY, 0.34],
+  ],
+};
+/** PTKP status → TER category (PP 58/2023 art. 2). */
+export const PTKP_TER_CATEGORY: Record<string, "A" | "B" | "C"> = { "TK/0": "A", "TK/1": "A", "K/0": "A", "TK/2": "B", "TK/3": "B", "K/1": "B", "K/2": "B", "K/3": "C" };
+export const PTKP_STATUSES = Object.keys(PTKP_TER_CATEGORY);

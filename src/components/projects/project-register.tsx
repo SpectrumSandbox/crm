@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowUpRight, BadgeCheck, Download, Kanban, ListChecks, ListTodo, Pencil, Plus, UserMinus, Users } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import type { InitiativeMember } from "@/lib/initiatives/types";
@@ -19,6 +19,11 @@ import { ComplianceList, ComplianceSummary, PolicyRef, useProjectRegister } from
 import { MemberDialog } from "./member-dialog";
 import { FiguresCard, RatifyDialog } from "./figures-card";
 import { PaymentsCard } from "./payments-card";
+import { StatusUpdatesCard } from "./status-updates";
+import { CoiCard } from "@/components/initiatives/coi";
+import { ChangeOrdersCard } from "./change-orders";
+import { useAccess } from "@/lib/access-control";
+import { amendmentCount, amendmentIssues, isPastDay, lastDayEnd, openLeads, prcCanDecide, requiresAmendment, todayWib, wibDay } from "@/lib/initiatives/team-rules";
 
 export function ProjectRegisterView({ id }: { id: string }) {
   const reg = useProjectRegister(id);
@@ -41,6 +46,12 @@ function Register({ reg }: { reg: ProjectRegister }) {
   const [adding, setAdding] = useState(false);
   const [ending, setEnding] = useState<InitiativeMember | null>(null);
   const [ratifying, setRatifying] = useState(false);
+  const closeOverdueAmendments = useCrm((s) => s.closeOverdueAmendments);
+  // §6.8.2 resolve amendments whose 5-business-day vote has ended before showing the panel
+  useEffect(() => {
+    const n = closeOverdueAmendments();
+    if (n) useUi.getState().notify(`${n} amendment${n === 1 ? "" : "s"} closed — the 5-business-day vote ended (§6.8)`);
+  }, [closeOverdueAmendments]);
   const jira = projects.find((p) => p.id === ini.jiraProjectId);
   const userName = (uid: string) => users.find((u) => u.id === uid)?.name ?? uid;
   const othersE = (m: InitiativeMember | null) => reg.rows.filter((r) => r.member.id !== m?.id).reduce((s, r) => s + r.E, 0);
@@ -112,7 +123,7 @@ function Register({ reg }: { reg: ProjectRegister }) {
       </PageHeader>
 
       <div className="flex-1 overflow-y-auto px-6 pb-10 pt-4">
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
           <div className="min-w-0 space-y-4">
             {/* compensation summary */}
             <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -194,7 +205,7 @@ function Register({ reg }: { reg: ProjectRegister }) {
                           <td className="sg-num px-2 py-2.5 text-right text-sg-muted">{ini.type === "C" ? formatIDR(r.monthlyMinimum ?? 0, "full") : r.expectedBonus != null ? formatIDR(r.expectedBonus) : "—"}</td>
                           <td className="max-w-[220px] px-2 py-2.5 text-xs text-sg-muted">
                             {r.member.weightNote || <span className="text-sg-dim">Standard</span>}
-                            {r.member.authority ? <div className="text-2xs text-sg-dim">{r.member.authority}</div> : null}
+                            {r.member.authority && !r.member.authority.startsWith("Role and Weight Agreement") ? <div className="text-2xs text-sg-dim">{r.member.authority}</div> : null}
                           </td>
                           <td className="whitespace-nowrap px-3 py-2.5 text-right">
                             <Button size="icon-sm" variant="ghost" aria-label={`Edit ${r.user?.name}`} onClick={() => setEditing(r.member)}>
@@ -256,7 +267,9 @@ function Register({ reg }: { reg: ProjectRegister }) {
               </section>
             ) : null}
 
+            <StatusUpdatesCard ini={ini} />
             <PaymentsCard ini={ini} />
+            <ChangeOrdersCard ini={ini} />
           </div>
 
           <aside className="space-y-4">
@@ -270,6 +283,7 @@ function Register({ reg }: { reg: ProjectRegister }) {
               </div>
             </section>
             <FiguresCard reg={reg} />
+            <CoiCard ini={ini} />
           </aside>
         </div>
       </div>
@@ -295,8 +309,14 @@ function Kpi({ label, value, hint }: { label: string; value: string; hint?: stri
 function Amendments({ reg }: { reg: ProjectRegister }) {
   const users = useCrm((s) => s.users);
   const members = useCrm((s) => s.initiativeMembers);
+  const initiatives = useCrm((s) => s.initiatives);
+  const profiles = useCrm((s) => s.employeeProfiles);
   const currentUserId = useCrm((s) => s.currentUserId);
-  const voteAmendment = useCrm((s) => s.voteAmendment);
+  const recordAmendmentVote = useCrm((s) => s.recordAmendmentVote);
+  const prcDecideAmendment = useCrm((s) => s.prcDecideAmendment);
+  const notify = useUi((s) => s.notify);
+  const access = useAccess();
+  const [notes, setNotes] = useState<Record<string, string>>({});
   const name = (id: string) => users.find((u) => u.id === id)?.name ?? id;
   const describe = (a: ProjectRegister["openAmendments"][number]) => {
     const c = a.change;
@@ -305,42 +325,73 @@ function Amendments({ reg }: { reg: ProjectRegister }) {
     if (c.kind === "remove") return `End ${m ? name(m.userId) : "member"} on the team`;
     return `Change ${m ? name(m.userId) : "member"} — ${c.roles.map((r) => ROLE_META[r].label).join(" + ")}, A ${c.allocationFactor}${c.weightOverride != null ? `, W ${c.weightOverride}` : ""}`;
   };
-  const current = new Set(reg.rows.filter((r) => r.member.consent === "accepted").map((r) => r.member.userId));
   return (
     <section className="rounded-xl border border-sg-line bg-sg-card">
-      <header className="flex items-center gap-2 border-b border-sg-line px-4 py-2.5">
+      <header className="flex flex-wrap items-center gap-2 border-b border-sg-line px-4 py-2.5">
         <h2 className="font-display text-sm font-extrabold text-sg-white">Open amendments</h2>
         <PolicyRef s="6.8" />
         <span className="text-2xs text-sg-dim">Passes when more than half of current members vote for it within 5 business days; a tie goes to the PRC</span>
       </header>
       <ul className="divide-y divide-sg-line">
         {reg.openAmendments.map((a) => {
+          const count = amendmentCount(a, members);
           const mine = a.votes.find((v) => v.userId === currentUserId);
-          const canVote = current.has(currentUserId) && !(a.change.kind === "add" && a.change.userId === currentUserId);
+          const canVote = a.status === "open" && count.voters.includes(currentUserId);
+          const issues = amendmentIssues(a, reg.ini, { initiatives, members, profiles });
+          const note = notes[a.id] ?? "";
+          const decide = (outcome: "passed" | "failed" | "blocked") => {
+            if (!prcCanDecide(a)) return;
+            if (outcome === "blocked" && (!issues.length || note.trim().length < 5)) return;
+            prcDecideAmendment(a.id, outcome, note.trim() || (outcome === "passed" ? "PRC deciding vote for" : "PRC deciding vote against"));
+            setNotes((n) => ({ ...n, [a.id]: "" }));
+            notify(outcome === "blocked" ? "Amendment blocked by the PRC — breaks the policy" : outcome === "passed" ? "PRC passed the amendment — ledger updated" : "PRC rejected the amendment");
+          };
           return (
-            <li key={a.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-sm">
-              <div className="min-w-0 flex-1">
-                <div className="text-sg-white">{describe(a)}</div>
-                <div className="text-2xs text-sg-dim">
-                  From {formatDate(a.effectiveDate, "short")} · proposed by {name(a.proposedById)} · {a.votes.filter((v) => v.vote === "for").length} for / {a.votes.filter((v) => v.vote === "against").length} against of {current.size}
-                  {a.status === "tied" ? " · tied — PRC decides" : ""}
+            <li key={a.id} className="space-y-2 px-4 py-2.5 text-sm">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sg-white">{describe(a)}</div>
+                  <div className="text-2xs text-sg-dim">
+                    From {formatDate(a.effectiveDate, "short")} · proposed by {name(a.proposedById)} · {count.yes} for / {count.no} against of {count.n} current member{count.n === 1 ? "" : "s"} (needs {count.need})
+                    {a.status === "tied" ? " · tied — PRC decides" : ""}
+                  </div>
+                  {a.reason ? <div className="text-xs text-sg-muted">{a.reason}</div> : null}
+                  {issues.length ? <div className="text-2xs text-soft-red">Policy issues: {issues.join("; ")}</div> : null}
                 </div>
-                {a.reason ? <div className="text-xs text-sg-muted">{a.reason}</div> : null}
-              </div>
-              {a.status === "open" && canVote ? (
-                <div className="flex gap-1">
-                  <Button size="xs" variant={mine?.vote === "for" ? "primary" : "outline"} onClick={() => voteAmendment(a.id, "for")}>
-                    For
-                  </Button>
-                  <Button size="xs" variant={mine?.vote === "against" ? "danger" : "outline"} onClick={() => voteAmendment(a.id, "against")}>
-                    Against
-                  </Button>
-                </div>
-              ) : (
-                <Link href={`/initiatives/${a.initiativeId}`} className="text-xs font-semibold text-sg-muted hover:text-sg-white">
-                  Open
+                {canVote ? (
+                  <div className="flex gap-1">
+                    <Button size="xs" variant={mine?.vote === "for" ? "primary" : "outline"} onClick={() => (recordAmendmentVote(a.id, currentUserId, "for", ""), notify("You voted for"))}>
+                      For
+                    </Button>
+                    <Button size="xs" variant={mine?.vote === "against" ? "danger" : "outline"} onClick={() => (recordAmendmentVote(a.id, currentUserId, "against", ""), notify("You voted against"))}>
+                      Against
+                    </Button>
+                  </div>
+                ) : null}
+                <Link href={`/initiatives/${a.initiativeId}?tab=team`} className="text-xs font-semibold text-sg-muted hover:text-sg-white" title="Votes for other members are recorded on the Team tab from their signed forms">
+                  Open on Team tab
                 </Link>
-              )}
+              </div>
+              {access.prc && prcCanDecide(a) && (a.status === "tied" || issues.length) ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-sg-line p-2">
+                  <Input value={note} onChange={(e) => setNotes((n) => ({ ...n, [a.id]: e.target.value }))} placeholder={a.status === "tied" ? "Reason for the PRC deciding vote" : "Which rule the amendment breaks"} aria-label="PRC note" className="h-7 min-w-[200px] flex-1 text-xs" />
+                  {a.status === "tied" ? (
+                    <>
+                      <Button size="xs" variant="primary" onClick={() => decide("passed")}>
+                        PRC: pass
+                      </Button>
+                      <Button size="xs" variant="outline" onClick={() => decide("failed")}>
+                        PRC: reject
+                      </Button>
+                    </>
+                  ) : null}
+                  {issues.length ? (
+                    <Button size="xs" variant="danger" disabled={note.trim().length < 5} onClick={() => decide("blocked")}>
+                      Block
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
             </li>
           );
         })}
@@ -351,21 +402,40 @@ function Amendments({ reg }: { reg: ProjectRegister }) {
 
 function EndDialog({ reg, member, onClose }: { reg: ProjectRegister; member: InitiativeMember | null; onClose: () => void }) {
   const users = useCrm((s) => s.users);
+  const members = useCrm((s) => s.initiativeMembers);
   const updateMember = useCrm((s) => s.updateMember);
   const proposeAmendment = useCrm((s) => s.proposeAmendment);
   const notify = useUi((s) => s.notify);
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayWib());
   const [reason, setReason] = useState("");
+  // reset every time the dialog opens for a (different) member
+  useEffect(() => {
+    if (member) {
+      setDate(todayWib());
+      setReason("");
+    }
+  }, [member]);
   const name = useMemo(() => users.find((u) => u.id === member?.userId)?.name ?? "", [users, member]);
-  const approved = !!reg.ini.code;
+  const amend = requiresAmendment(reg.ini, members);
+  const joinedDay = member ? wibDay(member.joinedAt) : "";
+  const leavesNoLead = !!member?.roles.includes("project_lead") && !openLeads(members, reg.ini.id, member.id).length;
+  const errors: string[] = [];
+  if (!date) errors.push("Choose the last day");
+  else {
+    // after the ledger exists changes apply forward only; while it is being set up from existing records (§15.1) a past last day is allowed
+    if (amend && isPastDay(date)) errors.push("Amendments apply from their effective date forward — never to past work (§6.8 step 6)");
+    if (joinedDay && date < joinedDay) errors.push(`The last day can't be before they joined (${formatDate(member!.joinedAt, "short")})`);
+  }
+  if (leavesNoLead) errors.push("This leaves the project without a Project Lead — delegate the role first (§6.1, §4.9)");
+  if (amend && reason.trim().length < 5) errors.push("State the reason (circulated with the amendment)");
   const end = () => {
-    if (!member) return;
-    const iso = new Date(`${date}T17:00:00+07:00`).toISOString();
-    if (approved) {
-      proposeAmendment(reg.ini.id, { kind: "remove", memberId: member.id }, iso, reason || `${name} leaves the team`);
-      notify("Amendment circulated to the team (§6.8)");
+    if (!member || errors.length) return;
+    if (amend) {
+      const id = proposeAmendment(reg.ini.id, { kind: "remove", memberId: member.id }, lastDayEnd(date), reason.trim() || `${name} leaves the team`);
+      const status = useCrm.getState().teamAmendments.find((a) => a.id === id)?.status;
+      notify(status === "passed" ? `${name} ends on the team ${date} — ledger updated` : "Amendment circulated to the team (§6.8)");
     } else {
-      updateMember(member.id, { leftAt: iso, weightNote: [member.weightNote, reason && `Left: ${reason}`].filter(Boolean).join(" · ") });
+      updateMember(member.id, { leftAt: lastDayEnd(date), weightNote: [member.weightNote, reason && `Left: ${reason}`].filter(Boolean).join(" · ") });
       notify(`${name} ends on the team ${date}`);
     }
     onClose();
@@ -381,19 +451,26 @@ function EndDialog({ reg, member, onClose }: { reg: ProjectRegister; member: Ini
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={end}>
-            {approved ? "Circulate amendment" : "End on team"}
+          <Button variant="primary" disabled={errors.length > 0} title={errors.join("\n")} onClick={end}>
+            {amend ? "Circulate amendment" : "End on team"}
           </Button>
         </>
       }
     >
       <div className="grid gap-3">
-        <Field label="Last day on the team">
-          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        <Field label="Last day on the team" hint="Counts in full — the row closes at 23:59 WIB">
+          <Input type="date" lang="en-GB" min={amend ? [todayWib(), joinedDay].sort().pop() : joinedDay || undefined} value={date} onChange={(e) => setDate(e.target.value)} />
         </Field>
-        <Field label="Reason">
+        <Field label={amend ? "Reason (required)" : "Reason"}>
           <Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
         </Field>
+        {errors.length && (date || reason) ? (
+          <ul className="space-y-0.5 text-2xs text-soft-yellow">
+            {errors.map((e) => (
+              <li key={e}>• {e}</li>
+            ))}
+          </ul>
+        ) : null}
       </div>
     </Modal>
   );

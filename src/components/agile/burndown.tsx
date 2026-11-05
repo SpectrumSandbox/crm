@@ -1,10 +1,10 @@
 "use client";
 
 import { useMemo } from "react";
-import type { Issue, Sprint } from "@/lib/types";
-import { cn, formatDate, toDateInput } from "@/lib/utils";
-
-const DAY = 86_400_000;
+import type { Issue, IssueHistoryEntry, Sprint } from "@/lib/types";
+import { cn, formatDate } from "@/lib/utils";
+import { useCrm } from "@/lib/store";
+import { computeBurndownSeries } from "@/lib/slices/agile-extras";
 
 export interface BurndownPoint {
   day: string; // yyyy-mm-dd (WIB)
@@ -12,37 +12,15 @@ export interface BurndownPoint {
   remaining: number | null; // null for days still ahead
 }
 
-/**
- * Approximate burndown: committed = points of the sprint's current issues; a done issue
- * "burns" on the day of its last update (clamped into the sprint window).
- */
-export function computeBurndown(sprint: Sprint, issues: Issue[], now = Date.now()): { points: BurndownPoint[]; total: number; remaining: number } {
-  const its = issues.filter((i) => i.sprintId === sprint.id && i.type !== "subtask");
-  const total = its.reduce((a, i) => a + (i.storyPoints ?? 0), 0);
-  const startKey = toDateInput(sprint.startDate);
-  const endKey = toDateInput(sprint.endDate);
-  const todayKey = toDateInput(new Date(now).toISOString());
-  const startMs = Date.parse(`${startKey}T00:00:00Z`);
-  const endMs = Date.parse(`${endKey}T00:00:00Z`);
-  const days = Math.max(1, Math.round((endMs - startMs) / DAY) + 1);
-  const keys = Array.from({ length: days }, (_, d) => new Date(startMs + d * DAY).toISOString().slice(0, 10));
-  const burnDay = (i: Issue) => {
-    const k = toDateInput(i.updatedAt);
-    return k < startKey ? startKey : k > endKey ? endKey : k;
-  };
-  const done = its.filter((i) => i.status === "done");
-  const points = keys.map((day, d) => {
-    const ideal = days === 1 ? 0 : total * (1 - d / (days - 1));
-    const burned = done.filter((i) => burnDay(i) <= day).reduce((a, i) => a + (i.storyPoints ?? 0), 0);
-    return { day, ideal, remaining: day <= todayKey ? total - burned : null };
-  });
-  const remaining = total - done.reduce((a, i) => a + (i.storyPoints ?? 0), 0);
-  return { points, total, remaining };
+/** Burndown from recorded history (see computeBurndownSeries): done issues burn on the day they became Done. */
+export function computeBurndown(sprint: Sprint, issues: Issue[], history: IssueHistoryEntry[] = [], now = Date.now()) {
+  return computeBurndownSeries(sprint, issues, history, now);
 }
 
 export function Burndown({ sprint, issues, mini, className }: { sprint: Sprint; issues: Issue[]; mini?: boolean; className?: string }) {
-  const data = useMemo(() => computeBurndown(sprint, issues), [sprint, issues]);
-  const { points, total, remaining } = data;
+  const history = useCrm((s) => s.issueHistory);
+  const data = useMemo(() => computeBurndown(sprint, issues, history), [sprint, issues, history]);
+  const { points, total, remaining, added } = data;
   const W = mini ? 120 : 560;
   const H = mini ? 34 : 180;
   const pad = mini ? { l: 1, r: 1, t: 2, b: 2 } : { l: 30, r: 10, t: 10, b: 22 };
@@ -97,7 +75,8 @@ export function Burndown({ sprint, issues, mini, className }: { sprint: Sprint; 
           <span className="flex items-center gap-1">
             <span className={cn("inline-block h-0 w-4 border-t-2", behind ? "border-soft-orange" : "border-soft-cyan")} /> Remaining ({remaining} pts)
           </span>
-          <span className="ml-auto italic">Approximation — done issues burn on the day they were last updated.</span>
+          {added > 0 && <span className="text-soft-orange">+{added} pts added after the start</span>}
+          <span className="ml-auto italic">From recorded status changes — work burns on the day it moved to Done.</span>
         </figcaption>
       )}
     </figure>

@@ -8,8 +8,10 @@ import { useMemo, useState } from "react";
 import { Check, FileText, Gavel, Plus, Receipt, ShieldAlert, Undo2 } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
-import type { Clawback, ClawbackTrigger, DeferredBonus, EmployeeProfile } from "@/lib/initiatives/types";
-import { addBusinessDays, addMonths, carriedForward, clawbackAmount, clawbackExempt, clawbackSchedule, deferralVestDate, paymentDate } from "@/lib/initiatives/engine";
+import type { Clawback, ClawbackTrigger, EmployeeProfile, PrcVote } from "@/lib/initiatives/types";
+import { useAccess } from "@/lib/access-control";
+import { prcRoster } from "@/lib/initiatives/engine";
+import { addBusinessDays, addMonths, carriedOnly, clawbackAmount, clawbackExempt, clawbackSchedule, cycleMonth, paymentDate, safeHarbourLeft } from "@/lib/initiatives/engine";
 import { POLICY } from "@/lib/initiatives/policy";
 import { cn, formatDate, formatIDR, fromDateInput, toDateInput } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -17,7 +19,7 @@ import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Chip, EmptyState } from "@/components/ui/misc";
 import { Modal } from "@/components/ui/overlays";
 import { Cite, Metric, Money } from "@/components/initiatives/shared";
-import { Callout, InitiativeLink, NOT_CLAWBACK, Panel, UserCell, dueText, monthLabel, parseAmount, tdCls, tdNum, thCls, thRight, triggerMeta, useInitiativeMap } from "./common";
+import { AmountInput, Callout, InitiativeLink, NOT_CLAWBACK, Panel, RoleNote, UserCell, dueText, exactIdr, monthLabel, parseAmount, tdCls, tdNum, thCls, thRight, triggerMeta, useInitiativeMap } from "./common";
 
 const STEPS = [
   { key: "identified", label: "Identified" },
@@ -82,7 +84,7 @@ function useRecoverySources(userId: string) {
   const bonusRuns = useCrm((s) => s.bonusRuns);
   return useMemo(() => {
     const pending = deferred.filter((d) => d.userId === userId && d.status === "pending");
-    const carried = carriedForward(bonusRuns, "9999-12").filter((c) => c.userId === userId);
+    const carried = carriedOnly(bonusRuns, "9999-12").filter((c) => c.userId === userId);
     return { pending, deferredTotal: pending.reduce((s, d) => s + d.amount, 0), carried, carriedTotal: carried.reduce((s, c) => s + c.amount, 0) };
   }, [deferred, bonusRuns, userId]);
 }
@@ -92,6 +94,7 @@ export function ClawbacksTab() {
   const profiles = useCrm((s) => s.employeeProfiles);
   const updateClawback = useCrm((s) => s.updateClawback);
   const notify = useUi((s) => s.notify);
+  const access = useAccess();
   const [creating, setCreating] = useState(false);
   const [modal, setModal] = useState<{ kind: "decide" | "dispute" | "disputeDecision" | "recover"; c: Clawback } | null>(null);
 
@@ -100,9 +103,9 @@ export function ClawbacksTab() {
     const open = clawbacks.filter((c) => !["closed", "waived"].includes(c.status));
     return {
       open: open.length,
-      outstanding: open.reduce((s, c) => s + Math.max(0, clawbackAmount(c) - c.recovered), 0),
+      outstanding: open.reduce((s, c) => s + Math.max(0, clawbackAmount(c, clawbacks) - c.recovered), 0),
       recovered: clawbacks.reduce((s, c) => s + c.recovered, 0),
-      waived: clawbacks.filter((c) => c.status === "waived").reduce((s, c) => s + clawbackAmount(c), 0),
+      waived: clawbacks.filter((c) => c.status === "waived").reduce((s, c) => s + clawbackAmount(c, clawbacks), 0),
     };
   }, [clawbacks]);
 
@@ -122,9 +125,13 @@ export function ClawbacksTab() {
           <p className="max-w-sm text-2xs text-sg-dim">
             Within {POLICY.clawback.windowMonths} months of payment, for a revenue reversal, proven misconduct or a data error only. Never for {NOT_CLAWBACK.slice(0, 5).join(", ")} <Cite s="9.4" />.
           </p>
-          <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
-            <Plus /> New clawback
-          </Button>
+          {access.certify ? (
+            <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
+              <Plus /> New clawback
+            </Button>
+          ) : (
+            <RoleNote>Finance identifies clawbacks (§9.4 step 1)</RoleNote>
+          )}
         </div>
       </div>
 
@@ -134,9 +141,11 @@ export function ClawbacksTab() {
             icon={Receipt}
             title="No clawbacks"
             action={
-              <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
-                <Plus /> New clawback
-              </Button>
+              access.certify ? (
+                <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
+                  <Plus /> New clawback
+                </Button>
+              ) : undefined
             }
           >
             Finance identifies a clawback when revenue is reversed, misconduct is proven, or a data error led to an overpayment.
@@ -177,8 +186,13 @@ export function ClawbacksTab() {
 
 function ClawbackRow({ c, profile, onModal, set }: { c: Clawback; profile: EmployeeProfile | undefined; onModal: (k: "decide" | "dispute" | "disputeDecision" | "recover") => void; set: (c: Clawback, patch: Partial<Clawback>, msg: string) => void }) {
   const sources = useRecoverySources(c.userId);
-  const amount = clawbackAmount(c);
-  const exempt = clawbackExempt(c);
+  const access = useAccess();
+  const all = useCrm((s) => s.clawbacks);
+  // §9.4 the Rp10,000,000 safe harbour is per person per project — other cases share it
+  const amount = clawbackAmount(c, all);
+  // §9.4 the 24-month window is tested when the trigger arises, not today
+  const trigger = c.triggeredAt ?? c.createdAt;
+  const exempt = clawbackExempt(c, undefined, all);
   const sched = clawbackSchedule(Math.max(0, amount - c.recovered), profile?.annualBaseSalary ?? 0);
   const disputeDeadline = c.notifiedAt ? addBusinessDays(c.notifiedAt, POLICY.clawback.disputeBusinessDays) : null;
   const inWindow = disputeDeadline ? Date.parse(disputeDeadline) >= Date.now() : false;
@@ -194,7 +208,7 @@ function ClawbackRow({ c, profile, onModal, set }: { c: Clawback; profile: Emplo
         <div className="mt-1 pl-7">
           <InitiativeLink id={c.initiativeId} compact />
           <div className="text-2xs text-sg-dim">
-            paid {formatDate(c.paidAt, "medium")} · window to {formatDate(windowEnds, "short")}
+            paid {formatDate(c.paidAt, "medium")} · window to {formatDate(windowEnds, "medium")} · trigger {formatDate(trigger, "medium")}
           </div>
         </div>
       </td>
@@ -226,13 +240,22 @@ function ClawbackRow({ c, profile, onModal, set }: { c: Clawback; profile: Emplo
             <span className="font-semibold text-sg-text">1</span> Deferred &amp; carried forward: <Money value={sources.deferredTotal + sources.carriedTotal} className="text-sg-text" /> available
           </li>
           <li className="text-sg-muted">
-            <span className="font-semibold text-sg-text">2</span> Future project bonuses
+            <span className="font-semibold text-sg-text">2</span> Future project bonuses{c.recoverFromBonuses ? <span className="text-soft-green"> · netted in each monthly run</span> : null}
           </li>
           <li className="text-sg-muted">
             <span className="font-semibold text-sg-text">3</span> {left ? "Final pay set-off (separation agreement) or civil recovery" : `Salary: ${sched.months} × ${formatIDR(sched.monthly)} (≤ ${formatIDR(sched.monthlyCap)}/mo)`}
             {!left ? <span className={c.writtenAgreement ? "text-soft-green" : "text-soft-yellow"}> · {c.writtenAgreement ? "written agreement on file" : "needs written agreement"}</span> : null}
           </li>
         </ol>
+        {c.recoveries?.length ? (
+          <ul className="mt-1 space-y-0.5 text-sg-dim">
+            {c.recoveries.map((r, i) => (
+              <li key={i}>
+                {monthLabel(r.month)} · {r.source === "bonus" ? "project bonus" : r.source === "carried" ? "carried forward" : r.source} · <span className="sg-num text-sg-text">{exactIdr(r.amount)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
         {!sched.feasible && !left && remaining > 0 ? <div className="mt-0.5 text-soft-red">Not recoverable from salary within 12 months at ≤ 20% — rely on bonuses or agreement</div> : null}
         {c.recovered > 0 || c.status === "recovering" ? (
           <div className="mt-1">
@@ -256,16 +279,21 @@ function ClawbackRow({ c, profile, onModal, set }: { c: Clawback; profile: Emplo
       <td className={cn(tdCls, "text-right")}>
         <div className="flex flex-col items-end gap-1">
           {c.status === "identified" ? (
-            <Button size="xs" variant="primary" title="The CFO presents the case; the PRC decides by majority vote" onClick={() => onModal("decide")}>
-              <Gavel /> Record PRC decision
-            </Button>
+            access.prc ? (
+              <Button size="xs" variant="primary" title="The CFO presents the case; the PRC decides by majority vote" onClick={() => onModal("decide")}>
+                <Gavel /> Record PRC decision
+              </Button>
+            ) : (
+              <RoleNote>Awaiting the PRC decision</RoleNote>
+            )
           ) : null}
-          {c.status === "prc_approved" && !c.notifiedAt ? (
+          {!access.certify && ["prc_approved", "recovering"].includes(c.status) ? <RoleNote>Finance sends the notice and records recovery (§13.2)</RoleNote> : null}
+          {access.certify && c.status === "prc_approved" && !c.notifiedAt ? (
             <Button size="xs" variant="primary" onClick={() => set(c, { notifiedAt: new Date().toISOString(), notes: appendNote(c, `Written notice with the calculation sent: ${formatIDR(c.originalPaid, "full")} paid − ${formatIDR(c.recalculated, "full")} on corrected figures = ${formatIDR(amount, "full")}`) }, "Written notice recorded — 10 business-day dispute window open")}>
               <FileText /> Send written notice
             </Button>
           ) : null}
-          {c.status === "prc_approved" && c.notifiedAt ? (
+          {access.certify && c.status === "prc_approved" && c.notifiedAt ? (
             <>
               <Button size="xs" variant="outline" disabled={!inWindow} title={inWindow ? "Employee disputes the figures or raises mitigating factors" : "The dispute window has closed"} onClick={() => onModal("dispute")}>
                 Record dispute
@@ -283,11 +311,15 @@ function ClawbackRow({ c, profile, onModal, set }: { c: Clawback; profile: Emplo
             </>
           ) : null}
           {c.status === "disputed" ? (
-            <Button size="xs" variant="primary" onClick={() => onModal("disputeDecision")}>
-              <Gavel /> PRC decides dispute
-            </Button>
+            access.prc ? (
+              <Button size="xs" variant="primary" onClick={() => onModal("disputeDecision")}>
+                <Gavel /> PRC decides dispute
+              </Button>
+            ) : (
+              <RoleNote>Awaiting the PRC decision on the dispute</RoleNote>
+            )
           ) : null}
-          {c.status === "recovering" ? (
+          {access.certify && c.status === "recovering" ? (
             <>
               <Button size="xs" variant="primary" disabled={remaining <= 0} onClick={() => onModal("recover")}>
                 Record recovery
@@ -302,7 +334,7 @@ function ClawbackRow({ c, profile, onModal, set }: { c: Clawback; profile: Emplo
               </Button>
             </>
           ) : null}
-          {live && exempt ? (
+          {live && exempt && access.prc ? (
             <Button size="xs" variant="danger" title={exempt} onClick={() => set(c, { status: "waived", notes: appendNote(c, `Not pursued — ${exempt}`) }, "Clawback not pursued (exempt)")}>
               Not pursued
             </Button>
@@ -313,32 +345,72 @@ function ClawbackRow({ c, profile, onModal, set }: { c: Clawback; profile: Emplo
   );
 }
 
-/** PRC majority decision on a case, or on a dispute (§9.4 step 2, §14). The CEO may veto (§13.1). */
+/**
+ * PRC decision on a case, or on a dispute (§9.4 step 2, §14, §13.1): every member's vote is recorded (none prefilled),
+ * the employee and the project's team are recused, the quorum is a majority of members including the CFO or a Finance
+ * delegate, the chair has the casting vote on a tie and the CEO may veto with reasons.
+ */
 function DecisionModal({ c, dispute, onClose }: { c: Clawback; dispute?: boolean; onClose: () => void }) {
   const updateClawback = useCrm((s) => s.updateClawback);
+  const profiles = useCrm((s) => s.employeeProfiles);
+  const members = useCrm((s) => s.initiativeMembers);
   const notify = useUi((s) => s.notify);
-  const [forVotes, setFor] = useState("3");
-  const [against, setAgainst] = useState("0");
+  const userMap = useUserMap();
+  const access = useAccess();
+  const all = useCrm((s) => s.clawbacks);
+  const roster = useMemo(() => prcRoster(profiles).map((p) => p.userId), [profiles]);
+  const team = useMemo(() => new Set(members.filter((m) => m.initiativeId === c.initiativeId).map((m) => m.userId)), [members, c.initiativeId]);
+  const recusal = (u: string) => (u === c.userId ? "the employee concerned" : team.has(u) ? "on the project's team" : null);
+  const chair = roster.find((u) => profiles.find((p) => p.userId === u)?.governanceRoles.includes("ceo")) ?? null;
+  const isFinance = (u: string) => {
+    const r = profiles.find((p) => p.userId === u)?.governanceRoles ?? [];
+    return r.includes("cfo") || r.includes("finance");
+  };
+
+  const [votes, setVotes] = useState<Record<string, PrcVote["vote"] | "">>({});
+  const [casting, setCasting] = useState<"for" | "against" | "">("");
   const [veto, setVeto] = useState(false);
-  const [recalc, setRecalc] = useState(String(c.recalculated));
+  const [recalc, setRecalc] = useState(c.recalculated);
   const [reasons, setReasons] = useState("");
-  const yes = Math.max(0, Math.round(parseAmount(forVotes)));
-  const no = Math.max(0, Math.round(parseAmount(against)));
-  const carried = yes > no && !veto;
-  const newRecalc = Math.max(0, parseAmount(recalc));
-  const valid = yes + no > 0 && reasons.trim().length >= 5;
+
+  const record: PrcVote[] = roster.map((u) => ({ userId: u, vote: recusal(u) ? "absent" : votes[u] || "absent", recused: !!recusal(u), reason: recusal(u) ?? undefined }));
+  const voting = record.filter((v) => !v.recused && (v.vote === "for" || v.vote === "against"));
+  const present = record.filter((v) => !v.recused && v.vote !== "absent");
+  const yes = voting.filter((v) => v.vote === "for").length;
+  const no = voting.filter((v) => v.vote === "against").length;
+  const quorumNeeded = Math.floor(roster.length / 2) + 1;
+  const quorumMet = present.length >= quorumNeeded && present.some((v) => isFinance(v.userId));
+  const tie = yes === no && yes > 0;
+  const carried = !veto && (yes > no || (tie && casting === "for"));
+  const unanswered = roster.filter((u) => !recusal(u) && !votes[u]).length;
+  const errors: string[] = [];
+  if (!access.prc) errors.push("Only a PRC member records the PRC's decision (§13.2)");
+  if (unanswered) errors.push(`Record a vote, abstention or absence for every member (${unanswered} left)`);
+  if (!quorumMet) errors.push(`No quorum — ${quorumNeeded} of ${roster.length} members present, including the CFO or a Finance delegate (§13.1)`);
+  if (tie && !casting) errors.push("Tie — the chair gives the casting vote");
+  if (reasons.trim().length < 5) errors.push("Record the reasons (§9.4: every clawback decision is recorded with its reasons)");
+  const valid = errors.length === 0;
+  const amountAfter = clawbackAmount({ ...c, recalculated: recalc }, all);
 
   const submit = () => {
     if (!valid) return;
-    const tally = `${yes}–${no}${veto ? ", CEO veto" : ""}`;
+    const tally = `${yes}–${no}${tie ? `, chair's casting vote ${casting}` : ""}${veto ? ", CEO veto" : ""}`;
+    const entry = { kind: dispute ? ("dispute" as const) : ("case" as const), at: new Date().toISOString(), recordedById: access.userId, votes: record, castingVote: tie ? (casting as "for" | "against") : null, ceoVeto: veto, quorumMet, carried, reasons: reasons.trim() };
+    const prcDecisions = [...(c.prcDecisions ?? []), entry];
+    const who = record
+      .filter((v) => !v.recused)
+      .map((v) => `${userMap.get(v.userId)?.name ?? v.userId}: ${v.vote}`)
+      .join(", ");
+    const recused = record.filter((v) => v.recused).map((v) => `${userMap.get(v.userId)?.name ?? v.userId} (${v.reason})`);
+    const detail = `${tally} — ${who}${recused.length ? `; recused ${recused.join(", ")}` : ""}: ${reasons.trim()}`;
     if (dispute) {
       const patch: Partial<Clawback> = carried
-        ? { status: "recovering", recalculated: newRecalc, notes: appendNote(c, `PRC upheld the clawback after the dispute (${tally})${newRecalc !== c.recalculated ? `; corrected bonus revised to ${formatIDR(newRecalc, "full")}` : ""}: ${reasons.trim()}`) }
-        : { status: "waived", notes: appendNote(c, `PRC accepted the dispute (${tally}) — not pursued: ${reasons.trim()}`) };
+        ? { status: "recovering", recalculated: recalc, prcDecisions, notes: appendNote(c, `PRC upheld the clawback after the dispute (${detail})${recalc !== c.recalculated ? `; corrected bonus revised to ${formatIDR(recalc, "full")}` : ""}`) }
+        : { status: "waived", prcDecisions, notes: appendNote(c, `PRC accepted the dispute — not pursued (${detail})`) };
       updateClawback(c.id, patch);
       notify(carried ? "Dispute decided — recovery continues" : "Dispute accepted — clawback not pursued");
     } else {
-      updateClawback(c.id, carried ? { status: "prc_approved", notes: appendNote(c, `PRC approved by majority (${tally}): ${reasons.trim()}`) } : { status: "waived", notes: appendNote(c, `PRC did not approve (${tally}): ${reasons.trim()}`) });
+      updateClawback(c.id, carried ? { status: "prc_approved", prcDecisions, notes: appendNote(c, `PRC approved by majority (${detail})`) } : { status: "waived", prcDecisions, notes: appendNote(c, `PRC did not approve (${detail})`) });
       notify(carried ? "PRC approved the clawback — send the written notice" : "PRC decided not to claw back");
     }
     onClose();
@@ -349,10 +421,11 @@ function DecisionModal({ c, dispute, onClose }: { c: Clawback; dispute?: boolean
       open
       onOpenChange={(o) => !o && onClose()}
       title={dispute ? "PRC decision on the dispute" : "Record PRC decision"}
-      description={`${formatIDR(clawbackAmount(c), "full")} · decided by simple majority; the chair has the casting vote; every decision is recorded with its reasons (§9.4, §13.1)`}
+      description={`${formatIDR(clawbackAmount(c, all), "full")} · simple majority of members present; quorum incl. the CFO or a Finance delegate; the chair has the casting vote (§9.4, §13.1)`}
+      className="w-[min(640px,calc(100vw-32px))]"
       footer={
         <>
-          <span className={cn("mr-auto text-2xs font-semibold", carried ? "text-soft-green" : "text-soft-red")}>{yes + no > 0 ? (carried ? "Carried" : veto ? "Vetoed by the CEO" : "Not carried") : ""}</span>
+          <span className={cn("mr-auto text-2xs font-semibold", carried ? "text-soft-green" : "text-soft-red")}>{voting.length ? (carried ? `Carried ${yes}–${no}` : veto ? "Vetoed by the CEO" : `Not carried ${yes}–${no}`) : ""}</span>
           <Button size="sm" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
@@ -363,30 +436,72 @@ function DecisionModal({ c, dispute, onClose }: { c: Clawback; dispute?: boolean
       }
     >
       <div
-        className="grid grid-cols-2 gap-3"
+        className="space-y-3"
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
         }}
       >
-        <Field label={dispute ? "Votes to uphold" : "Votes for"}>
-          <Input type="number" min={0} value={forVotes} onChange={(e) => setFor(e.target.value)} className="sg-num" autoFocus />
-        </Field>
-        <Field label="Votes against">
-          <Input type="number" min={0} value={against} onChange={(e) => setAgainst(e.target.value)} className="sg-num" />
-        </Field>
+        <ul className="divide-y divide-sg-line rounded-lg border border-sg-line">
+          {roster.map((u) => {
+            const r = recusal(u);
+            return (
+              <li key={u} className="flex flex-wrap items-center gap-2 px-3 py-1.5 text-xs">
+                <span className="min-w-0 flex-1">
+                  <UserCell userId={u} sub={[u === chair ? "Chair" : "", isFinance(u) ? "Finance" : "", r ? `Recused — ${r}` : ""].filter(Boolean).join(" · ") || undefined} />
+                </span>
+                {r ? (
+                  <Chip color="blue">Recused</Chip>
+                ) : (
+                  <span className="flex gap-1">
+                    {(["for", "against", "abstain", "absent"] as const).map((v) => (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => setVotes((x) => ({ ...x, [u]: v }))}
+                        className={cn("h-6 rounded-sm border px-2 text-2xs font-semibold capitalize", votes[u] === v ? (v === "for" ? "border-soft-green/60 bg-soft-green/15 text-soft-green" : v === "against" ? "border-soft-red/60 bg-soft-red/15 text-soft-red" : "border-sg-white/50 bg-sg-card-3 text-sg-white") : "border-sg-line text-sg-muted hover:border-sg-line-2 hover:text-sg-white")}
+                      >
+                        {dispute && v === "for" ? "uphold" : v}
+                      </button>
+                    ))}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        <div className={cn("text-2xs", quorumMet ? "text-soft-green" : "text-soft-yellow")}>
+          Quorum: {present.length} of {roster.length} present (need {quorumNeeded}, including the CFO or a Finance delegate)
+        </div>
+        {tie ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-sg-text">
+            <span>Tie — casting vote of the chair{chair ? ` (${userMap.get(chair)?.name ?? chair})` : ""}:</span>
+            {(["for", "against"] as const).map((v) => (
+              <label key={v} className="flex cursor-pointer items-center gap-1">
+                <input type="radio" name="casting" className="accent-sg-white" checked={casting === v} onChange={() => setCasting(v)} />
+                {dispute && v === "for" ? "uphold" : v}
+              </label>
+            ))}
+          </div>
+        ) : null}
         {dispute ? (
-          <Field label="Corrected bonus after review (IDR)" hint={`Clawback becomes ${formatIDR(clawbackAmount({ ...c, recalculated: newRecalc }), "full")}`} className="col-span-2">
-            <Input type="number" min={0} value={recalc} onChange={(e) => setRecalc(e.target.value)} className="sg-num" />
+          <Field label="Corrected bonus after review" hint={`Clawback becomes ${formatIDR(amountAfter, "full")}`}>
+            <AmountInput value={recalc} onChange={setRecalc} aria-label="Corrected bonus" />
           </Field>
         ) : null}
-        <label className="col-span-2 flex cursor-pointer items-center gap-2 text-xs text-sg-text">
+        <label className="flex cursor-pointer items-center gap-2 text-xs text-sg-text">
           <input type="checkbox" className="accent-sg-white" checked={veto} onChange={(e) => setVeto(e.target.checked)} />
-          CEO veto (recorded in writing and reported to the Board of Commissioners)
+          CEO veto (recorded in writing with reasons and reported to the Board of Commissioners)
         </label>
-        <Field label="Reasons" className="col-span-2">
+        <Field label="Reasons">
           <Textarea value={reasons} onChange={(e) => setReasons(e.target.value)} placeholder="Summary of the CFO's case and the PRC's reasoning" className="min-h-[72px]" />
         </Field>
-        <p className="col-span-2 text-2xs text-sg-dim">Members on the project&apos;s team or with a conflict of interest are recused (§13.1).</p>
+        {errors.length ? (
+          <ul className="list-disc space-y-0.5 pl-4 text-2xs text-soft-yellow">
+            {errors.map((e) => (
+              <li key={e}>{e}</li>
+            ))}
+          </ul>
+        ) : null}
       </div>
     </Modal>
   );
@@ -436,50 +551,41 @@ function DisputeModal({ c, onClose }: { c: Clawback; onClose: () => void }) {
 
 type Source = "deferred" | "bonus" | "salary" | "final";
 
-/** Record one recovery step in the §9.4 order. */
+/** Record one recovery step in the §9.4 order: deferred & carried forward → future project bonuses → salary. */
 function RecoverModal({ c, onClose }: { c: Clawback; onClose: () => void }) {
   const updateClawback = useCrm((s) => s.updateClawback);
-  const releaseDeferred = useCrm((s) => s.releaseDeferred);
-  const forfeitDeferred = useCrm((s) => s.forfeitDeferred);
+  const reduceDeferred = useCrm((s) => s.reduceDeferred);
   const profiles = useCrm((s) => s.employeeProfiles);
-  const initiatives = useCrm((s) => s.initiatives);
-  const bonusRuns = useCrm((s) => s.bonusRuns);
   const notify = useUi((s) => s.notify);
   const iniMap = useInitiativeMap();
   const sources = useRecoverySources(c.userId);
+  const all = useCrm((s) => s.clawbacks);
   const profile = profiles.find((p) => p.userId === c.userId);
   const left = !!profile?.separation && Date.parse(profile.separation.effectiveAt) <= Date.now();
-  const amount = clawbackAmount(c);
+  const amount = clawbackAmount(c, all);
   const remaining = Math.max(0, amount - c.recovered);
   const monthlyGross = (profile?.annualBaseSalary ?? 0) / 12;
   const sched = clawbackSchedule(remaining, profile?.annualBaseSalary ?? 0);
 
-  const vested = (d: DeferredBonus) => {
-    const ini = initiatives.find((i) => i.id === d.initiativeId);
-    return !!ini?.completedAt && Date.parse(deferralVestDate(ini)) <= Date.now();
-  };
-  const usable = sources.pending.filter((d) => d.amount <= remaining + 0.5 || vested(d));
-
-  const [source, setSource] = useState<Source>(usable.length ? "deferred" : "bonus");
-  const [deferredId, setDeferredId] = useState(usable[0]?.id ?? "");
-  const [bonusMonth, setBonusMonth] = useState("");
-  const [value, setValue] = useState(String(Math.round(Math.min(remaining, c.monthlyDeduction || sched.monthly))));
-  const [otherDeductions, setOtherDeductions] = useState("0");
+  const [source, setSource] = useState<Source>(sources.pending.length ? "deferred" : "bonus");
+  const [deferredId, setDeferredId] = useState(sources.pending[0]?.id ?? "");
+  const [value, setValue] = useState(Math.round(Math.min(remaining, c.monthlyDeduction || sched.monthly)));
+  const [otherDeductions, setOtherDeductions] = useState(0);
   const [orderOk, setOrderOk] = useState(false);
   const [agreement, setAgreement] = useState(!!c.writtenAgreement);
 
-  const runMonths = useMemo(() => bonusRuns.filter((r) => (r.status === "certified" || r.status === "released") && r.lines.some((l) => l.userId === c.userId && (l.payable > 0 || l.carriedOver > 0))).map((r) => r.month).sort((a, b) => b.localeCompare(a)), [bonusRuns, c.userId]);
   const d = sources.pending.find((x) => x.id === deferredId);
-  const take = source === "deferred" ? Math.min(remaining, d?.amount ?? 0) : Math.min(remaining, Math.max(0, parseAmount(value)));
-  const other = Math.max(0, parseAmount(otherDeductions));
+  const take = source === "deferred" ? Math.min(remaining, d?.amount ?? 0) : source === "bonus" ? remaining : Math.min(remaining, Math.max(0, value));
+  const other = Math.max(0, otherDeductions);
   const salaryCapOk = take <= sched.monthlyCap + 0.5;
   const wageCapOk = take + other <= monthlyGross * POLICY.clawback.maxWageDeductionPct + 0.5;
-  const earlierAvailable = sources.deferredTotal + sources.carriedTotal > 0;
+  const earlierAvailable = sources.deferredTotal + sources.carriedTotal > 0 || !c.recoverFromBonuses;
 
   const errors: string[] = [];
-  if (take <= 0) errors.push("Enter an amount");
+  if (take <= 0) errors.push("Nothing left to recover");
   if (source === "deferred" && !d) errors.push("Choose a deferred entry");
-  if (source === "bonus" && !bonusMonth) errors.push("Choose the bonus cycle it was deducted from");
+  if (source === "bonus" && c.recoverFromBonuses) errors.push("Already recovering from carried-forward amounts and future project bonuses");
+  if (source === "bonus" && left) errors.push("The employee has left — no future project bonuses");
   if ((source === "salary" || source === "final") && !agreement) errors.push(source === "final" ? "Set-off against final pay needs the employee's written agreement in the separation agreement" : "Salary deductions need the employee's specific written agreement for this recovery");
   if (source === "salary" && !salaryCapOk) errors.push(`Above 20% of monthly gross salary (${formatIDR(sched.monthlyCap, "full")})`);
   if (source === "salary" && !wageCapOk) errors.push(`Total deductions from this wage payment would exceed 50% (${formatIDR(monthlyGross * POLICY.clawback.maxWageDeductionPct, "full")})`);
@@ -487,26 +593,34 @@ function RecoverModal({ c, onClose }: { c: Clawback; onClose: () => void }) {
 
   const submit = () => {
     if (errors.length) return;
+    const at = new Date().toISOString();
+    const month = cycleMonth(at);
+    if (source === "bonus") {
+      updateClawback(c.id, { recoverFromBonuses: true, notes: appendNote(c, `Recovery from carried-forward amounts and future project bonuses started — netted in each monthly run until ${formatIDR(remaining, "full")} is recovered (§9.4)`) });
+      notify("Recovery from future project bonuses switched on — the monthly run nets it before payroll");
+      onClose();
+      return;
+    }
     let detail = "";
     if (source === "deferred" && d) {
       const label = `${iniMap.get(d.initiativeId)?.code ?? d.initiativeId} ${d.month}`;
-      if (d.amount <= remaining + 0.5) forfeitDeferred(d.id, `Offset in full against clawback ${c.id} (§9.4 recovery order)`);
-      else releaseDeferred(d.id, d.amount - take, `Vested; ${formatIDR(take, "full")} offset against clawback ${c.id} (§9.4), remainder paid`);
+      // offset without paying: the deferred entry is reduced by the recovered amount (§9.4 order of recovery)
+      reduceDeferred(d.id, take, `Offset against clawback ${c.id} (§9.4 recovery order)`);
       detail = `${formatIDR(take, "full")} recovered from deferred entry ${label}`;
-    } else if (source === "bonus") detail = `${formatIDR(take, "full")} deducted from the ${monthLabel(bonusMonth)} project bonus / carried-forward amount`;
-    else if (source === "salary") detail = `${formatIDR(take, "full")} salary deduction (written agreement on file; ≤ 20% of monthly gross; total deductions ${formatIDR(take + other, "full")} ≤ 50%)`;
+    } else if (source === "salary") detail = `${formatIDR(take, "full")} salary deduction (written agreement on file; ≤ 20% of monthly gross; total deductions ${formatIDR(take + other, "full")} ≤ 50%)`;
     else detail = `${formatIDR(take, "full")} set off against final pay under the separation agreement`;
     const recovered = Math.min(amount, c.recovered + take);
     const done = recovered >= amount - 0.5;
     const agreed = (source === "salary" || source === "final") && agreement && !c.writtenAgreement;
-    updateClawback(c.id, { recovered: done ? amount : recovered, status: done ? "closed" : "recovering", notes: appendNote(c, agreed ? `Employee's written agreement to the deduction received · ${detail}` : detail), ...(agreed ? { writtenAgreement: true } : {}) });
+    const recoveries = [...(c.recoveries ?? []), { month, amount: take, source: source === "final" ? ("salary" as const) : (source as "deferred" | "salary"), at }];
+    updateClawback(c.id, { recovered: done ? amount : recovered, recoveries, status: done ? "closed" : "recovering", notes: appendNote(c, agreed ? `Employee's written agreement to the deduction received · ${detail}` : detail), ...(agreed ? { writtenAgreement: true } : {}) });
     notify(done ? "Final recovery recorded — clawback closed" : `${formatIDR(take)} recovered`);
     onClose();
   };
 
   const OPTIONS: { value: Source; label: string; disabled?: boolean }[] = [
     { value: "deferred", label: `1 · Deferred amount (${sources.pending.length} pending · ${formatIDR(sources.deferredTotal)})`, disabled: !sources.pending.length },
-    { value: "bonus", label: `1–2 · Carried-forward amount or a future project bonus${sources.carriedTotal ? ` (${formatIDR(sources.carriedTotal)} carried)` : ""}` },
+    { value: "bonus", label: `1–2 · Carried-forward amounts and future project bonuses${sources.carriedTotal ? ` (${formatIDR(sources.carriedTotal)} carried)` : ""}${c.recoverFromBonuses ? " — on" : ""}`, disabled: left || !!c.recoverFromBonuses },
     { value: "salary", label: "3 · Salary deduction", disabled: left },
     { value: "final", label: "Final pay set-off (leaver)", disabled: !left },
   ];
@@ -524,8 +638,8 @@ function RecoverModal({ c, onClose }: { c: Clawback; onClose: () => void }) {
           <Button size="sm" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button size="sm" variant="primary" disabled={errors.length > 0} onClick={submit} title={errors.join("\n")}>
-            Record {take > 0 ? formatIDR(take) : ""}
+          <Button size="sm" variant="primary" disabled={errors.length > 0} onClick={submit}>
+            {source === "bonus" ? "Recover through payroll" : `Record ${take > 0 ? formatIDR(take) : ""}`}
           </Button>
         </>
       }
@@ -547,13 +661,12 @@ function RecoverModal({ c, onClose }: { c: Clawback; onClose: () => void }) {
         </Field>
 
         {source === "deferred" ? (
-          <Field label="Deferred entry" hint="An entry no larger than the balance is offset in full; a larger one only once it has vested (the rest is then paid)">
+          <Field label="Deferred entry" hint="The entry is reduced by the amount recovered and never paid out; any remainder stays pending and vests as normal">
             <Select value={deferredId} onChange={(e) => setDeferredId(e.target.value)}>
               <option value="">Choose…</option>
               {sources.pending.map((x) => (
-                <option key={x.id} value={x.id} disabled={!usable.includes(x)}>
+                <option key={x.id} value={x.id}>
                   {iniMap.get(x.initiativeId)?.code ?? x.initiativeId} · {monthLabel(x.month)} · {formatIDR(x.amount, "full")}
-                  {usable.includes(x) ? "" : " — larger than the balance and not vested yet"}
                 </option>
               ))}
             </Select>
@@ -561,21 +674,9 @@ function RecoverModal({ c, onClose }: { c: Clawback; onClose: () => void }) {
         ) : null}
 
         {source === "bonus" ? (
-          <>
-            <Field label="Bonus cycle deducted from" hint="Finance nets the amount in payroll for that salary date">
-              <Select value={bonusMonth} onChange={(e) => setBonusMonth(e.target.value)}>
-                <option value="">Choose…</option>
-                {runMonths.map((m) => (
-                  <option key={m} value={m}>
-                    {monthLabel(m)} · salary {formatDate(paymentDate(m), "short")}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field label="Amount (IDR)">
-              <Input type="number" min={0} max={remaining} value={value} onChange={(e) => setValue(e.target.value)} className="sg-num" />
-            </Field>
-          </>
+          <Callout>
+            Each monthly run nets the outstanding {exactIdr(remaining)} from this employee&apos;s carried-forward amounts and project bonuses before payroll, and the released run records what was recovered on the line and on the Annex E statement (&ldquo;Adjustments, recoveries or clawback&rdquo;). Salary is only used after that, with written agreement.
+          </Callout>
         ) : null}
 
         {source === "salary" || source === "final" ? (
@@ -587,13 +688,13 @@ function RecoverModal({ c, onClose }: { c: Clawback; onClose: () => void }) {
                 <span className="block text-2xs text-sg-dim">{source === "final" ? "Without it the company may only pursue civil recovery." : "Required for each recovery; deductions are spread over 6–12 months."} (§9.4 steps 5–6)</span>
               </span>
             </label>
-            <Field label={source === "final" ? "Amount set off (IDR)" : "This month's deduction (IDR)"} hint={source === "salary" ? `Schedule ${sched.months} months × ${formatIDR(sched.monthly, "full")} · cap ${formatIDR(sched.monthlyCap, "full")} (20% of ${formatIDR(monthlyGross, "full")})` : undefined}>
-              <Input type="number" min={0} value={value} onChange={(e) => setValue(e.target.value)} className={cn("sg-num", source === "salary" && !salaryCapOk && "text-soft-red")} />
+            <Field label={source === "final" ? "Amount set off" : "This month's deduction"} hint={source === "salary" ? `Schedule ${sched.months} months × ${formatIDR(sched.monthly, "full")} · cap ${formatIDR(sched.monthlyCap, "full")} (20% of ${formatIDR(monthlyGross, "full")})` : undefined}>
+              <AmountInput value={value} onChange={setValue} className={cn(source === "salary" && !salaryCapOk && "text-soft-red")} aria-label="Amount" />
             </Field>
             {source === "salary" ? (
               <>
-                <Field label="Other deductions from the same wage payment (IDR)" hint={`Total ${formatIDR(take + other, "full")} of the 50% limit ${formatIDR(monthlyGross * POLICY.clawback.maxWageDeductionPct, "full")}`}>
-                  <Input type="number" min={0} value={otherDeductions} onChange={(e) => setOtherDeductions(e.target.value)} className={cn("sg-num", !wageCapOk && "text-soft-red")} />
+                <Field label="Other deductions from the same wage payment" hint={`Total ${formatIDR(take + other, "full")} of the 50% limit ${formatIDR(monthlyGross * POLICY.clawback.maxWageDeductionPct, "full")}`}>
+                  <AmountInput value={otherDeductions} onChange={setOtherDeductions} className={cn(!wageCapOk && "text-soft-red")} aria-label="Other deductions" />
                 </Field>
                 {earlierAvailable ? (
                   <label className="flex cursor-pointer items-start gap-2 text-xs text-sg-text">
@@ -606,7 +707,7 @@ function RecoverModal({ c, onClose }: { c: Clawback; onClose: () => void }) {
           </>
         ) : null}
 
-        {errors.length && take > 0 ? (
+        {errors.length ? (
           <ul className="list-disc pl-4 text-2xs text-soft-yellow">
             {errors.map((e) => (
               <li key={e}>{e}</li>
@@ -643,8 +744,9 @@ function NewClawbackModal({ onClose }: { onClose: () => void }) {
   const [trigger, setTrigger] = useState<ClawbackTrigger>("revenue_reversal");
   const [payment, setPayment] = useState("");
   const [paidAt, setPaidAt] = useState(toDateInput(new Date().toISOString()));
-  const [originalPaid, setOriginalPaid] = useState("");
-  const [recalculated, setRecalculated] = useState("");
+  const [originalPaid, setOriginalPaid] = useState(0);
+  const [recalculated, setRecalculated] = useState(0);
+  const [triggerDate, setTriggerDate] = useState(toDateInput(new Date().toISOString()));
   const [fault, setFault] = useState(false);
   const [notes, setNotes] = useState("");
 
@@ -660,27 +762,29 @@ function NewClawbackModal({ onClose }: { onClose: () => void }) {
     return initiatives.filter((i) => fromPayments.has(i.id) || ["active", "completed", "approved"].includes(i.status)).sort((a, b) => Number(fromPayments.has(b.id)) - Number(fromPayments.has(a.id)) || a.title.localeCompare(b.title));
   }, [initiatives, released, userId]);
 
-  const orig = parseAmount(originalPaid);
-  const recalc = parseAmount(recalculated);
+  const orig = Math.max(0, originalPaid);
+  const recalc = Math.max(0, recalculated);
   const draft = { trigger, personallyAtFault: fault, originalPaid: orig, recalculated: recalc, paidAt: fromDateInput(paidAt || toDateInput(new Date().toISOString())) };
-  const amount = clawbackAmount(draft);
+  const triggeredAt = fromDateInput(triggerDate || toDateInput(new Date().toISOString()));
+  const others = useCrm((s) => s.clawbacks);
+  const amount = clawbackAmount({ ...draft, userId, initiativeId }, others);
   const profile = profiles.find((p) => p.userId === userId);
   const sched = clawbackSchedule(amount, profile?.annualBaseSalary ?? 0);
-  const exempt = paidAt && orig > 0 ? clawbackExempt(draft) : null;
-  const valid = !!userId && !!initiativeId && !!paidAt && orig > 0 && orig > recalc && notes.trim().length >= 5;
+  const exempt = paidAt && orig > 0 ? clawbackExempt({ ...draft, userId, initiativeId, triggeredAt }, triggeredAt, others) : null;
+  const valid = !!userId && !!initiativeId && !!paidAt && !!triggerDate && orig > 0 && orig > recalc && notes.trim().length >= 5;
 
   const pickPayment = (key: string) => {
     setPayment(key);
     const p = payments.find((x) => x.key === key);
     if (!p) return;
     setInitiativeId(p.initiativeId);
-    setOriginalPaid(String(Math.round(p.payable)));
+    setOriginalPaid(Math.round(p.payable));
     setPaidAt(toDateInput(paymentDate(p.month)));
   };
 
   const submit = () => {
     if (!valid) return;
-    createClawback({ userId, initiativeId, trigger, paidAt: draft.paidAt, originalPaid: orig, recalculated: recalc, personallyAtFault: fault, writtenAgreement: false, notes: notes.trim(), months: sched.months, monthlyDeduction: sched.monthly });
+    createClawback({ userId, initiativeId, trigger, paidAt: draft.paidAt, triggeredAt, originalPaid: orig, recalculated: recalc, personallyAtFault: fault, writtenAgreement: false, notes: notes.trim(), months: sched.months, monthlyDeduction: sched.monthly });
     notify(`Clawback of ${formatIDR(amount)} identified — CFO to present it to the PRC`);
     onClose();
   };
@@ -766,14 +870,17 @@ function NewClawbackModal({ onClose }: { onClose: () => void }) {
         <Callout className="col-span-2">
           Not a clawback trigger: {NOT_CLAWBACK.join(", ")}. These are absorbed through deferral (§9.3) or by the company.
         </Callout>
-        <Field label="Bonus paid (IDR)">
-          <Input type="number" min={0} value={originalPaid} onChange={(e) => setOriginalPaid(e.target.value)} className="sg-num" />
+        <Field label="Bonus paid">
+          <AmountInput value={originalPaid} onChange={setOriginalPaid} aria-label="Bonus paid" />
         </Field>
-        <Field label="Bonus on corrected figures (IDR)" hint="What should have been paid">
-          <Input type="number" min={0} value={recalculated} onChange={(e) => setRecalculated(e.target.value)} className="sg-num" />
+        <Field label="Bonus on corrected figures" hint="What should have been paid">
+          <AmountInput value={recalculated} onChange={setRecalculated} aria-label="Bonus on corrected figures" />
         </Field>
         <Field label="Payment date" hint={`24-month window ends ${paidAt ? formatDate(addMonths(fromDateInput(paidAt), POLICY.clawback.windowMonths), "medium") : "—"}`}>
           <Input type="date" value={paidAt} onChange={(e) => setPaidAt(e.target.value)} />
+        </Field>
+        <Field label="Trigger date" hint="When the reversal, misconduct finding or data error arose — tested against the window (§9.4)">
+          <Input type="date" value={triggerDate} max={toDateInput(new Date().toISOString())} onChange={(e) => setTriggerDate(e.target.value)} />
         </Field>
         {trigger === "data_error" ? (
           <label className="mt-5 flex cursor-pointer items-start gap-2 text-sm text-sg-text">
@@ -792,7 +899,7 @@ function NewClawbackModal({ onClose }: { onClose: () => void }) {
 
         <div className="col-span-2 space-y-2 rounded-lg border border-sg-line bg-sg-card-2/50 p-3 text-xs">
           <div className="flex items-center justify-between">
-            <span className="text-sg-muted">Clawback (paid − corrected{trigger === "data_error" && !fault ? ` − ${formatIDR(POLICY.clawback.dataErrorSafeHarbour)} safe harbour` : ""})</span>
+            <span className="text-sg-muted">Clawback (paid − corrected{trigger === "data_error" && !fault ? ` − ${formatIDR(safeHarbourLeft({ ...draft, userId, initiativeId }, others), "full")} safe harbour left for this person and project` : ""})</span>
             <span className="sg-num font-display text-base font-extrabold text-sg-white">{formatIDR(amount, "full")}</span>
           </div>
           {amount > 0 ? (

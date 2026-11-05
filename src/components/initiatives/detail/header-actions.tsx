@@ -12,14 +12,15 @@ import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Modal, Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
 import { Cite } from "@/components/initiatives/shared";
+import { CloseOutModal } from "@/components/initiatives/close-out";
 
 /** Status-dependent primary actions in the page header. */
 export function HeaderActions({ ini }: { ini: Initiative }) {
   const members = useCrm((s) => s.initiativeMembers);
   const submitInitiative = useCrm((s) => s.submitInitiative);
+  const markResubmitted = useCrm((s) => s.markResubmitted);
   const deleteDraft = useCrm((s) => s.deleteDraft);
   const activateInitiative = useCrm((s) => s.activateInitiative);
-  const completeInitiative = useCrm((s) => s.completeInitiative);
   const notify = useUi((s) => s.notify);
   const router = useRouter();
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -44,8 +45,10 @@ export function HeaderActions({ ini }: { ini: Initiative }) {
           <Button
             variant="primary"
             onClick={() => {
+              const resubmission = !!ini.returns?.some((r) => !r.resubmittedAt);
               submitInitiative(ini.id);
-              notify(`Submitted to the PRC — acknowledgment within 1 business day; ${tier.label} decides within ${tier.decisionBusinessDays}`);
+              if (resubmission) markResubmitted(ini.id);
+              notify(`${resubmission ? "Resubmitted to the PRC — the completeness clock restarts" : "Submitted to the PRC"} — acknowledgment within 1 business day; ${tier.label} decides within ${tier.decisionBusinessDays}`);
             }}
           >
             <Send /> Submit to PRC
@@ -129,39 +132,10 @@ export function HeaderActions({ ini }: { ini: Initiative }) {
     return (
       <>
         {packet}
-        <Button variant="primary" onClick={() => setConfirmComplete(true)}>
-          <CircleCheck /> Mark completed
+        <Button variant="primary" onClick={() => setConfirmComplete(true)} title="Annex G close-out report — required to mark the project completed (§8.3)">
+          <CircleCheck /> Close out project
         </Button>
-        <Modal
-          open={confirmComplete}
-          onOpenChange={setConfirmComplete}
-          title="Mark project completed?"
-          description={`${ini.code ?? ini.trackingNo} · ${ini.title}`}
-          footer={
-            <>
-              <Button variant="ghost" onClick={() => setConfirmComplete(false)}>
-                Cancel
-              </Button>
-              <Button
-                variant="primary"
-                onClick={() => {
-                  completeInitiative(ini.id);
-                  setConfirmComplete(false);
-                  notify("Project completed — final reconciliation due within 30 days");
-                }}
-              >
-                <CircleCheck /> Mark completed
-              </Button>
-            </>
-          }
-        >
-          <div className="space-y-2 text-sm text-sg-text">
-            <p>
-              A project closes when all deliverables are accepted, the final invoice is paid or written off and final costs are booked; the Project Lead submits the close-out report (Annex G). Within <strong className="text-sg-white">30 days</strong> Finance recalculates the total pool on final figures: a higher pool is paid with the next salary, an overpayment comes first from deferred and carried-forward amounts <Cite s="8.3" />.
-            </p>
-            <p className="text-xs text-sg-muted">Deferred amounts vest {ini.deferralMonths || 6} months after close (§9.3); a final invoice collected later still earns a late-collection bonus for eligible members (§8.3) — record it on the Payments tab.</p>
-          </div>
-        </Modal>
+        <CloseOutModal ini={ini} open={confirmComplete} onOpenChange={setConfirmComplete} />
       </>
     );
   }

@@ -7,16 +7,30 @@ import { Building2, CalendarDays, CircleAlert, FileText, Handshake, Kanban, Mail
 import { useCrm, useUi, type DialogState } from "@/lib/store";
 import { CAPABILITIES, ISSUE_PRIORITIES, ISSUE_STATUSES, ISSUE_TYPES, LIFECYCLE_STAGES, LINK_TYPES, type Capability, type CompanyTier, type CrmObjectType, type IssuePriority, type IssueStatus, type IssueType, type LifecycleStage, type LinkType, type Ticket as TicketRecord, type TicketPriority } from "@/lib/types";
 import { issueStatusMeta, issueTypeMeta, lifecycleMeta, linkTypeMeta, priorityMeta, ticketPriorityMeta } from "@/lib/meta";
-import { cn, formatDate, formatIDR, fromDateInput, toDateInput } from "@/lib/utils";
-import { defaultSlaDue, SLA_TARGETS } from "@/lib/slices/crm-extras";
+import { cn, formatDate, formatIDR, fromDateInput, fromDateTimeInput, isDateInput, parseIDR, toDateInput, toDateTimeInput } from "@/lib/utils";
+import { SLA_POLICY } from "@/lib/slices/crm-service";
+import { slaDueFor } from "@/lib/selectors";
 import type { Contact, Company, Deal, EmailTemplate, User as UserRecord } from "@/lib/types";
 import { Modal, Tabs } from "@/components/ui/overlays";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/misc";
 import { shortcutsFor } from "./hotkeys";
+import { DealCloseHost } from "@/components/crm/deal-close";
+import { composeDealName, ORIGINATION_LABEL, ORIGINATION_SOURCES } from "@/components/crm/deal-signals";
+import { quoteTotals, settingsOf } from "@/components/crm/quote-math";
+import type { DealOrigination } from "@/lib/types";
 
 export function GlobalDialogs() {
+  return (
+    <>
+      <DealCloseHost />
+      <ActiveDialog />
+    </>
+  );
+}
+
+function ActiveDialog() {
   const dialog = useUi((s) => s.dialog);
   const close = useUi((s) => s.closeDialog);
   if (!dialog) return null;
@@ -87,24 +101,35 @@ function CreateDealDialog({ onClose, d }: Props<"createDeal">) {
   const [companyId, setCompanyId] = useState(d.companyId ?? "");
   const [contactId, setContactId] = useState(d.contactId ?? "");
   const company = companies.find((c) => c.id === companyId);
+  const isCustomer = (c: Company | undefined) => !!c && (c.lifecycleStage === "customer" || c.lifecycleStage === "evangelist");
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
+  const [tbd, setTbd] = useState(false);
   const [closeDate, setCloseDate] = useState(toDateInput(new Date(Date.now() + 45 * 86_400_000).toISOString()));
   const [ownerId, setOwnerId] = useState(company?.ownerId ?? currentUserId);
   const [capability, setCapability] = useState<Capability>(CAPABILITIES[0]);
   const [priority, setPriority] = useState<"high" | "medium" | "low">("medium");
+  const [dealType, setDealType] = useState<Deal["dealType"]>(() => (isCustomer(companies.find((c) => c.id === d.companyId)) ? "Expansion" : "New Business"));
+  const [typeTouched, setTypeTouched] = useState(false);
+  const [channel, setChannel] = useState<DealOrigination["channel"]>(() => (isCustomer(companies.find((c) => c.id === d.companyId)) ? "follow_on" : "personal"));
+  const [source, setSource] = useState("");
+  const [originatorId, setOriginatorId] = useState(currentUserId);
 
   useEffect(() => {
     if (pipeline && !pipeline.stages.some((s) => s.id === stageId)) setStageId(pipeline.stages[0].id);
   }, [pipeline, stageId]);
 
-  const valid = name.trim().length > 1 && Number(amount.replace(/[^\d]/g, "")) >= 0 && !!stageId;
+  const parsedAmount = parseIDR(amount);
+  const amountOk = tbd ? parsedAmount === null || parsedAmount >= 0 : parsedAmount !== null && parsedAmount > 0;
+  const dateOk = isDateInput(closeDate);
+  const finalName = composeDealName(name, company, companies);
+  const valid = name.trim().length > 1 && amountOk && dateOk && !!stageId;
+  const blocker = name.trim().length <= 1 ? "Name the deal" : !amountOk ? (tbd ? "Amount must be a number" : "Enter an amount above 0, or tick “Amount TBD”") : !dateOk ? "Pick a close date" : "";
   const submit = () => {
     if (!valid) return;
-    const prefix = company ? `${company.name.split(" ").map((w) => w[0]).join("").slice(0, 3).toUpperCase()} — ` : "";
     const id = createDeal({
-      name: name.includes(" — ") ? name.trim() : prefix + name.trim(),
-      amount: Number(amount.replace(/[^\d]/g, "")) || 0,
+      name: finalName,
+      amount: parsedAmount ?? 0,
       pipelineId: pipeline!.id,
       stageId,
       closeDate: fromDateInput(closeDate),
@@ -112,9 +137,10 @@ function CreateDealDialog({ onClose, d }: Props<"createDeal">) {
       companyId: companyId || null,
       contactIds: contactId ? [contactId] : [],
       priority,
-      dealType: "New Business",
+      dealType,
       capability,
-      description: "",
+      description: tbd && !parsedAmount ? "Amount to be confirmed." : "",
+      origination: { channel, source: source || (channel === "follow_on" ? "follow_on" : undefined), originatorId: channel === "company" ? null : originatorId, firstContactAt: null, evidenceActivityId: null, recordedById: currentUserId, recordedAt: new Date().toISOString(), lockedAt: null },
     });
     notify("Deal created");
     onClose();
@@ -132,7 +158,7 @@ function CreateDealDialog({ onClose, d }: Props<"createDeal">) {
       description="Adds the deal to the pipeline and logs it on the company timeline."
       footer={
         <>
-          <SubmitHint />
+          {valid ? <SubmitHint /> : <span className="mr-auto text-2xs text-soft-orange">{blocker}</span>}
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
@@ -143,15 +169,18 @@ function CreateDealDialog({ onClose, d }: Props<"createDeal">) {
       }
     >
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Deal name" className="col-span-2">
+        <Field label="Deal name" className="col-span-2" hint={finalName && finalName !== name.trim() ? `Saved as “${finalName}”` : undefined}>
           <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Drone inspection programme — phase 1" />
         </Field>
-        <Field label="Amount (IDR)">
-          <Input inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="2500000000" />
-          {amount ? <p className="mt-1 text-2xs text-sg-dim">{formatIDR(Number(amount.replace(/[^\d]/g, "")) || 0, "full")}</p> : null}
+        <Field label="Amount (IDR)" hint={parsedAmount !== null ? formatIDR(parsedAmount, "full") : "e.g. 2.500.000.000 · 2,5 M · 720 jt"}>
+          <Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="2.500.000.000" aria-invalid={!!amount && !amountOk} className={amount && !amountOk ? "border-soft-red/60" : undefined} />
+          <label className="mt-1 flex items-center gap-1.5 text-2xs text-sg-muted">
+            <input type="checkbox" checked={tbd} onChange={(e) => setTbd(e.target.checked)} className="size-3.5 accent-white" /> Amount TBD
+          </label>
         </Field>
         <Field label="Close date">
-          <Input type="date" value={closeDate} onChange={(e) => setCloseDate(e.target.value)} />
+          <Input type="date" value={closeDate} onChange={(e) => setCloseDate(e.target.value)} aria-invalid={!dateOk} className={dateOk ? undefined : "border-soft-red/60"} />
+          {!dateOk && <p className="mt-1 text-2xs text-soft-red">Pick a close date</p>}
         </Field>
         <Field label="Pipeline">
           <Select value={pipelineId} onChange={(e) => setPipelineId(e.target.value)}>
@@ -164,11 +193,13 @@ function CreateDealDialog({ onClose, d }: Props<"createDeal">) {
         </Field>
         <Field label="Stage">
           <Select value={stageId} onChange={(e) => setStageId(e.target.value)}>
-            {pipeline?.stages.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} ({Math.round(s.probability * 100)}%)
-              </option>
-            ))}
+            {pipeline?.stages
+              .filter((s) => !s.closed)
+              .map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({Math.round(s.probability * 100)}%)
+                </option>
+              ))}
           </Select>
         </Field>
         <Field label="Company">
@@ -179,6 +210,10 @@ function CreateDealDialog({ onClose, d }: Props<"createDeal">) {
               setContactId("");
               const c = companies.find((x) => x.id === e.target.value);
               if (c) setOwnerId(c.ownerId);
+              if (!typeTouched) {
+                setDealType(isCustomer(c) ? "Expansion" : "New Business");
+                setChannel(isCustomer(c) ? "follow_on" : "personal");
+              }
             }}
           >
             <option value="">— none —</option>
@@ -199,6 +234,19 @@ function CreateDealDialog({ onClose, d }: Props<"createDeal">) {
             ))}
           </Select>
         </Field>
+        <Field label="Deal type" hint={!typeTouched && isCustomer(company) ? "Expansion — the company is already a customer" : undefined}>
+          <Select
+            value={dealType}
+            onChange={(e) => {
+              setDealType(e.target.value as Deal["dealType"]);
+              setTypeTouched(true);
+            }}
+          >
+            {(["New Business", "Expansion", "Renewal"] as const).map((t) => (
+              <option key={t}>{t}</option>
+            ))}
+          </Select>
+        </Field>
         <Field label="Capability">
           <Select value={capability} onChange={(e) => setCapability(e.target.value as Capability)}>
             {CAPABILITIES.map((c) => (
@@ -215,13 +263,47 @@ function CreateDealDialog({ onClose, d }: Props<"createDeal">) {
             ))}
           </Select>
         </Field>
-        <Field label="Priority" className="col-span-2">
+        <Field label="Priority">
           <div className="flex gap-1">
             {(["high", "medium", "low"] as const).map((p) => (
-              <button key={p} type="button" onClick={() => setPriority(p)} className={cn("h-7 rounded border px-3 text-xs font-semibold capitalize", priority === p ? "border-sg-white text-sg-white" : "border-sg-line text-sg-muted hover:text-sg-white")}>
+              <button key={p} type="button" aria-pressed={priority === p} onClick={() => setPriority(p)} className={cn("h-7 rounded border px-3 text-xs font-semibold capitalize", priority === p ? "border-sg-white text-sg-white" : "border-sg-line text-sg-muted hover:text-sg-white")}>
                 {p}
               </button>
             ))}
+          </div>
+        </Field>
+        <Field label="How did this opportunity come in? (§4.1)" className="col-span-2" hint={channel === "company" ? "Company channels carry no Project Initiator weight — the PRC appoints a Project Lead." : "The earliest documented client contact in the CRM is the main evidence; it is locked at Proposal Sent."}>
+          <div className="grid grid-cols-3 gap-2">
+            <Select
+              value={channel}
+              onChange={(e) => {
+                setChannel(e.target.value as DealOrigination["channel"]);
+                setSource("");
+              }}
+              aria-label="Origination channel"
+            >
+              {(["personal", "follow_on", "company"] as const).map((c) => (
+                <option key={c} value={c}>
+                  {ORIGINATION_LABEL[c]}
+                </option>
+              ))}
+            </Select>
+            <Select value={source} onChange={(e) => setSource(e.target.value)} aria-label="Origination source">
+              <option value="">— source —</option>
+              {ORIGINATION_SOURCES[channel].map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </Select>
+            <Select value={channel === "company" ? "" : originatorId} onChange={(e) => setOriginatorId(e.target.value)} disabled={channel === "company"} aria-label="Originator">
+              {channel === "company" ? <option value="">No initiator (company channel)</option> : null}
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  Originator: {u.name}
+                </option>
+              ))}
+            </Select>
           </div>
         </Field>
       </div>
@@ -699,7 +781,7 @@ export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId,
   const contacts = useCrm((s) => s.contacts);
   const users = useCrm((s) => s.users);
   const currentUserId = useCrm((s) => s.currentUserId);
-  const createTicket = useCrm((s) => s.createTicket);
+  const openServiceTicket = useCrm((s) => s.openServiceTicket);
   const notify = useUi((s) => s.notify);
 
   const supportLead = users.find((u) => u.team === "Service")?.id ?? currentUserId;
@@ -710,21 +792,22 @@ export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId,
   const [priority, setPriority] = useState<TicketPriority>("medium");
   const [category, setCategory] = useState<TicketRecord["category"]>("Field Support");
   const [ownerId, setOwnerId] = useState(supportLead);
-  const [slaLocal, setSlaLocal] = useState(() => toWibLocal(defaultSlaDue("medium")));
+  const [slaLocal, setSlaLocal] = useState(() => toWibLocal(slaDueFor("medium").dueAt));
   const [slaTouched, setSlaTouched] = useState(false);
 
   const companyContacts = useMemo(() => contacts.filter((c) => !companyId || c.companyId === companyId).sort((a, b) => `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`)), [contacts, companyId]);
 
   const pickPriority = (p: TicketPriority) => {
     setPriority(p);
-    if (!slaTouched) setSlaLocal(toWibLocal(defaultSlaDue(p)));
+    if (!slaTouched) setSlaLocal(toWibLocal(slaDueFor(p).dueAt));
   };
 
   const slaValid = !!slaLocal && !Number.isNaN(Date.parse(fromWibLocal(slaLocal)));
   const valid = subject.trim().length > 2 && slaValid && !!ownerId;
   const submit = () => {
     if (!valid) return;
-    const id = createTicket({
+    // business-hours SLA (24/7 for urgent); an explicit deadline is kept as typed
+    const id = openServiceTicket({
       subject,
       description,
       companyId: companyId || null,
@@ -733,7 +816,7 @@ export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId,
       category,
       ownerId,
       stageId,
-      slaDueAt: fromWibLocal(slaLocal),
+      slaDueAt: slaTouched ? fromWibLocal(slaLocal) : undefined,
     });
     notify(`Ticket ${id.toUpperCase()} opened`, { label: "Open", run: () => router.push(`/tickets/${id}`) });
     onCreated?.(id);
@@ -746,7 +829,7 @@ export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId,
       open
       onOpenChange={(o) => !o && onClose()}
       title="New ticket"
-      description="Opens a Field Support ticket and logs it on the company and contact timelines."
+      description={`Opens a ${category} ticket in Field Support and logs it on the company and contact timelines.`}
       footer={
         <>
           <SubmitHint />
@@ -819,7 +902,7 @@ export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId,
             ))}
           </Select>
         </Field>
-        <Field label="SLA due (WIB)" className="col-span-2" hint={slaTouched ? `Set manually · default for ${ticketPriorityMeta[priority].label.toLowerCase()} is ${SLA_TARGETS[priority]}` : `Default for ${ticketPriorityMeta[priority].label.toLowerCase()} priority: ${SLA_TARGETS[priority]} → ${slaValid ? formatDate(fromWibLocal(slaLocal), "datetime") : "—"}`}>
+        <Field label="SLA due (WIB)" className="col-span-2" hint={slaTouched ? `Set manually · default for ${ticketPriorityMeta[priority].label.toLowerCase()} is ${SLA_POLICY[priority].label}` : `Default for ${ticketPriorityMeta[priority].label.toLowerCase()} priority: ${SLA_POLICY[priority].label} → ${slaValid ? formatDate(fromWibLocal(slaLocal), "datetime") : "—"}`}>
           <div className="flex items-center gap-2">
             <Input
               type="datetime-local"
@@ -836,7 +919,7 @@ export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId,
                 size="sm"
                 onClick={() => {
                   setSlaTouched(false);
-                  setSlaLocal(toWibLocal(defaultSlaDue(priority)));
+                  setSlaLocal(toWibLocal(slaDueFor(priority).dueAt));
                 }}
               >
                 Reset
@@ -972,6 +1055,7 @@ function LogActivityDialog({ onClose, d }: Props<"logActivity">) {
   const pipelines = useCrm((s) => s.pipelines);
   const emailTemplates = useCrm((s) => s.emailTemplates);
   const addActivity = useCrm((s) => s.addActivity);
+  const currentUserId = useCrm((s) => s.currentUserId);
   const notify = useUi((s) => s.notify);
 
   const [type, setType] = useState(d.activityType);
@@ -982,8 +1066,31 @@ function LogActivityDialog({ onClose, d }: Props<"logActivity">) {
   const [duration, setDuration] = useState("15");
   const [direction, setDirection] = useState<"outbound" | "inbound">("outbound");
   const [due, setDue] = useState(toDateInput(new Date(Date.now() + 2 * 86_400_000).toISOString()));
+  const [dueTime, setDueTime] = useState("");
+  const [assigneeId, setAssigneeId] = useState(currentUserId);
+  const [when, setWhen] = useState(() => toDateTimeInput(new Date().toISOString()));
 
-  /** resolve associations the way HubSpot does: contact → its company + its open deals */
+  /** contacts this activity can also be logged on (attendees), and which are ticked by default */
+  const candidates = useMemo(() => {
+    if (!target) return { list: [] as Contact[], defaults: [] as string[] };
+    if (target.type === "deal") {
+      const deal = deals.find((x) => x.id === target.id);
+      const list = contacts.filter((c) => deal?.contactIds.includes(c.id));
+      return { list, defaults: list.map((c) => c.id) };
+    }
+    if (target.type === "company") return { list: contacts.filter((c) => c.companyId === target.id), defaults: [] };
+    if (target.type === "ticket") {
+      const t = tickets.find((x) => x.id === target.id);
+      const list = contacts.filter((c) => c.id === t?.contactId || (!!t?.companyId && c.companyId === t.companyId));
+      return { list, defaults: t?.contactId ? [t.contactId] : [] };
+    }
+    return { list: [] as Contact[], defaults: [] };
+  }, [target, contacts, deals, tickets]);
+  const [attendees, setAttendees] = useState<string[] | null>(null);
+  const picked = attendees ?? candidates.defaults;
+  useEffect(() => setAttendees(null), [target]);
+
+  /** resolve associations the way HubSpot does: contact → its company; deal → its company + the attendees picked */
   const links = useMemo(() => {
     const l = { contactIds: [] as string[], companyIds: [] as string[], dealIds: [] as string[], ticketIds: [] as string[] };
     if (!target) return l;
@@ -997,16 +1104,15 @@ function LogActivityDialog({ onClose, d }: Props<"logActivity">) {
       l.dealIds.push(target.id);
       const deal = deals.find((x) => x.id === target.id);
       if (deal?.companyId) l.companyIds.push(deal.companyId);
-      l.contactIds.push(...(deal?.contactIds ?? []).slice(0, 1));
     }
     if (target.type === "ticket") {
       l.ticketIds.push(target.id);
       const t = tickets.find((x) => x.id === target.id);
       if (t?.companyId) l.companyIds.push(t.companyId);
-      if (t?.contactId) l.contactIds.push(t.contactId);
     }
+    picked.forEach((id) => !l.contactIds.includes(id) && l.contactIds.push(id));
     return l;
-  }, [target, contacts, deals, tickets]);
+  }, [target, contacts, deals, tickets, picked]);
 
   const label = useLinkedRecordLabel(target?.type, target?.id);
 
@@ -1027,25 +1133,35 @@ function LogActivityDialog({ onClose, d }: Props<"logActivity">) {
   const unresolved = type === "email" ? unresolvedTokens(subject, body) : [];
   useEffect(() => setConfirmUnresolved(false), [subject, body]);
 
-  const valid = !!target && (subject.trim().length > 0 || body.trim().length > 0);
+  const whenIso = fromDateTimeInput(when);
+  const whenOk = type === "task" || (!!whenIso && Date.parse(whenIso) <= Date.now() + 60_000);
+  const dueOk = type !== "task" || (isDateInput(due) && (!dueTime || /^\d{2}:\d{2}$/.test(dueTime)));
+  const valid = !!target && (subject.trim().length > 0 || body.trim().length > 0) && whenOk && dueOk;
+  const blocker = !target ? "" : !(subject.trim() || body.trim()) ? (type === "note" ? "Write the note" : "Add a subject or notes") : !whenOk ? (whenIso ? "“When” can't be in the future" : "Pick when it happened") : !dueOk ? "Pick a due date" : "";
   const submit = () => {
     if (!valid) return;
     if (unresolved.length && !confirmUnresolved) {
       setConfirmUnresolved(true);
       return;
     }
+    // notes: first line is the subject (same as the timeline composer), the rest is the body
+    const [firstLine, ...restLines] = body.trim().split("\n");
+    const noteSubject = (firstLine ?? "").slice(0, 90) || "Note";
+    const noteBody = restLines.join("\n").trim() || ((firstLine ?? "").length > 90 ? (firstLine ?? "") : "");
     const defaultSubject = { call: `Call with ${label}`, email: `Email: ${label}`, meeting: `Meeting: ${label}`, note: "Note", task: "Follow up" }[type];
     addActivity({
       type,
-      subject: subject.trim() || defaultSubject,
-      body,
+      subject: type === "note" ? noteSubject : subject.trim() || defaultSubject,
+      body: type === "note" ? noteBody : body,
       links,
+      ...(type !== "task" && whenIso ? { timestamp: whenIso } : {}),
       ...(type === "call" ? { callOutcome: outcome, durationMin: Number(duration) || 0, direction } : {}),
       ...(type === "email" ? { direction } : {}),
       ...(type === "meeting" ? { durationMin: Number(duration) || 0 } : {}),
-      ...(type === "task" ? { dueAt: fromDateInput(due), done: false } : {}),
+      ...(type === "task" ? { dueAt: dueTime ? fromDateTimeInput(`${due}T${dueTime}`) : fromDateInput(due), done: false, ownerId: assigneeId, ...(assigneeId !== currentUserId ? { createdById: currentUserId } : {}) } : {}),
     });
-    notify(`${type[0].toUpperCase() + type.slice(1)} logged`);
+    const assignee = users.find((u) => u.id === assigneeId);
+    notify(type === "task" && assigneeId !== currentUserId ? `Task assigned to ${assignee?.name ?? "teammate"}` : `${type[0].toUpperCase() + type.slice(1)} logged`);
     onClose();
   };
   useSubmitHotkey(submit, valid);
@@ -1058,7 +1174,7 @@ function LogActivityDialog({ onClose, d }: Props<"logActivity">) {
       description={target ? `On ${label}` : "Choose the record this belongs to"}
       footer={
         <>
-          <SubmitHint />
+          {valid || !blocker ? <SubmitHint /> : <span className="mr-auto text-2xs text-soft-orange">{blocker}</span>}
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
@@ -1137,11 +1253,50 @@ function LogActivityDialog({ onClose, d }: Props<"logActivity">) {
             </Field>
           )}
           {type === "task" && (
-            <Field label="Due date">
-              <Input type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Due date">
+                <Input type="date" value={due} onChange={(e) => setDue(e.target.value)} aria-invalid={!isDateInput(due)} className={isDateInput(due) ? undefined : "border-soft-red/60"} />
+              </Field>
+              <Field label="Time (WIB, optional)" hint={dueTime ? undefined : "Defaults to 17:00"}>
+                <Input type="time" value={dueTime} onChange={(e) => setDueTime(e.target.value)} />
+              </Field>
+              <Field label="Assignee">
+                <Select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)}>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.id === currentUserId ? `${u.name} (me)` : u.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+          )}
+          {type !== "task" && (
+            <Field label="When (WIB)" hint={whenIso && Math.abs(Date.parse(whenIso) - Date.now()) > 5 * 60_000 ? `Logged as ${formatDate(whenIso, "datetime")} — "Last contacted" uses this time` : "Now, or pick an earlier time"}>
+              <Input type="datetime-local" value={when} max={toDateTimeInput(new Date().toISOString())} onChange={(e) => setWhen(e.target.value)} aria-invalid={!whenOk} className={whenOk ? undefined : "border-soft-red/60"} />
             </Field>
           )}
-          <Field label={type === "note" ? "Note" : type === "email" ? "Body" : "Notes"}>
+          {candidates.list.length > 0 && type !== "task" && (
+            <Field label="Also log on" hint={type === "note" ? undefined : `Updates "Last contacted" for ${picked.length === 1 ? "this contact" : `these ${picked.length} contacts`}`}>
+              <div className="flex flex-wrap gap-1">
+                {candidates.list.map((c) => {
+                  const on = picked.includes(c.id);
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() => setAttendees(on ? picked.filter((x) => x !== c.id) : [...picked, c.id])}
+                      className={cn("h-7 rounded-full border px-2.5 text-xs font-semibold", on ? "border-sg-white bg-sg-card-3 text-sg-white" : "border-sg-line text-sg-muted hover:text-sg-white")}
+                    >
+                      {c.firstName} {c.lastName}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
+          <Field label={type === "note" ? "Note" : type === "email" ? "Body" : "Notes"} hint={type === "note" ? "The first line becomes the note's title" : undefined}>
             <Textarea autoFocus={type === "note"} value={body} onChange={(e) => setBody(e.target.value)} placeholder={type === "call" ? "What was discussed? Next steps?" : ""} className={type === "email" && templateId ? "min-h-[160px]" : undefined} />
           </Field>
           {unresolved.length > 0 && (
@@ -1189,7 +1344,7 @@ export function RecordPicker({ onPick, types, exclude = [] }: { onPick: (type: C
     <div className="rounded-lg border border-sg-line">
       <div className="flex items-center gap-2 border-b border-sg-line px-2.5">
         <Search className="size-3.5 text-sg-dim" />
-        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Search ${types.join(", ")}s…`} className="h-9 flex-1 bg-transparent text-sm text-sg-white placeholder:text-sg-dim focus:outline-none" />
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Search ${types.map((t) => ({ contact: "contacts", company: "companies", deal: "deals", ticket: "tickets" })[t]).join(", ")}…`} className="h-9 flex-1 bg-transparent text-sm text-sg-white placeholder:text-sg-dim focus:outline-none" />
       </div>
       <div className="max-h-64 overflow-y-auto p-1">
         {options.map((o) => {
@@ -1219,7 +1374,8 @@ function LinkIssueDialog({ onClose, d }: Props<"linkIssue">) {
   const openDialog = useUi((s) => s.openDialog);
   const label = useLinkedRecordLabel(d.crmType, d.crmId);
   const [q, setQ] = useState("");
-  const [linkType, setLinkType] = useState<LinkType>(d.crmType === "ticket" ? "escalated_from" : d.crmType === "deal" ? "blocks" : "relates_to");
+  // "blocks" marks the deal "Blocked by engineering" on the board — make it a deliberate choice, never the default
+  const [linkType, setLinkType] = useState<LinkType>(d.crmType === "ticket" ? "escalated_from" : "relates_to");
   const already = new Set(crossLinks.filter((x) => x.crmType === d.crmType && x.crmId === d.crmId).map((x) => x.agileId));
   const needle = q.trim().toLowerCase();
   const options = [
@@ -1230,7 +1386,7 @@ function LinkIssueDialog({ onClose, d }: Props<"linkIssue">) {
   return (
     <Modal open onOpenChange={(o) => !o && onClose()} title="Link Jira work" description={`Connect an issue or epic to ${label}`}>
       <div className="space-y-3">
-        <Field label="Relationship" hint={`Reads as: <issue> ${linkTypeMeta[linkType].label} ${label}`}>
+        <Field label="Relationship" hint={linkType === "blocks" && d.crmType === "deal" ? `“Blocks” flags this deal as blocked by engineering on the board and in the KPI until the issue is done.` : `Reads as: <issue> ${linkTypeMeta[linkType].label} ${label}`}>
           <Select value={linkType} onChange={(e) => setLinkType(e.target.value as LinkType)}>
             {LINK_TYPES.map((l) => (
               <option key={l} value={l}>
@@ -1312,19 +1468,23 @@ function GenerateQuoteDialog({ onClose, d }: Props<"generateQuote">) {
   const deals = useCrm((s) => s.deals);
   const lineItems = useCrm((s) => s.lineItems);
   const products = useCrm((s) => s.products);
-  const generateQuote = useCrm((s) => s.generateQuote);
+  const companies = useCrm((s) => s.companies);
+  const quoteSettings = useCrm((s) => s.quoteSettings);
+  const createQuoteFromDeal = useCrm((s) => s.createQuoteFromDeal);
   const notify = useUi((s) => s.notify);
   const [dealId, setDealId] = useState(d.dealId ?? "");
   const deal = deals.find((x) => x.id === dealId);
-  const items = lineItems.filter((l) => l.dealId === dealId);
-  const subtotal = items.reduce((sum, l) => sum + l.quantity * l.unitPrice * (1 - l.discountPct / 100), 0);
+  const items = useMemo(() => lineItems.filter((l) => l.dealId === dealId), [lineItems, dealId]);
+  const settings = settingsOf(quoteSettings);
+  const company = companies.find((c) => c.id === deal?.companyId);
+  const t = quoteTotals(items, { settings, products, company });
 
   return (
     <Modal
       open
       onOpenChange={(o) => !o && onClose()}
       title="Generate quote"
-      description="Creates a draft quote from the deal's line items (11% VAT)."
+      description={settings.supplierPkp ? "Draft quote from the deal's line items · PPN 12% on DPP 11/12 (PMK 131/2024)" : "Draft quote from the deal's line items · supplier not PKP, no PPN"}
       footer={
         deal ? (
           <>
@@ -1335,10 +1495,11 @@ function GenerateQuoteDialog({ onClose, d }: Props<"generateQuote">) {
               variant="primary"
               disabled={!items.length}
               onClick={() => {
-                generateQuote(deal.id);
-                notify("Draft quote created");
+                const id = createQuoteFromDeal(deal.id);
                 onClose();
-                router.push(`/deals/${deal.id}`);
+                if (!id) return;
+                notify("Draft quote created — set the termin and submit it for the Finance check");
+                router.push(`/quotes/${id}`);
               }}
             >
               <FileText /> Create draft quote
@@ -1376,25 +1537,42 @@ function GenerateQuoteDialog({ onClose, d }: Props<"generateQuote">) {
                     <tr key={l.id} className="border-t border-sg-line">
                       <td className="py-1.5 pr-2">
                         <div className="text-sg-text">{p?.name}</div>
-                        <div className="text-2xs text-sg-dim">{p?.sku}</div>
+                        <div className="text-2xs text-sg-dim">
+                          {p?.sku} · {formatIDR(l.unitPrice, "full")} ea
+                        </div>
                       </td>
                       <td className="sg-num py-1.5 text-right">{l.quantity}</td>
                       <td className="sg-num py-1.5 text-right">{l.discountPct}%</td>
-                      <td className="sg-num py-1.5 text-right text-sg-white">{formatIDR(l.quantity * l.unitPrice * (1 - l.discountPct / 100))}</td>
+                      <td className="sg-num py-1.5 text-right text-sg-white">{formatIDR(l.quantity * l.unitPrice * (1 - l.discountPct / 100), "full")}</td>
                     </tr>
                   );
                 })}
+                <tr className="border-t border-sg-line-2 text-xs">
+                  <td colSpan={3} className="py-1 text-right text-sg-muted">Harga jual (subtotal)</td>
+                  <td className="sg-num py-1 text-right text-sg-text">{formatIDR(t.subtotal, "full")}</td>
+                </tr>
+                {t.pkp && (
+                  <>
+                    <tr className="text-xs">
+                      <td colSpan={3} className="py-0.5 text-right text-sg-dim">DPP nilai lain (11/12)</td>
+                      <td className="sg-num py-0.5 text-right text-sg-muted">{formatIDR(t.dpp, "full")}</td>
+                    </tr>
+                    <tr className="text-xs">
+                      <td colSpan={3} className="py-0.5 text-right text-sg-dim">PPN {t.vatRate}% × DPP · faktur code {t.fakturCode}</td>
+                      <td className="sg-num py-0.5 text-right text-sg-muted">{formatIDR(t.vat, "full")}</td>
+                    </tr>
+                  </>
+                )}
                 <tr className="border-t border-sg-line-2">
-                  <td colSpan={3} className="py-1.5 text-right text-sg-muted">
-                    Subtotal · VAT 11% · <span className="font-semibold text-sg-white">Total</span>
-                  </td>
-                  <td className="sg-num py-1.5 text-right font-bold text-sg-white">{formatIDR(subtotal * 1.11)}</td>
+                  <td colSpan={3} className="py-1.5 text-right font-semibold text-sg-white">Total</td>
+                  <td className="sg-num py-1.5 text-right font-bold text-sg-white">{formatIDR(t.total, "full")}</td>
                 </tr>
               </tbody>
             </table>
           ) : (
             <p className="rounded border border-dashed border-sg-line-2 p-4 text-center text-sm text-sg-muted">This deal has no line items yet — add products on the deal record first.</p>
           )}
+          {items.length > 0 && <p className="text-2xs text-sg-dim">Quotations are checked by Finance before they are sent (§4.7). Expected cash after client withholding: {formatIDR(t.expectedCash, "full")}.</p>}
         </div>
       )}
     </Modal>

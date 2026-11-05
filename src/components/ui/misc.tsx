@@ -81,12 +81,13 @@ const KEY_NAMES: Record<string, string> = {
   "/": "Slash",
   "[": "Left bracket",
   "–": "to",
+  "⌫": "Backspace",
 };
 
 /** Spoken form of a key label: "⌘K" → "Command K", "↵" → "Enter". Returns undefined when it reads fine as-is. */
 function spokenKey(label: string) {
   if (KEY_NAMES[label]) return KEY_NAMES[label];
-  if (!/[⌘⌥⇧⌃↵↑↓←→]/.test(label)) return undefined;
+  if (!/[⌘⌥⇧⌃↵↑↓←→⌫]/.test(label)) return undefined;
   return Array.from(label)
     .map((ch) => KEY_NAMES[ch] ?? ch)
     .join(" ")
@@ -94,9 +95,13 @@ function spokenKey(label: string) {
     .trim();
 }
 
-/** Keyboard key. Symbol keys (⌘ ↵ ↑ …) get a screen-reader name; the glyph itself is hidden from AT. */
-export function Kbd({ children, className }: { children: React.ReactNode; className?: string }) {
-  const cls = cn("inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-sm border border-sg-line-2 bg-sg-bg px-1 font-sans text-[10px] font-semibold text-sg-muted", className);
+/**
+ * Keyboard key. Symbol keys (⌘ ↵ ↑ …) get a screen-reader name; the glyph itself is hidden from AT.
+ * Inline hints are hidden on phone-width screens (no keyboard to press them); pass `always` where the key is the content
+ * (the shortcuts help).
+ */
+export function Kbd({ children, className, always }: { children: React.ReactNode; className?: string; always?: boolean }) {
+  const cls = cn("inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-sm border border-sg-line-2 bg-sg-bg px-1 font-sans text-[10px] font-semibold text-sg-muted", !always && "max-sm:hidden", className);
   const spoken = typeof children === "string" ? spokenKey(children) : undefined;
   if (!spoken) return <kbd className={cls}>{children}</kbd>;
   return (

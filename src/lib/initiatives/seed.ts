@@ -5,7 +5,7 @@
  * Must not import ../seed (that module imports this one).
  */
 import type { AuditEntry, BonusRun, Clawback, CurveAdjustment, DeferredBonus, EmployeeProfile, Initiative, InitiativeMember, ProbationOutcome, ProjectRole, RevenueEntry, TeamAmendment } from "./types";
-import { carriedForward, clawbackAmount, clawbackSchedule, computeRun, deferralVestDate, paymentDate, projectCycles } from "./engine";
+import { carriedForward, clawbackAmount, clawbackSchedule, computeRun, cycleMonth, deferralVestDate, paymentDate, projectCycles, releaseCheck } from "./engine";
 import { ongoingProjects } from "./ongoing";
 
 /* ───────────────────────── time & money helpers ───────────────────────── */
@@ -581,7 +581,8 @@ export const initiativeMembers: InitiativeMember[] = [
 const pay = (id: string, initiativeId: string, workMonth: string, revenue: number, directCosts: number, basis: RevenueEntry["basis"], collected: string | null, note: string, cycle?: string): RevenueEntry => ({
   id,
   initiativeId,
-  month: cycle ?? (collected ? (Number(collected.slice(8, 10)) <= 20 ? collected.slice(0, 7) : nextMonthKey(collected.slice(0, 7))) : workMonth),
+  // §8.2 cut-off on the 20th, moved to the previous business day for weekends and holidays
+  month: cycle ?? (collected ? cycleMonth(wib(collected, 10)) : workMonth),
   revenue,
   directCosts,
   basis,
@@ -591,10 +592,6 @@ const pay = (id: string, initiativeId: string, workMonth: string, revenue: numbe
   workPeriodEnd: lastDay(workMonth),
   note,
 });
-function nextMonthKey(m: string) {
-  const [y, mo] = m.split("-").map(Number);
-  return new Date(Date.UTC(y, mo, 1)).toISOString().slice(0, 7);
-}
 function lastDay(m: string) {
   const [y, mo] = m.split("-").map(Number);
   return new Date(Date.UTC(y, mo, 1) - 7 * 3_600_000 - 1).toISOString();
@@ -624,7 +621,9 @@ const RUN_PLAN: { month: string; companyRevenue: number; directCosts: number; ov
 export const bonusRuns: BonusRun[] = (() => {
   const runs: BonusRun[] = [];
   for (const plan of RUN_PLAN) {
-    const r = computeRun({ ...plan, initiatives, members: initiativeMembers, entries: revenueEntries, profiles: employeeProfiles, adjustments: [], carriedIn: carriedForward(runs, plan.month) });
+    const r = computeRun({ ...plan, initiatives, members: initiativeMembers, entries: revenueEntries, profiles: employeeProfiles, adjustments: [], carriedIn: carriedForward(runs, plan.month), runs: [...runs] });
+    // §13.1 PRC members on a team in this run are recused from its release
+    const recused = releaseCheck({ status: "certified", month: plan.month, lines: r.lines, certifiedById: "u-maria" }, { profiles: employeeProfiles, actorId: "u-ben", atIso: plan.releasedAt ?? plan.certifiedAt }).recused;
     runs.push({
       id: `run-${plan.month}`,
       month: plan.month,
@@ -644,6 +643,12 @@ export const bonusRuns: BonusRun[] = (() => {
       certifiedAt: plan.certifiedAt,
       releasedById: plan.releasedAt ? "u-ben" : null,
       releasedAt: plan.releasedAt,
+      preparedById: "u-maria",
+      recordedById: "u-maria",
+      approvals: plan.releasedAt ? [{ userId: "u-ben", vote: "for", at: plan.releasedAt }] : [],
+      recusedIds: plan.releasedAt ? recused : [],
+      entryIds: r.entryIds ?? [],
+      lateReleaseReason: null,
     });
   }
   return runs;
@@ -665,6 +670,9 @@ export const deferredBonuses: DeferredBonus[] = bonusRuns
         vestAt: deferralVestDate(initiatives.find((i) => i.id === l.initiativeId)!),
         status: "pending" as const,
         releasedAmount: 0,
+        collectedAt: l.lastCollectedAt ?? null,
+        workStart: l.firstWorkStart ?? null,
+        payMonth: null,
         note: "High-risk deferral, released 6–12 months after project close (§9.3)",
       })),
   );
@@ -698,6 +706,7 @@ export const clawbacks: Clawback[] = (() => {
       recovered: 0,
       notes: "CAM disputed Rp 120 M of the September invoice (task cards outside the agreed scope) and a credit note was issued — a revenue reversal (§9.4). The September payment is restated from Rp 620 M to Rp 500 M with costs unchanged; Sinta's 2.5 / 6.5 share of that cycle's pool is recalculated. Recovery order: deferred and carried-forward amounts, then future project bonuses, and only then salary with her written agreement. Other team members' differences are pending Finance review.",
       createdAt: wib("2026-11-03", 15),
+      triggeredAt: wib("2026-11-02", 11),
     },
   ];
 })();
@@ -757,7 +766,7 @@ export const auditLog: AuditEntry[] = (
     [wib("2026-07-08", 11), "u-sinta", "initiative", "ini-cam-uas", "submitted to PRC", "PRC-2026-002"],
     [wib("2026-07-24", 15), "u-ben", "initiative", "ini-cam-uas", "PRC decision: approved", "Project code PRJ-2026-002"],
     [wib("2026-08-24", 16), "u-maria", "run", "run-2026-08", "break-even test passed — certified by CFO (2026-08)", `Rolling three-month operating result ${rp(run("2026-08").operatingResult)}; cash floor met`],
-    [wib("2026-08-25", 11), "u-ben", "run", "run-2026-08", "PRC authorised release for 2026-08 — paid with the 25 Aug salary", `${deferredBonuses.filter((d) => d.month === "2026-08").length} deferred entries created`],
+    [wib("2026-08-24", 11), "u-ben", "run", "run-2026-08", "PRC authorised release for 2026-08 — paid with the 24 Aug salary (25 Aug is Maulid Nabi, §8.2)", `${deferredBonuses.filter((d) => d.month === "2026-08").length} deferred entries created`],
     [wib("2026-09-02", 10), "u-dina", "employee", "u-rafi", "HR record created — probationary hire", "Probation ends 2026-12-01; Annex B and Annex C signed (§11.2)"],
     [wib("2026-09-15", 13), "u-rani", "initiative", "ini-spl-crane", "submitted to PRC", "PRC-2026-004"],
     [wib("2026-09-24", 16), "u-maria", "run", "run-2026-09", "break-even test passed — certified by CFO (2026-09)", `Rolling three-month operating result ${rp(run("2026-09").operatingResult)}; cash floor met`],

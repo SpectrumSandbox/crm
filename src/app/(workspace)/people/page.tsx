@@ -1,9 +1,14 @@
 "use client";
 
-/* People — HR eligibility register for the Project Initiative and Compensation Policy v4.0 (§3, §7.1, §7.3, §9.3, §10, §11, §15.1). */
+/*
+ * People — HR eligibility register for the Project Initiative and Compensation Policy v4.0 (§3, §7.1, §7.3, §9.3, §10,
+ * §11, §15.1). Pay and status data is personal (§13.4): viewers without a Finance, HR or PRC role get the directory only.
+ */
 import { useMemo, useState } from "react";
-import { CircleAlert, Mail, Search, TriangleAlert, UserPlus } from "lucide-react";
-import { useCrm, useUi } from "@/lib/store";
+import { useSearchParams } from "next/navigation";
+import { CircleAlert, Lock, Mail, Search, TriangleAlert, UserPlus } from "lucide-react";
+import { useCrm } from "@/lib/store";
+import { useAccess } from "@/lib/access-control";
 import { EMPLOYMENT_META, POLICY, POLICY_VERSION } from "@/lib/initiatives/policy";
 import { cn, formatDate, formatIDR } from "@/lib/utils";
 import { PageHeader } from "@/components/shell/page-header";
@@ -14,7 +19,8 @@ import { CapacityMeter, Cite, EligibilityBadge, Money } from "@/components/initi
 import { GOVERNANCE_META, usePeopleRows, type PersonRow } from "@/components/people/data";
 import { EmployeeSheet } from "@/components/people/employee-sheet";
 import { AddPersonModal } from "@/components/people/add-person";
-import { FIRST_V4_PAYMENT, sendAnnexBReminder } from "@/components/people/annex-b";
+import { FIRST_V4_PAYMENT } from "@/components/people/annex-b";
+import { AnnexBReminderModal } from "@/components/people/reminder";
 
 type Filter = "all" | "eligible" | "ineligible" | "probation" | "notice" | "annexb" | "resign" | "fixed" | "part";
 
@@ -32,12 +38,12 @@ const FILTERS: { value: Filter; label: string; test: (r: PersonRow) => boolean }
 
 export default function PeoplePage() {
   const rows = usePeopleRows();
-  const users = useCrm((s) => s.users);
-  const currentUserId = useCrm((s) => s.currentUserId);
-  const addActivity = useCrm((s) => s.addActivity);
-  const notify = useUi((s) => s.notify);
+  const access = useAccess();
+  const full = access.seeAllPay;
   const [filter, setFilter] = useState<Filter>("all");
-  const [q, setQ] = useState("");
+  const [reminding, setReminding] = useState<PersonRow[] | null>(null);
+  const searchParams = useSearchParams();
+  const [q, setQ] = useState(() => searchParams.get("q") ?? "");
   const [openId, setOpenId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
 
@@ -57,23 +63,18 @@ export default function PeoplePage() {
 
   const counts = useMemo(() => Object.fromEntries(FILTERS.map((f) => [f.value, rows.filter(f.test).length])) as Record<Filter, number>, [rows]);
   const visible = useMemo(() => {
-    const test = FILTERS.find((f) => f.value === filter)!.test;
+    const test = full ? FILTERS.find((f) => f.value === filter)!.test : () => true;
     const needle = q.trim().toLowerCase();
     return rows
       .filter(test)
-      .filter((r) => !needle || `${r.user.name} ${r.user.email} ${r.user.title} ${r.user.team} ${r.profile ? EMPLOYMENT_META[r.profile.employmentType].label : ""} ${r.profile?.governanceRoles.map((g) => GOVERNANCE_META[g].label).join(" ") ?? ""}`.toLowerCase().includes(needle))
-      .sort((a, b) => Number(a.eligibility.ok) - Number(b.eligibility.ok) || a.user.name.localeCompare(b.user.name));
-  }, [rows, filter, q]);
+      .filter((r) => !needle || `${r.user.name} ${r.user.email} ${r.user.title} ${r.user.team} ${full && r.profile ? EMPLOYMENT_META[r.profile.employmentType].label : ""} ${r.profile?.governanceRoles.map((g) => GOVERNANCE_META[g].label).join(" ") ?? ""}`.toLowerCase().includes(needle))
+      .sort((a, b) => (full ? Number(a.eligibility.ok) - Number(b.eligibility.ok) : 0) || a.user.name.localeCompare(b.user.name));
+  }, [rows, filter, q, full]);
 
   const missing = useMemo(() => rows.filter((r) => r.participant && r.annexB === "missing"), [rows]);
   const missingOrOld = useMemo(() => rows.filter((r) => r.participant && (r.annexB === "missing" || r.annexB === "pre_v4")), [rows]);
   const remind = (targets: PersonRow[]) => {
-    const sent = sendAnnexBReminder(
-      targets.map((r) => r.user),
-      users.find((u) => u.id === currentUserId)?.name ?? "HR",
-      addActivity,
-    );
-    if (sent) notify(`Reminder drafted for ${sent} ${sent === 1 ? "person" : "people"} — activity note recorded`);
+    if (targets.length) setReminding(targets);
   };
 
   const rollout = Date.now() < Date.parse(FIRST_V4_PAYMENT);
@@ -82,12 +83,13 @@ export default function PeoplePage() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="People" meta={<span className="hidden text-xs text-sg-dim sm:inline">HR eligibility register · Compensation Policy v{POLICY_VERSION}</span>}>
+      <PageHeader title="People" meta={<span className="hidden text-xs text-sg-dim sm:inline">{full ? "HR eligibility register" : "Directory"} · Compensation Policy v{POLICY_VERSION}</span>}>
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-sg-dim" />
           <input data-page-filter value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter people" className="h-8 w-52 rounded border border-sg-line bg-sg-bg/60 pl-7 pr-8 text-sm text-sg-text placeholder:text-sg-dim focus:border-sg-white/60 focus:outline-none" />
           <Kbd className="absolute right-1.5 top-1/2 -translate-y-1/2">/</Kbd>
         </div>
+        {access.manageHr ? (
         <Menu>
           <MenuTrigger asChild>
             <Button variant="outline" size="sm" disabled={!missingOrOld.length} title={missingOrOld.length ? "Email everyone who still has to sign the v4.0 Project Participation Agreement" : "Everyone has signed the v4.0 agreement"}>
@@ -104,12 +106,28 @@ export default function PeoplePage() {
             </MenuItem>
           </MenuContent>
         </Menu>
-        <Button variant="primary" size="sm" onClick={() => setAdding(true)}>
-          <UserPlus /> Add person
-        </Button>
+        ) : null}
+        {access.manageHr ? (
+          <Button variant="primary" size="sm" onClick={() => setAdding(true)}>
+            <UserPlus /> Add person
+          </Button>
+        ) : null}
       </PageHeader>
 
-      {rollout && missingOrOld.length ? (
+      {!full ? (
+        <div className="flex shrink-0 items-start gap-2 border-b border-sg-line bg-sg-card/60 px-5 py-2 text-xs text-sg-muted">
+          <Lock className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            Directory view. Employment status, eligibility, salaries and bonus balances are personal data limited to Finance, HR, the PRC and the employee concerned <Cite s="13.4" />. Your own record and statements are on{" "}
+            <a href="/me" className="text-sg-text underline-offset-2 hover:underline">
+              your page
+            </a>
+            .
+          </span>
+        </div>
+      ) : null}
+
+      {full && access.manageHr && rollout && missingOrOld.length ? (
         <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-soft-yellow/30 bg-soft-yellow/10 px-5 py-2 text-xs text-soft-yellow">
           <TriangleAlert className="size-4 shrink-0" />
           <span className="min-w-0 flex-1">
@@ -125,6 +143,7 @@ export default function PeoplePage() {
         </div>
       ) : null}
 
+      {full ? (
       <div className="grid shrink-0 grid-cols-2 border-b border-sg-line sm:grid-cols-3 lg:grid-cols-6">
         <Stat label="Eligible" value={String(kpis.eligible)} hint={`of ${rows.length} people${kpis.noRecord ? ` · ${kpis.noRecord} without HR record` : ""}`} tone="green" cite="3.1" />
         <Stat label="On probation" value={String(kpis.probation)} hint="bonuses held until probation ends" tone={kpis.probation ? "yellow" : undefined} cite="11" />
@@ -133,7 +152,9 @@ export default function PeoplePage() {
         <Stat label="Deferred liability" value={formatIDR(kpis.deferred)} hint="vests 6–12 months after close" cite="9.3" />
         <Stat label="Probation liability" value={formatIDR(kpis.probationLiability)} hint="Probationary Bonus Accrual" tone={kpis.probationLiability ? "yellow" : undefined} cite="11.5" />
       </div>
+      ) : null}
 
+      {full ? (
       <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-sg-line px-5 py-2">
         {FILTERS.map((f) => (
           <button
@@ -148,29 +169,30 @@ export default function PeoplePage() {
         ))}
         <span className="ml-auto text-2xs text-sg-dim">Click a row to open the HR record</span>
       </div>
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-auto">
         {visible.length ? (
-          <table className="w-full min-w-[1240px] text-sm">
+          <table className={cn("w-full text-sm", full ? "min-w-[1240px]" : "min-w-[720px]")}>
             <thead className="sticky top-0 z-10 bg-sg-bg">
               <tr className="border-b border-sg-line text-left text-2xs uppercase tracking-[0.1em] text-sg-dim">
                 <th className="px-5 py-2 font-semibold">Employee</th>
-                <th className="px-3 py-2 font-semibold">Employment</th>
-                <th className="px-3 py-2 font-semibold">Eligibility</th>
+                {full ? <th className="px-3 py-2 font-semibold">Employment</th> : null}
+                {full ? <th className="px-3 py-2 font-semibold">Eligibility</th> : null}
                 <th className="px-3 py-2 font-semibold">Governance</th>
                 <th className="px-3 py-2 text-right font-semibold" title="Concurrent Engineer / Secretary / Specialist roles (§7.1)">
                   Non-lead roles
                 </th>
                 <th className="px-3 py-2 font-semibold">Leadership §7.3</th>
-                <th className="px-3 py-2 text-right font-semibold">Paid this year</th>
-                <th className="px-3 py-2 text-right font-semibold">Deferred</th>
-                <th className="px-3 py-2 text-right font-semibold">Probation held</th>
-                <th className="px-5 py-2 font-semibold">Annex B</th>
+                {full ? <th className="px-3 py-2 text-right font-semibold">Paid this year</th> : null}
+                {full ? <th className="px-3 py-2 text-right font-semibold">Deferred</th> : null}
+                {full ? <th className="px-3 py-2 text-right font-semibold">Probation held</th> : null}
+                {full ? <th className="px-5 py-2 font-semibold">Annex B</th> : null}
               </tr>
             </thead>
             <tbody>
               {visible.map((r) => (
-                <PersonTableRow key={r.user.id} row={r} onOpen={() => setOpenId(r.user.id)} />
+                <PersonTableRow key={r.user.id} row={r} full={full} onOpen={() => setOpenId(r.user.id)} />
               ))}
             </tbody>
           </table>
@@ -179,7 +201,7 @@ export default function PeoplePage() {
             icon={Search}
             title={rows.length ? "No one matches" : "No people yet"}
             action={
-              !rows.length ? (
+              !rows.length && access.manageHr ? (
                 <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
                   <UserPlus /> Add person
                 </Button>
@@ -192,6 +214,7 @@ export default function PeoplePage() {
       </div>
 
       <EmployeeSheet row={openRow} onClose={() => setOpenId(null)} />
+      {reminding ? <AnnexBReminderModal recipients={reminding.map((r) => r.user)} onClose={() => setReminding(null)} /> : null}
       {adding ? (
         <AddPersonModal
           onClose={() => setAdding(false)}
@@ -206,7 +229,7 @@ export default function PeoplePage() {
   );
 }
 
-function PersonTableRow({ row, onOpen }: { row: PersonRow; onOpen: () => void }) {
+function PersonTableRow({ row, onOpen, full }: { row: PersonRow; onOpen: () => void; full: boolean }) {
   const { user, profile, eligibility } = row;
   const tooltip = [...eligibility.blockers, ...eligibility.warnings].join("\n") || "Eligible (§3.1)";
   const meta = profile ? EMPLOYMENT_META[profile.employmentType] : null;
@@ -232,7 +255,7 @@ function PersonTableRow({ row, onOpen }: { row: PersonRow; onOpen: () => void })
           onOpen();
         }
       }}
-      className={cn("cursor-pointer border-b border-sg-line align-middle hover:bg-sg-card/70 focus:bg-sg-card/70 focus:outline-none", row.separated && "opacity-60")}
+      className={cn("cursor-pointer border-b border-sg-line align-middle hover:bg-sg-card/70 focus:bg-sg-card/70 focus:outline-none", full && row.separated && "opacity-60")}
     >
       <td className="px-5 py-2">
         <div className="flex items-center gap-2.5">
@@ -245,11 +268,14 @@ function PersonTableRow({ row, onOpen }: { row: PersonRow; onOpen: () => void })
           </div>
         </div>
       </td>
+      {full ? (
       <td className="px-3 py-2">
         {meta ? <span className={cn("text-xs font-semibold", meta.eligible ? (profile!.employmentType === "probationary" ? "text-soft-yellow" : "text-sg-text") : "text-soft-red")}>{meta.label}</span> : <span className="text-xs font-semibold text-soft-red">No HR record</span>}
         {sub ? <div className={cn("text-2xs", sub.includes("missing") ? "text-soft-yellow" : "text-sg-dim")}>{sub}</div> : null}
         {profile?.separation ? <div className="text-2xs text-soft-orange">Leaving {formatDate(profile.separation.effectiveAt, "short")}</div> : row.inNotice ? <div className="text-2xs text-soft-orange">Under notice</div> : null}
       </td>
+      ) : null}
+      {full ? (
       <td className="px-3 py-2" title={tooltip}>
         <EligibilityBadge userId={user.id} />
         {(eligibility.blockers[0] || eligibility.warnings[0]) && (
@@ -259,6 +285,7 @@ function PersonTableRow({ row, onOpen }: { row: PersonRow; onOpen: () => void })
           </div>
         )}
       </td>
+      ) : null}
       <td className="px-3 py-2">
         <div className="flex flex-wrap gap-1">
           {profile?.governanceRoles.length ? (
@@ -282,6 +309,8 @@ function PersonTableRow({ row, onOpen }: { row: PersonRow; onOpen: () => void })
       <td className="px-3 py-2">
         <CapacityMeter userId={user.id} />
       </td>
+      {full ? (
+        <>
       <td className="px-3 py-2 text-right">{row.ytdPaid > 0 ? <Money value={row.ytdPaid} className="font-semibold text-sg-white" /> : <span className="text-sg-dim">—</span>}</td>
       <td className="px-3 py-2 text-right">{row.pendingDeferred > 0 ? <Money value={row.pendingDeferred} className="font-semibold text-soft-cyan" /> : <span className="text-sg-dim">—</span>}</td>
       <td className="px-3 py-2 text-right">{row.probationary ? <Money value={row.probation} className={cn("font-semibold", row.probation > 0 ? "text-soft-yellow" : "text-sg-muted")} /> : <span className="text-sg-dim">—</span>}</td>
@@ -301,6 +330,8 @@ function PersonTableRow({ row, onOpen }: { row: PersonRow; onOpen: () => void })
           <span className="text-sg-dim">—</span>
         )}
       </td>
+        </>
+      ) : null}
     </tr>
   );
 }

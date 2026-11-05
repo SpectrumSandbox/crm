@@ -424,7 +424,7 @@ export function example167(): ExampleCheck {
   const r = projectRate(ini);
   const fixed = { ...ini, lockedSharePct: r.rate };
   const mems = [mkMem("a", fixed, ["project_lead"])];
-  // net Rp700M in year 1 and Rp900M in year 2
+  // net Rp 700 jt in year 1 and Rp 900 jt in year 2
   const e1 = entry(fixed, "y1", wib("2027-12-10"), 800 * M, 96 * M, [wib("2027-01-01", 0), wib("2027-12-31", 17)]);
   const e2 = entry(fixed, "y2", wib("2028-12-10"), 1_000 * M, 95 * M, [wib("2028-01-01", 0), wib("2028-12-31", 17)]);
   const y1 = computeRun({ month: "2027-12", initiatives: [fixed], members: mems, entries: [e1, e2], profiles: [profile("a")], adjustments: [], ...RICH });

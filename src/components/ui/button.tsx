@@ -13,7 +13,8 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        primary: "rounded bg-sg-white text-sg-bg hover:bg-sg-text",
+        // text colour pinned for every state so a selected xs/primary button never renders blank
+        primary: "rounded bg-sg-white text-sg-bg hover:bg-sg-text hover:text-sg-bg focus-visible:text-sg-bg active:bg-sg-muted active:text-sg-bg",
         outline: "rounded border border-sg-line-2 text-sg-text hover:border-sg-white hover:text-sg-white",
         pill: "rounded-pill border border-sg-white text-sg-white hover:bg-sg-white hover:text-sg-bg",
         ghost: "rounded text-sg-muted hover:bg-sg-card-2 hover:text-sg-white",

@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
+import { AmountInput } from "@/components/compensation/common";
 
 /** Accessible on/off switch. `danger` colours the "on" state red (for adverse HR flags). */
 export function Toggle({ checked, onChange, label, hint, danger, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: React.ReactNode; hint?: React.ReactNode; danger?: boolean; disabled?: boolean }) {
@@ -75,6 +76,29 @@ export function Bar({ pct, tone, className }: { pct: number; tone: "cyan" | "yel
   return (
     <span className={cn("relative block h-1.5 overflow-hidden rounded-full bg-sg-card-3", className)}>
       <span className={cn("absolute inset-y-0 left-0", fill)} style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
+    </span>
+  );
+}
+
+/** Rupiah input (separators, "7,2 M" / "720 jt") that commits on blur or Enter — one audit entry per edit. */
+export function CommitAmountInput({ value, onCommit, disabled, ariaLabel }: { value: number; onCommit: (v: number) => void; disabled?: boolean; ariaLabel?: string }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = () => {
+    if (Math.round(draft) !== Math.round(value)) onCommit(Math.max(0, Math.round(draft)));
+  };
+  return (
+    <span
+      className="block"
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        }
+      }}
+    >
+      <AmountInput value={draft} onChange={setDraft} disabled={disabled} aria-label={ariaLabel} />
     </span>
   );
 }

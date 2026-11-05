@@ -5,13 +5,15 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useCrm } from "@/lib/store";
 import type { BonusLine, BonusRun, LineStatus } from "@/lib/initiatives/types";
-import { allocationFactorOf, collectionWindow, effectiveWeight, isLiveMember, memberWeight, overlapDays, paymentDate, projectPayments, projectRate, topUpBalance } from "@/lib/initiatives/engine";
+import { allocationFactorOf, collectionWindow, deferralVestDate, effectiveWeight, isLiveMember, memberWeight, overlapDays, paymentDate, projectPayments, projectRate, topUpBalance } from "@/lib/initiatives/engine";
 import { POLICY, ROLE_META } from "@/lib/initiatives/policy";
 import type { SpectrumColor } from "@/lib/types";
 import { cn, formatDate, formatIDR } from "@/lib/utils";
 import { Chip } from "@/components/ui/misc";
 import { Cite, Money, RoleChips, StatusChip, TypeChip } from "@/components/initiatives/shared";
 import { Block } from "./fields";
+import { exactIdr } from "@/components/compensation/common";
+import { RaiseDisputeButton } from "@/components/me/disputes";
 
 const LINE_STATUS: Record<LineStatus, { label: string; color: SpectrumColor }> = {
   payable: { label: "Paid", color: "green" },
@@ -41,7 +43,7 @@ export function BonusStatement({ userId, probationary }: { userId: string; proba
     const lines: { run: BonusRun; line: BonusLine }[] = [];
     for (const run of bonusRuns) if (run.status === "certified" || run.status === "released") for (const line of run.lines) if (line.userId === userId) lines.push({ run, line });
     lines.sort((a, b) => b.run.month.localeCompare(a.run.month) || a.line.initiativeId.localeCompare(b.line.initiativeId));
-    return { lines, deferred: deferredBonuses.filter((d) => d.userId === userId).sort((a, b) => a.vestAt.localeCompare(b.vestAt)), myOutcomes: outcomes.filter((o) => o.userId === userId) };
+    return { lines, deferred: deferredBonuses.filter((d) => d.userId === userId).sort((a, b) => b.month.localeCompare(a.month)), myOutcomes: outcomes.filter((o) => o.userId === userId) };
   }, [bonusRuns, deferredBonuses, outcomes, userId]);
   const [selected, setSelected] = useState<string | null>(null);
   const key = (x: { run: BonusRun; line: BonusLine }) => `${x.run.id}|${x.line.initiativeId}`;
@@ -50,6 +52,11 @@ export function BonusStatement({ userId, probationary }: { userId: string; proba
   const label = (id: string) => {
     const i = initiatives.find((x) => x.id === id);
     return i ? (i.code ?? i.trackingNo) || i.title : id;
+  };
+  // §9.3 vesting follows the actual close date — the stored vestAt is only the estimate made at release
+  const vestOf = (d: (typeof deferred)[number]) => {
+    const i = initiatives.find((x) => x.id === d.initiativeId);
+    return i ? deferralVestDate(i) : d.vestAt;
   };
 
   return (
@@ -136,7 +143,18 @@ export function BonusStatement({ userId, probationary }: { userId: string; proba
                 </div>
                 <div className="text-right">
                   <Money value={d.status === "released" ? d.releasedAmount : d.amount} className={cn("font-semibold", d.status === "forfeited" ? "text-soft-red line-through" : "text-sg-white")} />
-                  <div className="text-2xs text-sg-dim">vests {formatDate(d.vestAt)}</div>
+                  <div className="text-2xs text-sg-dim">
+                    {d.status === "pending" ? (
+                      <>
+                        vests {formatDate(vestOf(d), "medium")}
+                        {initiatives.find((i) => i.id === d.initiativeId)?.completedAt ? "" : " · estimated from the contracted end"}
+                      </>
+                    ) : d.status === "released" ? (
+                      `paid${d.payMonth ? ` with the ${formatDate(paymentDate(d.payMonth), "medium")} salary` : ""}`
+                    ) : (
+                      "forfeited"
+                    )}
+                  </div>
                 </div>
                 <Chip color={DEFERRED_STATUS[d.status].color}>{DEFERRED_STATUS[d.status].label}</Chip>
               </li>
@@ -163,6 +181,8 @@ function AnnexE({ run, line }: { run: BonusRun; line: BonusLine }) {
   const clawbacks = useCrm((s) => s.clawbacks);
 
   const user = users.find((u) => u.id === line.userId);
+  const profile = profiles.find((p) => p.userId === line.userId);
+  const currentUserId = useCrm((s) => s.currentUserId);
   const ini = initiatives.find((i) => i.id === line.initiativeId);
   const data = useMemo(() => {
     if (!ini) return null;
@@ -174,7 +194,7 @@ function AnnexE({ run, line }: { run: BonusRun; line: BonusLine }) {
     const periods = Array.from(new Set(period.map((p) => `${formatDate(p.workStart, "medium")} – ${formatDate(p.workEnd, "medium")}`)));
     const rows = members.filter((m) => m.initiativeId === ini.id && m.userId === line.userId && m.consent === "accepted" && (!period.length || period.some((p) => overlapDays(m.joinedAt, m.leftAt, p.workStart, p.workEnd) > 0)));
     const released = bonusRuns.filter((r) => r.status === "released" && r.month <= run.month);
-    const paidOnProject = released.reduce((s, r) => s + r.lines.filter((l) => l.userId === line.userId && l.initiativeId === ini.id).reduce((a, l) => a + l.payable, 0), 0) + deferredBonuses.filter((d) => d.userId === line.userId && d.initiativeId === ini.id && d.status === "released").reduce((s, d) => s + d.releasedAmount, 0);
+    const paidOnProject = released.reduce((s, r) => s + r.lines.filter((l) => l.userId === line.userId && l.initiativeId === ini.id).reduce((a, l) => a + l.payable, 0), 0) + deferredBonuses.filter((d) => d.userId === line.userId && d.initiativeId === ini.id && d.status === "released" && !d.payMonth).reduce((s, d) => s + d.releasedAmount, 0); // releases with a payMonth are paid as run lines (W7)
     const pendingDeferred = deferredBonuses.filter((d) => d.userId === line.userId && d.initiativeId === ini.id && d.status === "pending").reduce((s, d) => s + d.amount, 0);
     const heldProbation = bonusRuns.filter((r) => (r.status === "released" || r.status === "certified") && r.month <= run.month).reduce((s, r) => s + r.lines.filter((l) => l.userId === line.userId && l.initiativeId === ini.id).reduce((a, l) => a + l.withheld, 0), 0);
     const topUps = ini.type === "C" ? topUpBalance(line.userId, ini, { members, entries, profiles, adjustments }, run.month) : 0;
@@ -200,7 +220,7 @@ function AnnexE({ run, line }: { run: BonusRun; line: BonusLine }) {
             {ini.title} <span className="sg-num text-sm text-sg-muted">{ini.code ?? ini.trackingNo}</span>
           </div>
           <div className="text-2xs text-sg-dim">
-            {user?.name ?? line.userId} · employee no. {line.userId} {run.status !== "released" ? "· certified, awaiting PRC release" : ""}
+            {user?.name ?? line.userId} · employee no. {profile?.employeeNumber || "not recorded"} {run.status !== "released" ? "· certified, awaiting PRC release" : ""}
           </div>
         </div>
         <TypeChip type={ini.type} />
@@ -265,12 +285,41 @@ function AnnexE({ run, line }: { run: BonusRun; line: BonusLine }) {
             <MoneyRow label="Held (probation)" v={line.withheld} cite="11.3" />
             {line.held > 0 ? <MoneyRow label="Held (Annex B, suspension, unpaid leave or PRC confirmation)" v={line.held} /> : null}
             {line.forfeited > 0 ? <MoneyRow label="Forfeited (§10)" v={-line.forfeited} signed /> : null}
-            <Row label="Adjustments, recoveries or clawback">{data.claw.length ? data.claw.map((c) => `${c.status.replace(/_/g, " ")} · recovered ${formatIDR(c.recovered)}`).join("; ") : "None"}</Row>
+            {(line.extras ?? []).map((x) => (
+              <MoneyRow key={`${x.kind}-${x.refId}`} label={x.kind === "deferred_release" ? "Deferred bonus released this salary (§9.3)" : x.kind === "probation_completion" ? "Probation Completion Bonus (§11.4)" : x.kind === "probation_final_pay" ? "Held probation balance with final pay (§11.4)" : x.kind === "reconciliation_topup" ? "Final reconciliation top-up (§8.3)" : "Underpayment correction (§8.5)"} v={x.amount} signed />
+            ))}
+            {line.heldIn ? <MoneyRow label="Held earlier, paid now the condition has cleared (§10)" v={line.heldIn} signed /> : null}
+            <MoneyRow label="Adjustments, recoveries or clawback (§9.4)" v={-(line.recovered ?? 0)} signed />
+            {data.claw.length ? (
+              <Row label="Clawback cases on this project">{data.claw.map((c) => `${c.status.replace(/_/g, " ")} · recovered ${formatIDR(c.recovered, "full")}`).join("; ")}</Row>
+            ) : null}
             <tr className="border-t border-sg-line-2">
               <td className="py-1.5 font-semibold text-sg-white">Gross bonus paid this salary</td>
               <td className="sg-num py-1.5 text-right font-display text-sm font-extrabold text-soft-green">{formatIDR(line.payable, "full")}</td>
             </tr>
-            <Row label="PPh 21 withheld / net bonus paid">Calculated by payroll with the salary (§8.5)</Row>
+            {line.pph21 ? (
+              <>
+                <tr className="border-t border-sg-line">
+                  <td className="py-1 pr-3 text-sg-muted">
+                    PPh 21 withheld <span className="text-2xs text-soft-yellow">estimate · TER {line.pph21.category} ({line.pph21.ptkp}) {(line.pph21.rate * 100).toFixed(2)}%</span>
+                  </td>
+                  <td className="sg-num py-1 text-right text-sg-text">−{formatIDR(line.pph21.withheld, "full")}</td>
+                </tr>
+                <tr className="border-t border-sg-line-2">
+                  <td className="py-1.5 font-semibold text-sg-white">
+                    Net bonus paid <span className="text-2xs font-normal text-soft-yellow">estimate</span>
+                  </td>
+                  <td className="sg-num py-1.5 text-right font-display text-sm font-extrabold text-sg-white">{formatIDR(line.pph21.net, "full")}</td>
+                </tr>
+                <tr>
+                  <td colSpan={2} className="pb-1 text-2xs text-sg-dim">
+                    {line.pph21.note} Payroll withholds the actual PPh 21 with the salary; under TER the bonus is added to that month&apos;s gross, and December (or the leaving month) is recalculated at Article 17 rates (§8.5).
+                  </td>
+                </tr>
+              </>
+            ) : (
+              <Row label="PPh 21 withheld / net bonus paid">{profile?.ptkpStatus ? "Calculated by payroll with the salary (§8.5)" : "Calculated by payroll — HR records the PTKP status for an estimate (§8.5)"}</Row>
+            )}
           </tbody>
         </table>
         {line.notes.length ? <p className="mt-1.5 text-2xs text-sg-dim">{line.notes.join(" · ")}</p> : null}
@@ -292,6 +341,13 @@ function AnnexE({ run, line }: { run: BonusRun; line: BonusLine }) {
       <p className={cn("border-t border-sg-line px-4 py-2 text-2xs", disputeOpen ? "text-soft-yellow" : "text-sg-dim")}>
         Queries and corrections must be raised with Finance within {POLICY.statementDisputeDays} days of the statement date — by {formatDate(disputeBy, "medium")}
         {disputeOpen ? "" : " (window closed)"} (§14).
+        {disputeOpen && currentUserId === line.userId ? (
+          <RaiseDisputeButton
+            className="ml-2"
+            label="Dispute this statement"
+            prefill={{ category: "calculation", subject: `Statement ${run.month} · ${ini.code ?? ini.title}`, initiativeId: ini.id, runMonth: run.month, lineRef: `line:${run.id}:${ini.id}`, amount: line.payable, source: `Annex E ${run.month} — gross paid ${formatIDR(line.payable, "full")}` }}
+          />
+        ) : null}
       </p>
     </div>
   );
@@ -339,7 +395,7 @@ function MoneyRow({ label, v, signed, cite }: { label: string; v: number; signed
 }
 
 function Num({ v, tone }: { v: number; tone?: string }) {
-  return <td className="px-2 py-1.5 text-right">{v > 0.5 ? <Money value={v} className={tone ?? "font-semibold text-sg-white"} /> : <span className="text-sg-dim">—</span>}</td>;
+  return <td className="px-2 py-1.5 text-right">{v > 0.5 ? <span className={cn("sg-num", tone ?? "font-semibold text-sg-white")}>{exactIdr(v)}</span> : <span className="text-sg-dim">—</span>}</td>;
 }
 
 export function Memberships({ userId }: { userId: string }) {

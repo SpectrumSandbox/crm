@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useMemo } from "react";
-import { BookOpen, Briefcase, Building2, ChevronsLeft, ChevronsRight, CircleUser, ClipboardList, Handshake, House, Kanban, Keyboard, ListChecks, ListTodo, Search, Ticket, UserCheck, Users, Wallet, type LucideIcon } from "lucide-react";
+import { BookOpen, Briefcase, Building2, ChevronsLeft, ChevronsRight, CircleUser, BarChart3, ClipboardList, FileText, Handshake, House, Kanban, Keyboard, ListChecks, LineChart, ListTodo, Scale, Search, Ticket, UserCheck, Users, Wallet, Workflow, type LucideIcon } from "lucide-react";
 import { SidebarExtras } from "./sidebar-extras";
 import { NotificationBell } from "./notifications";
 import { useCrm, useUi } from "@/lib/store";
+import { useAccess } from "@/lib/access-control";
 import { SMART_LISTS } from "@/lib/smart-lists";
 import { cn } from "@/lib/utils";
 import { buildRegister, LIVE_PROJECT_STATUSES } from "@/components/projects/model";
@@ -16,8 +17,10 @@ interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
-  shortcut: string;
+  shortcut?: string;
   count?: number;
+  /** what the count means, for the tooltip / screen readers ("12 open deals") */
+  countLabel?: string;
 }
 
 export function Sidebar() {
@@ -42,6 +45,7 @@ export function Sidebar() {
   const curveAdjustments = useCrm((s) => s.curveAdjustments);
   const teamAmendments = useCrm((s) => s.teamAmendments);
   const me = users.find((u) => u.id === currentUserId);
+  const access = useAccess();
 
   const counts = useMemo(() => {
     const closed = new Set(pipelines.flatMap((p) => p.stages.filter((s) => s.closed).map((s) => s.id)));
@@ -69,29 +73,36 @@ export function Sidebar() {
 
   const revenue: NavItem[] = [
     { href: "/home", label: "Home", icon: House, shortcut: "G H" },
-    { href: "/deals", label: "Deals", icon: Handshake, shortcut: "G D", count: counts.openDeals },
+    { href: "/deals", label: "Deals", icon: Handshake, shortcut: "G D", count: counts.openDeals, countLabel: "open" },
     { href: "/contacts", label: "Contacts", icon: Users, shortcut: "G C", count: counts.contacts },
     { href: "/companies", label: "Companies", icon: Building2, shortcut: "G O", count: counts.companies },
     { href: "/tickets", label: "Tickets", icon: Ticket, shortcut: "G T" },
+    { href: "/quotes", label: "Quotes", icon: FileText, shortcut: "G Q" },
+    { href: "/automation", label: "Automation", icon: Workflow, shortcut: "G A" },
+    { href: "/reports", label: "Reports", icon: LineChart, shortcut: "G R" },
   ];
+  // §13.4: Compensation (everyone's pay) only for pay roles; the PRC queue count only for people who act on it
   const programme: NavItem[] = [
-    { href: "/initiatives", label: "Initiatives", icon: Briefcase, shortcut: "G I", count: counts.awaitingPrc },
-    { href: "/compensation", label: "Compensation", icon: Wallet, shortcut: "G M" },
+    { href: "/initiatives", label: "Initiatives", icon: Briefcase, shortcut: "G I", count: access.prc ? counts.awaitingPrc : undefined, countLabel: "awaiting the PRC" },
+    ...(access.seeAllPay ? [{ href: "/compensation", label: "Compensation", icon: Wallet, shortcut: "G M" }] : []),
     { href: "/people", label: "People", icon: UserCheck, shortcut: "G P" },
     { href: "/me", label: "My compensation", icon: CircleUser, shortcut: "G Y" },
+    { href: "/me/company", label: "Company results", icon: BarChart3 },
+    { href: "/disputes", label: "Disputes", icon: Scale, shortcut: "G X" },
     { href: "/policy", label: "Policy", icon: BookOpen, shortcut: "G K" },
   ];
   const agile: NavItem[] = [
-    { href: "/board", label: "Board", icon: Kanban, shortcut: "G B", count: counts.sprintIssues },
-    { href: "/backlog", label: "Backlog", icon: ListChecks, shortcut: "G L" },
+    { href: "/board", label: "Board", icon: Kanban, shortcut: "G B", count: counts.sprintIssues, countLabel: "open in active sprints" },
+    { href: "/backlog", label: "Backlog & sprints", icon: ListChecks, shortcut: "G L" },
     { href: "/issues", label: "Issues", icon: ListTodo, shortcut: "G U" },
   ];
 
-  const isActive = (href: string) => pathname === href || pathname.startsWith(href + "/");
+  // "/me" must not light up on "/me/company", which has its own entry
+  const isActive = (href: string) => pathname === href || (pathname.startsWith(href + "/") && !(href === "/me" && pathname.startsWith("/me/company")));
   const activeView = params.get("view");
 
   return (
-    <aside className={cn("flex h-full shrink-0 flex-col border-r border-sg-line bg-sg-bg transition-[width] duration-200 ease-sg", collapsed ? "w-[56px]" : "w-[232px]")}>
+    <aside aria-label="Sidebar" className={cn("flex h-full shrink-0 flex-col border-r border-sg-line bg-sg-bg transition-[width] duration-200 ease-sg", collapsed ? "w-[56px]" : "w-[232px]")}>
       <div className={cn("flex h-12 items-center border-b border-sg-line", collapsed ? "justify-center px-0" : "justify-between px-4")}>
         <Link href="/home" className="flex items-center gap-2" aria-label="Spectrum CRM home">
           {collapsed ? (
@@ -116,7 +127,7 @@ export function Sidebar() {
         <Search className="size-3.5" />
         {!collapsed && (
           <>
-            <span className="flex-1 text-left">Search or jump…</span>
+            <span className="min-w-0 flex-1 truncate text-left">Search…</span>
             <Kbd>⌘K</Kbd>
           </>
         )}
@@ -124,7 +135,7 @@ export function Sidebar() {
       <NotificationBell collapsed={collapsed} />
       </div>
 
-      <nav className="mt-4 flex-1 space-y-5 overflow-y-auto px-2 pb-4">
+      <nav aria-label="Primary" className="mt-4 flex-1 space-y-5 overflow-y-auto px-2 pb-4">
         <Section title="Revenue" collapsed={collapsed}>
           {revenue.map((item) => (
             <NavLink key={item.href} item={item} active={isActive(item.href)} collapsed={collapsed} />
@@ -135,7 +146,8 @@ export function Sidebar() {
                 <Link
                   key={l.id}
                   href={`/contacts?view=${l.id}`}
-                  className={cn("block truncate rounded px-2 py-1 text-xs transition-colors", activeView === l.id ? "bg-sg-card-2 text-sg-white" : "text-sg-dim hover:text-sg-white")}
+                  aria-current={pathname === "/contacts" && (activeView ?? "all") === l.id ? "page" : undefined}
+                  className={cn("block truncate rounded px-2 py-1 text-xs transition-colors", pathname === "/contacts" && (activeView ?? "all") === l.id ? "bg-sg-card-2 text-sg-white" : "text-sg-dim hover:text-sg-white")}
                 >
                   {l.name}
                 </Link>
@@ -158,6 +170,7 @@ export function Sidebar() {
                 <Link
                   key={p.id}
                   href={href}
+                  aria-current={on ? "page" : undefined}
                   title={p.failing ? `${p.failing} policy item${p.failing === 1 ? "" : "s"} to fix` : "Meets the policy"}
                   className={cn("group relative ml-4 flex h-7 items-center gap-2 rounded border-l border-sg-line pl-3 pr-2 text-xs transition-colors", on ? "bg-sg-card-2 text-sg-white" : "text-sg-muted hover:bg-sg-card hover:text-sg-white")}
                 >
@@ -168,24 +181,11 @@ export function Sidebar() {
                 </Link>
               );
             })}
-          <div className={cn("mt-1 flex gap-px", collapsed ? "flex-col" : "ml-4 border-l border-sg-line pl-1")}>
-            {agile.map((item) => {
-              const Icon = item.icon;
-              const on = isActive(item.href);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  title={`${item.label} (${item.shortcut})`}
-                  className={cn("flex h-7 items-center gap-1.5 rounded text-xs font-medium transition-colors", collapsed ? "justify-center" : "flex-1 justify-center px-1.5", on ? "bg-sg-card-2 text-sg-white" : "text-sg-dim hover:bg-sg-card hover:text-sg-white")}
-                >
-                  <Icon className="size-3.5 shrink-0" />
-                  {!collapsed && <span className="truncate">{item.label}</span>}
-                  {!collapsed && typeof item.count === "number" && item.count > 0 ? <span className="sg-num text-2xs text-sg-dim">{item.count}</span> : null}
-                </Link>
-              );
-            })}
-          </div>
+        </Section>
+        <Section title="Agile delivery" collapsed={collapsed}>
+          {agile.map((item) => (
+            <NavLink key={item.href} item={item} active={isActive(item.href)} collapsed={collapsed} />
+          ))}
         </Section>
       </nav>
 
@@ -227,22 +227,30 @@ function Section({ title, collapsed, children }: { title: string; collapsed: boo
 
 function NavLink({ item, active, collapsed }: { item: NavItem; active: boolean; collapsed: boolean }) {
   const Icon = item.icon;
+  const countText = typeof item.count === "number" ? `${item.count}${item.countLabel ? ` ${item.countLabel}` : ""}` : null;
   return (
     <Link
       href={item.href}
-      title={collapsed ? `${item.label} (${item.shortcut})` : undefined}
+      aria-current={active ? "page" : undefined}
+      title={collapsed ? `${item.label}${countText ? ` · ${countText}` : ""}${item.shortcut ? ` (${item.shortcut})` : ""}` : countText && item.countLabel ? `${countText}${item.shortcut ? ` · ${item.shortcut}` : ""}` : undefined}
       className={cn(
-        "group relative flex h-8 items-center gap-2.5 rounded text-sm font-medium transition-colors",
+        "group relative flex h-8 items-center gap-2.5 rounded text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-sg-white/60",
         collapsed ? "justify-center" : "px-2",
         active ? "bg-sg-card-2 text-sg-white" : "text-sg-muted hover:bg-sg-card hover:text-sg-white",
       )}
     >
-      {active && <span className="absolute inset-y-1.5 left-0 w-[2px] rounded-full bg-sg-white" />}
-      <Icon className="size-4 shrink-0" />
+      {active && <span aria-hidden className="absolute inset-y-1.5 left-0 w-[2px] rounded-full bg-sg-white" />}
+      <Icon className="size-4 shrink-0" aria-hidden />
+      {collapsed ? <span className="sr-only">{item.label}</span> : null}
       {!collapsed && (
         <>
           <span className="flex-1 truncate">{item.label}</span>
-          {typeof item.count === "number" && <span className="sg-num text-2xs text-sg-dim">{item.count}</span>}
+          {countText ? (
+            <span className="sg-num text-2xs text-sg-dim">
+              <span aria-hidden>{item.count}</span>
+              <span className="sr-only">, {countText}</span>
+            </span>
+          ) : null}
         </>
       )}
     </Link>

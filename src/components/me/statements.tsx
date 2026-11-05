@@ -1,18 +1,22 @@
 "use client";
 
 /* /me — Annex E statement history, pending deferred bonuses (§9.3), probation balance (§11), my clawbacks (§9.4). */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Hourglass } from "lucide-react";
+import { FileText, Hourglass } from "lucide-react";
 import { useCrm } from "@/lib/store";
 import { addBusinessDays, clawbackAmount, paymentDate, probationBalance } from "@/lib/initiatives/engine";
 import { POLICY } from "@/lib/initiatives/policy";
 import type { BonusLine, BonusRun, EmployeeProfile, LineStatus } from "@/lib/initiatives/types";
 import type { SpectrumColor } from "@/lib/types";
-import { cn, daysFromNow, formatDate } from "@/lib/utils";
+import { cn, daysFromNow, formatDate, formatIDR } from "@/lib/utils";
 import { Chip, EmptyState } from "@/components/ui/misc";
-import { Cite, Metric, Money } from "@/components/initiatives/shared";
-import { AnnexCite, Card, NumCell, SampleChip, TH, THEAD_ROW } from "./ui";
+import { Button } from "@/components/ui/button";
+import { Cite, Metric } from "@/components/initiatives/shared";
+import { RaiseDisputeButton } from "./disputes";
+import { EXTRA_LABEL, cycleLabel } from "./helpers";
+import { StatementSheet } from "./statement-sheet";
+import { AnnexCite, Card, NumCell, RpFull, SampleChip, TH, THEAD_ROW } from "./ui";
 
 const LINE_STATUS: Record<LineStatus, { label: string; color: SpectrumColor }> = {
   payable: { label: "Paid", color: "green" },
@@ -35,6 +39,7 @@ type Key = "gross" | "topUp" | "topUpDeducted" | "payable" | "deferred" | "withh
 export function StatementHistory({ userId }: { userId: string }) {
   const runs = useCrm((s) => s.bonusRuns);
   const initiatives = useCrm((s) => s.initiatives);
+  const [sheet, setSheet] = useState<{ run: BonusRun; line: BonusLine } | null>(null);
 
   const lines = useMemo(() => {
     const out: { run: BonusRun; line: BonusLine }[] = [];
@@ -53,13 +58,13 @@ export function StatementHistory({ userId }: { userId: string }) {
           <AnnexCite annex="E" />
         </>
       }
-      action={<span className="text-2xs text-sg-dim">Errors must be raised with Finance within {POLICY.statementDisputeDays} days of the statement date (§14)</span>}
+      action={<span className="text-2xs text-sg-dim">Exact whole rupiah (§8.5) · dispute an error within {POLICY.statementDisputeDays} days of the statement date (§14)</span>}
     >
       {lines.length === 0 ? (
         <EmptyState title="No statements yet">A statement is issued on each salary date for every project you were paid from (Annex E).</EmptyState>
       ) : (
         <div className="-mx-4 -my-4 overflow-x-auto">
-          <table className="w-full min-w-[1040px] text-xs">
+          <table className="w-full min-w-[1320px] text-xs">
             <thead>
               <tr className={THEAD_ROW}>
                 <th className={cn(TH, "pl-4")}>Month</th>
@@ -83,7 +88,10 @@ export function StatementHistory({ userId }: { userId: string }) {
                 <th className={cn(TH, "text-right")} title="Carried forward after a failed test (§9.2)">
                   Carried
                 </th>
-                <th className={cn(TH, "pr-4")}>Status</th>
+                <th className={TH}>Status</th>
+                <th className={cn(TH, "pr-4 text-right")}>
+                  <span className="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -92,7 +100,7 @@ export function StatementHistory({ userId }: { userId: string }) {
                 return (
                   <tr key={`${run.id}-${line.initiativeId}`} className="border-b border-sg-line align-top last:border-b-0">
                     <td className="py-1.5 pl-4 pr-2">
-                      <div className="sg-num font-semibold text-sg-white">{run.month}</div>
+                      <div className="whitespace-nowrap font-semibold text-sg-white">{cycleLabel(run.month)}</div>
                       <div className="text-2xs text-sg-dim">
                         {run.status === "released" ? "paid" : "pays"} {formatDate(paymentDate(run.month), "short")}
                       </div>
@@ -111,15 +119,36 @@ export function StatementHistory({ userId }: { userId: string }) {
                         {run.payoutPct < 1 ? ` · ${Math.round(run.payoutPct * 10_000) / 100}% released (§9.2)` : ""}
                       </div>
                       {line.notes.length > 0 && <div className="mt-0.5 max-w-[320px] text-2xs text-sg-dim">{line.notes.join(" · ")}</div>}
+                      {(line.extras ?? []).map((x) => (
+                        <div key={`${x.kind}-${x.refId}`} className="text-2xs text-soft-cyan">
+                          + <RpFull value={x.amount} /> {EXTRA_LABEL[x.kind]}
+                          {x.note ? ` · ${x.note}` : ""}
+                        </div>
+                      ))}
+                      {line.recovered ? (
+                        <div className="text-2xs text-soft-red">
+                          − <RpFull value={line.recovered} /> clawback recovered from this bonus (§9.4)
+                        </div>
+                      ) : null}
+                      {(line.heldItems ?? []).length > 0 && (
+                        <div className="mt-0.5 max-w-[320px] text-2xs text-soft-orange">
+                          Held: {(line.heldItems ?? []).map((h) => `${formatIDR(h.amount, "full")} from ${cycleLabel(h.fromMonth, true)}${h.reason ? ` — ${h.reason}` : ""}`).join("; ")} · paid when the condition clears (§10, §15.1)
+                        </div>
+                      )}
                     </td>
                     <NumCell v={line.gross} />
                     <NumCell v={line.topUp} tone="text-soft-cyan" />
                     <NumCell v={line.topUpDeducted} tone="text-soft-orange" />
                     <td className="whitespace-nowrap px-2 py-1.5 text-right">
-                      {line.payable ? <Money value={line.payable} className="font-semibold text-soft-green" /> : <span className="text-sg-dim">—</span>}
+                      {line.payable ? <RpFull value={line.payable} className="font-semibold text-soft-green" /> : <span className="text-sg-dim">—</span>}
                       {line.carriedIn > 0 && (
                         <div className="text-2xs text-sg-dim">
-                          incl. <Money value={line.carriedIn} /> carried in
+                          incl. <RpFull value={line.carriedIn} /> carried in{line.heldIn ? <> (<RpFull value={line.heldIn} /> held earlier, now cleared)</> : null}
+                        </div>
+                      )}
+                      {line.pph21 && (
+                        <div className="text-2xs text-sg-dim" title={`${line.pph21.note} · TER category ${line.pph21.category}, ${line.pph21.ptkp}, ${(line.pph21.rate * 100).toFixed(2)}%`}>
+                          PPh 21 ≈ <RpFull value={line.pph21.withheld} /> · net ≈ <RpFull value={line.pph21.net} className="text-sg-muted" /> <span className="text-soft-yellow">estimate</span>
                         </div>
                       )}
                     </td>
@@ -128,8 +157,24 @@ export function StatementHistory({ userId }: { userId: string }) {
                     <NumCell v={line.held} tone="text-soft-orange" />
                     <NumCell v={line.forfeited} tone="text-soft-red" />
                     <NumCell v={line.carriedOver} tone="text-soft-orange" />
-                    <td className="py-1.5 pl-2 pr-4">
+                    <td className="px-2 py-1.5">
                       <Chip color={LINE_STATUS[line.status].color}>{LINE_STATUS[line.status].label}</Chip>
+                    </td>
+                    <td className="whitespace-nowrap py-1 pl-2 pr-4 text-right">
+                      <Button size="xs" variant="ghost" onClick={() => setSheet({ run, line })} title="Open the full Annex E statement">
+                        <FileText /> Statement
+                      </Button>
+                      <RaiseDisputeButton
+                        prefill={{
+                          category: "calculation",
+                          subject: `${cycleLabel(run.month)} statement — ${ini?.title ?? "project"}`,
+                          initiativeId: line.initiativeId,
+                          runMonth: run.month,
+                          lineRef: `line:${run.id}:${line.initiativeId}`,
+                          amount: line.payable,
+                          source: `${cycleLabel(run.month)} · ${ini?.title ?? "Project"} · payable`,
+                        }}
+                      />
                     </td>
                   </tr>
                 );
@@ -149,12 +194,13 @@ export function StatementHistory({ userId }: { userId: string }) {
                 <NumCell v={sum("held")} tone="text-soft-orange" />
                 <NumCell v={sum("forfeited")} tone="text-soft-red" />
                 <NumCell v={sum("carriedOver")} tone="text-soft-orange" />
-                <td />
+                <td colSpan={2} />
               </tr>
             </tfoot>
           </table>
         </div>
       )}
+      {sheet && <StatementSheet open={!!sheet} onOpenChange={(v) => !v && setSheet(null)} run={sheet.run} line={sheet.line} />}
     </Card>
   );
 }
@@ -178,7 +224,7 @@ export function DeferredList({ userId }: { userId: string }) {
           Deferred bonuses <Cite s="9.3" />
         </>
       }
-      action={pending.length ? <Money value={total} className="text-xs font-semibold text-soft-cyan" /> : undefined}
+      action={pending.length ? <RpFull value={total} className="text-xs font-semibold text-soft-cyan" /> : undefined}
     >
       {pending.length === 0 ? (
         <p className="text-xs text-sg-dim">Nothing deferred. On high-risk projects up to 30% of each interim bonus is deferred for 6–12 months after close (§9.3).</p>
@@ -193,10 +239,16 @@ export function DeferredList({ userId }: { userId: string }) {
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-semibold text-sg-white">{ini?.title ?? d.initiativeId}</div>
                   <div className="text-2xs text-sg-dim">
-                    from the {d.month} cycle · vests {formatDate(d.vestAt, "medium")} ({days >= 0 ? `in ${days} days` : `due ${-days} days ago`}) · no interest
+                    from the {cycleLabel(d.month)} cycle · vests {formatDate(d.vestAt, "medium")} ({days >= 0 ? `in ${days} days` : `due ${-days} days ago`}) · no interest
                   </div>
                 </div>
-                <Money value={d.amount} className="font-semibold text-sg-white" />
+                <div className="flex flex-col items-end gap-0.5">
+                  <RpFull value={d.amount} className="font-semibold text-sg-white" />
+                  <RaiseDisputeButton
+                    className="-mr-1.5"
+                    prefill={{ category: "calculation", subject: `Deferred bonus — ${ini?.title ?? "project"}`, initiativeId: d.initiativeId, runMonth: d.month, lineRef: `deferred:${d.id}`, amount: d.amount, source: `Deferred from the ${cycleLabel(d.month)} cycle · vests ${formatDate(d.vestAt, "medium")}` }}
+                  />
+                </div>
               </li>
             );
           })}
@@ -204,11 +256,11 @@ export function DeferredList({ userId }: { userId: string }) {
       )}
       {(released > 0 || forfeited > 0) && (
         <p className="mt-3 border-t border-sg-line pt-2 text-2xs text-sg-dim">
-          Released so far <Money value={released} />
+          Released so far <RpFull value={released} />
           {forfeited > 0 && (
             <>
               {" "}
-              · forfeited <Money value={forfeited} className="text-soft-red" />
+              · forfeited <RpFull value={forfeited} className="text-soft-red" />
             </>
           )}
         </p>
@@ -234,7 +286,7 @@ export function ProbationCard({ userId, profile }: { userId: string; profile: Em
       }
     >
       <div className="grid grid-cols-2 gap-4">
-        <Metric label="Held so far" value={<Money value={balance} />} tone="yellow" hint="Probationary Bonus Accrual (company liability)" />
+        <Metric label="Held so far" value={<RpFull value={balance} />} tone="yellow" hint="Probationary Bonus Accrual (company liability)" />
         <Metric label="Probation ends" value={end ? formatDate(end, "medium") : "—"} hint={days == null ? "Record the end date with HR" : days >= 0 ? `in ${days} days` : `${-days} days ago`} />
       </div>
       <p className="mt-3 text-2xs leading-relaxed text-sg-muted">
@@ -251,6 +303,7 @@ export function MyClawbacks({ userId }: { userId: string }) {
   if (!mine.length) return null;
   return (
     <Card
+      id="clawbacks"
       title={
         <>
           Clawback notices <Cite s="9.4" />
@@ -266,13 +319,22 @@ export function MyClawbacks({ userId }: { userId: string }) {
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-sg-white">{initiatives.find((i) => i.id === c.initiativeId)?.title ?? c.initiativeId}</span>
                 <Chip color="orange">{c.status.replace(/_/g, " ")}</Chip>
-                <Money value={clawbackAmount(c)} className="ml-auto font-semibold text-soft-red" />
+                <RpFull value={clawbackAmount(c)} className="ml-auto font-semibold text-soft-red" />
               </div>
               <div className="mt-0.5 text-2xs text-sg-dim">
                 {c.trigger.replace(/_/g, " ")} · paid {formatDate(c.paidAt, "medium")}
                 {deadline ? ` · ${open ? "dispute by" : "dispute window closed"} ${formatDate(deadline, "medium")}` : " · written notice not yet sent"}
                 {" · "}salary deductions need your written agreement{c.writtenAgreement ? " (given)" : ""}
               </div>
+              {c.status !== "disputed" && (
+                <div className="mt-1 flex justify-end">
+                  <RaiseDisputeButton
+                    variant="outline"
+                    label={open ? "Dispute or raise mitigating factors" : "Dispute"}
+                    prefill={{ category: "clawback", subject: `Clawback — ${initiatives.find((i) => i.id === c.initiativeId)?.title ?? "project"}`, initiativeId: c.initiativeId, lineRef: `clawback:${c.id}`, amount: clawbackAmount(c), eventAt: c.notifiedAt ?? c.createdAt, source: `Clawback notice · ${c.trigger.replace(/_/g, " ")}` }}
+                  />
+                </div>
+              )}
             </li>
           );
         })}

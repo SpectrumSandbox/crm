@@ -7,14 +7,15 @@
  */
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Ban, CircleCheck, Clock, Gavel, Hourglass, Info, ShieldAlert, TriangleAlert, UserMinus, UserX } from "lucide-react";
+import { Ban, CircleCheck, Clock, Gavel, Hourglass, Info, ShieldAlert, TriangleAlert, Undo2, UserMinus, UserX } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
+import { useAccess } from "@/lib/access-control";
 import type { EmployeeProfile, SeparationKind } from "@/lib/initiatives/types";
 import { addMonths, carriedForward, computeRun, cycleMonth, paymentDate, probationBalance } from "@/lib/initiatives/engine";
 import { POLICY } from "@/lib/initiatives/policy";
 import { cn, formatDate, formatIDR, fromDateInput, toDateInput } from "@/lib/utils";
 import { Modal } from "@/components/ui/overlays";
-import { Field, Input } from "@/components/ui/input";
+import { Field, Input, Textarea } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Cite, Money } from "@/components/initiatives/shared";
 import { Block, Toggle } from "./fields";
@@ -66,9 +67,11 @@ const DAY = 86_400_000;
 const today = () => toDateInput(new Date().toISOString());
 const plusDays = (n: number) => toDateInput(new Date(Date.now() + n * DAY).toISOString());
 
-export function SeparationSection({ profile }: { profile: EmployeeProfile }) {
+export function SeparationSection({ profile, readOnly }: { profile: EmployeeProfile; readOnly?: boolean }) {
   const [kind, setKind] = useState<Kind | null>(null);
   const [hold, setHold] = useState<"suspension" | "unpaid_leave" | null>(null);
+  const [follow, setFollow] = useState<"withdraw" | "confirm" | null>(null);
+  const access = useAccess();
   const sep = profile.separation;
   const actions = ACTIONS.filter((a) => (a.kind === "contract_end" ? profile.employmentType === "fixed_term_contract" : a.kind === "probation_failed" ? profile.employmentType === "probationary" : true));
   return (
@@ -90,9 +93,28 @@ export function SeparationSection({ profile }: { profile: EmployeeProfile }) {
             {profile.resignationNoticeAt ? ` · resignation notice ${formatDate(profile.resignationNoticeAt)}` : ""}
             {profile.terminationNoticeAt ? ` · termination notice ${formatDate(profile.terminationNoticeAt)}` : ""}
             <div className="mt-0.5 text-sg-muted">Recording another change replaces this record.</div>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {!readOnly && access.manageHr ? (
+                <Button size="xs" variant="outline" onClick={() => setFollow("withdraw")} title="e.g. a resignation rescinded with the company's agreement — reopens the ledger rows it closed">
+                  <Undo2 /> Withdraw this change
+                </Button>
+              ) : null}
+              {sep.kind === "retirement" && !sep.prcConfirmed ? (
+                access.prc ? (
+                  <Button size="xs" variant="primary" onClick={() => setFollow("confirm")}>
+                    <Gavel /> PRC confirms the retirement
+                  </Button>
+                ) : (
+                  <span className="text-2xs text-sg-muted">A PRC member records the confirmation (§10).</span>
+                )
+              ) : null}
+            </div>
           </div>
         </div>
       )}
+      {follow && sep ? <FollowUpDialog profile={profile} kind={follow} onClose={() => setFollow(null)} /> : null}
+      {readOnly ? <p className="text-2xs text-sg-dim">HR records changes in employment status (§13.2).</p> : null}
+      {!readOnly ? (
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {actions.map((a) => (
           <button key={a.kind} type="button" onClick={() => setKind(a.kind)} className="flex items-start gap-2.5 rounded-md border border-sg-line bg-sg-bg/40 p-2.5 text-left transition-colors hover:border-sg-line-2 hover:bg-sg-card-2">
@@ -118,6 +140,7 @@ export function SeparationSection({ profile }: { profile: EmployeeProfile }) {
           </span>
         </button>
       </div>
+      ) : null}
       <details className="mt-3 rounded-md border border-sg-line bg-sg-bg/40">
         <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-sg-muted hover:text-sg-white">What is paid and forfeited — the §10 table</summary>
         <table className="w-full text-2xs">
@@ -183,6 +206,7 @@ function SeparationDialog({ profile, kind, onClose }: { profile: EmployeeProfile
   const deferredBonuses = useCrm((s) => s.deferredBonuses);
   const outcomes = useCrm((s) => s.probationOutcomes);
   const notify = useUi((s) => s.notify);
+  const access = useAccess();
   const me = users.find((u) => u.id === currentUserId);
   const employee = users.find((u) => u.id === profile.userId);
 
@@ -239,7 +263,7 @@ function SeparationDialog({ profile, kind, onClose }: { profile: EmployeeProfile
       });
     }
     for (const c of carriedForward(bonusRuns, "9999-12").filter((x) => x.userId === userId)) {
-      rows.push({ label: link(c.initiativeId), sub: "Carried forward after a failed check (§9.2)", amount: c.amount, outcome: kind === "termination_for_cause" ? "forfeit" : "pay", reason: kind === "termination_for_cause" ? "All unpaid amounts are forfeited" : "Collected before the end date — paid first in the next passing month" });
+      rows.push({ label: link(c.initiativeId), sub: c.kind === "held" ? `Held since ${c.fromMonth ?? "an earlier cycle"} — ${c.reason ?? "§10 hold"}` : "Carried forward after a failed check (§9.2)", amount: c.amount, outcome: kind === "termination_for_cause" ? "forfeit" : "pay", reason: kind === "termination_for_cause" ? "All unpaid amounts are forfeited" : "Collected before the end date — paid first in the next passing month" });
     }
     const settled = outcomes.some((o) => o.userId === userId);
     const probation = probationBalance(userId, bonusRuns);
@@ -262,7 +286,7 @@ function SeparationDialog({ profile, kind, onClose }: { profile: EmployeeProfile
     recordSeparation(profile.userId, kind, effectiveAt, {
       noticeAt: usesNotice ? noticeAt : kind === "termination_for_cause" ? effectiveAt : undefined,
       retirementNoticeDays: kind === "retirement" ? noticeDays : undefined,
-      prcConfirmed: kind === "retirement" ? prcConfirmed : undefined,
+      prcConfirmed: kind === "retirement" ? prcConfirmed && access.prc : undefined,
     });
     notify(`${SEPARATION_LABEL[kind]} recorded for ${employee?.name ?? "employee"}${impact.forfeit > 0 ? ` — ${formatIDR(impact.forfeit)} forfeited` : ""}`);
     onClose();
@@ -313,7 +337,7 @@ function SeparationDialog({ profile, kind, onClose }: { profile: EmployeeProfile
           </Field>
         </div>
         {kind === "retirement" && (
-          <Toggle checked={prcConfirmed} onChange={setPrcConfirmed} label="PRC confirms the retirement" hint={prcConfirmed ? `Recorded by ${me?.name ?? "you"} for the PRC · ${noticeDays} days' notice` : "Until confirmed, payments are held (§10)"} />
+          <Toggle checked={prcConfirmed} disabled={!access.prc} onChange={setPrcConfirmed} label="PRC confirms the retirement" hint={!access.prc ? "Payments are held until a PRC member confirms it on the record — it can be confirmed later (§10)" : prcConfirmed ? `Recorded by ${me?.name ?? "you"} for the PRC · ${noticeDays} days' notice` : "Until confirmed, payments are held (§10); it can also be confirmed later"} />
         )}
         {TRAIL.includes(kind) && effectiveAt ? (
           <p className="flex items-start gap-1.5 text-2xs text-sg-muted">
@@ -412,6 +436,54 @@ function HoldDialog({ profile, kind, onClose }: { profile: EmployeeProfile; kind
           <p className="text-xs text-sg-muted">Lifting the suspension because the employee was cleared releases the held payments in the next cycle. If a serious violation is confirmed instead, record a dismissal for a serious violation.</p>
         ) : null}
         <p className="text-2xs text-sg-dim">Statutory paid leave (annual, sick, maternity, paternity) never affects eligibility or payment (§3.3).</p>
+      </div>
+    </Modal>
+  );
+}
+
+/** §10 follow-ups on a recorded separation: withdraw it (audited, ledger rows reopened) or record the PRC's retirement confirmation. */
+function FollowUpDialog({ profile, kind, onClose }: { profile: EmployeeProfile; kind: "withdraw" | "confirm"; onClose: () => void }) {
+  const withdrawSeparation = useCrm((s) => s.withdrawSeparation);
+  const confirmRetirement = useCrm((s) => s.confirmRetirement);
+  const users = useCrm((s) => s.users);
+  const notify = useUi((s) => s.notify);
+  const [text, setText] = useState("");
+  const sep = profile.separation;
+  const name = users.find((u) => u.id === profile.userId)?.name ?? "employee";
+  if (!sep) return null;
+  const valid = text.trim().length >= 5;
+  const submit = () => {
+    if (!valid) return;
+    const ok = kind === "withdraw" ? withdrawSeparation(profile.userId, text) : confirmRetirement(profile.userId, text);
+    notify(ok ? (kind === "withdraw" ? `${SEPARATION_LABEL[sep.kind]} withdrawn for ${name} — ledger rows reopened` : `Retirement confirmed by the PRC — ${name}'s held payments are paid in the next cycle`) : "Not recorded — check your role");
+    onClose();
+  };
+  return (
+    <Modal
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={kind === "withdraw" ? `Withdraw: ${SEPARATION_LABEL[sep.kind]}` : "PRC confirms the retirement"}
+      description={`${name} · effective ${formatDate(sep.effectiveAt, "medium")} · recorded ${formatDate(sep.recordedAt, "medium")}`}
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" size="sm" disabled={!valid} onClick={submit}>
+            {kind === "withdraw" ? "Withdraw change" : "Record PRC confirmation"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        {kind === "withdraw" ? (
+          <p className="text-xs text-sg-muted">The record is cleared and the Team Allocation Ledger rows it closed on {formatDate(sep.effectiveAt, "medium")} are reopened; a probation balance settled with it is restored. Amounts already released are not affected. The withdrawal is kept in the audit log (§13.3).</p>
+        ) : (
+          <p className="text-xs text-sg-muted">Retirement bonuses follow the rules for termination on other grounds once the PRC confirms (§10): held payments become payable with the next salary, and later collections for earlier work are paid for up to 12 months.</p>
+        )}
+        <Field label={kind === "withdraw" ? "Reason and evidence" : "PRC decision reference"}>
+          <Textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && submit()} placeholder={kind === "withdraw" ? "e.g. resignation rescinded on 12 Nov with the line manager's and HR's agreement" : "e.g. PRC minute 2026-11-26 item 2"} className="min-h-[64px]" />
+        </Field>
       </div>
     </Modal>
   );

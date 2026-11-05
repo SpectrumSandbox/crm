@@ -30,6 +30,16 @@ import type {
   Workflow,
 } from "./types";
 import { initiativeSeed } from "./initiatives/seed";
+import { platformSeed } from "./seed-ext/platform";
+import { foundationsSeed } from "./seed-ext/foundations";
+import { dealsSeed } from "./seed-ext/deals";
+import { accountsSeed } from "./seed-ext/accounts";
+import { agileSeed } from "./seed-ext/agile";
+import { governanceSeed } from "./seed-ext/governance";
+import { engineSeed } from "./seed-ext/engine";
+import { compSeed } from "./seed-ext/comp";
+import { meSeed } from "./seed-ext/me";
+import { automationSeed } from "./seed-ext/automation";
 
 /* ───────────────────────── time helpers ───────────────────────── */
 
@@ -680,6 +690,16 @@ export const seed = {
   sequenceEnrollments,
   workflows,
   ...initiativeSeed,
+  ...platformSeed,
+  ...foundationsSeed,
+  ...dealsSeed,
+  ...accountsSeed,
+  ...agileSeed,
+  ...governanceSeed,
+  ...engineSeed,
+  ...compSeed,
+  ...meSeed,
+  ...automationSeed,
 };
 
 export type SeedData = typeof seed;

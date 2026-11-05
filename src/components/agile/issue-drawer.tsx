@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowUpRight, Building2, ChevronDown, Copy, Handshake, History, Layers, Link2, ListTree, MessageSquare, Plus, Search, Target, Ticket, Unlink, User, X } from "lucide-react";
+import { ArrowUpRight, Building2, ChevronDown, CircleAlert, Copy, Handshake, History, Layers, Link2, ListTodo, ListTree, MessageSquare, Plus, Search, Target, Ticket, Unlink, User, X } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useLinksForAgile, useUserMap } from "@/lib/selectors";
 import { ISSUE_PRIORITIES, ISSUE_STATUSES, ISSUE_TYPES, type Issue } from "@/lib/types";
@@ -14,6 +14,8 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { StatusChip } from "@/components/initiatives/shared";
 import type { IssueHistoryEntry } from "@/lib/slices/agile-extras";
+import { BlockedBadge, DueChip, useOpenBlockers } from "./agile-ui";
+import { IssueLinksSection } from "./issue-links";
 
 export function IssueDrawer() {
   const issueId = useUi((s) => s.issueId);
@@ -36,6 +38,10 @@ function IssueDetail({ issue }: { issue: Issue }) {
   const createIssue = useCrm((s) => s.createIssue);
   const deleteIssues = useCrm((s) => s.deleteIssues);
   const noteIssueHistory = useCrm((s) => s.noteIssueHistory);
+  const migrateLegacyIssueHistory = useCrm((s) => s.migrateLegacyIssueHistory);
+  const triageIssue = useCrm((s) => s.triageIssue);
+  const captureIssues = useCrm((s) => s.captureIssues);
+  const restoreIssueFields = useCrm((s) => s.restoreIssueFields);
   const history = useCrm((s) => s.issueHistory);
   const initiatives = useCrm((s) => s.initiatives);
   const addComment = useCrm((s) => s.addComment);
@@ -67,6 +73,18 @@ function IssueDetail({ issue }: { issue: Issue }) {
   const [newSub, setNewSub] = useState("");
   const [labelDraft, setLabelDraft] = useState("");
   const [tab, setTab] = useState<"comments" | "history">("comments");
+  const [summaryError, setSummaryError] = useState(false);
+  const [convertOpen, setConvertOpen] = useState(false);
+  const blockers = useOpenBlockers().get(issue.id);
+  useEffect(() => migrateLegacyIssueHistory(), [migrateLegacyIssueHistory]);
+  const activeSprintOfIssue = sprints.find((s) => s.id === issue.sprintId && s.state === "active");
+  /** status change with the "Backlog takes it out of the running sprint" rule explained */
+  const setStatus = (st: Issue["status"]) => {
+    if (st === issue.status) return;
+    const snap = captureIssues([issue.id]);
+    updateIssue(issue.id, { status: st });
+    if (st === "backlog" && activeSprintOfIssue) notify(`${issue.key} moved to the backlog — out of ${activeSprintOfIssue.name}`, { label: "Undo", run: () => restoreIssueFields(snap) });
+  };
   const issueHistory = useMemo(() => history.filter((h) => h.issueId === issue.id).reverse(), [history, issue.id]);
   const linkedInitiative = useMemo(() => {
     const viaEpic = issue.epicId ? initiatives.find((i) => i.epicId === issue.epicId) : undefined;
@@ -77,6 +95,8 @@ function IssueDetail({ issue }: { issue: Issue }) {
   useEffect(() => setSummary(issue.summary), [issue.summary]);
   useEffect(() => setDescription(issue.description), [issue.description]);
 
+  const setStatusRef = useRef(setStatus);
+  setStatusRef.current = setStatus;
   // status hotkeys inside the drawer: 1–5
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -85,12 +105,12 @@ function IssueDetail({ issue }: { issue: Issue }) {
       const idx = Number(e.key) - 1;
       if (idx >= 0 && idx < ISSUE_STATUSES.length) {
         e.preventDefault();
-        updateIssue(issue.id, { status: ISSUE_STATUSES[idx] });
+        setStatusRef.current?.(ISSUE_STATUSES[idx]!);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [issue.id, updateIssue]);
+  }, [issue.id]);
 
   const stageOf = useMemo(() => new Map(pipelines.flatMap((p) => p.stages.map((s) => [s.id, s] as const))), [pipelines]);
 
@@ -155,8 +175,24 @@ function IssueDetail({ issue }: { issue: Issue }) {
             <MenuLabel>Change issue type</MenuLabel>
             {ISSUE_TYPES.map((t) => {
               const I = issueTypeMeta[t].icon;
+              if (t === "subtask" && issue.type !== "subtask") {
+                // a sub-task needs a parent — go through the parent picker
+                return subtasks.length ? null : (
+                  <MenuItem key={t} onSelect={() => window.setTimeout(() => setConvertOpen(true), 60)}>
+                    <I className={cn("size-3.5", softText[issueTypeMeta[t].color])} /> {issueTypeMeta[t].label}… <span className="ml-auto text-2xs text-sg-dim">pick a parent</span>
+                  </MenuItem>
+                );
+              }
               return (
-                <MenuItem key={t} active={t === issue.type} onSelect={() => updateIssue(issue.id, { type: t })}>
+                <MenuItem
+                  key={t}
+                  active={t === issue.type}
+                  onSelect={() => {
+                    if (t === issue.type) return;
+                    updateIssue(issue.id, { type: t });
+                    if (issue.parentId && t !== "subtask") notify(`${issue.key} is now a ${issueTypeMeta[t].label.toLowerCase()} — no longer under ${parent?.key ?? "its parent"}`);
+                  }}
+                >
                   <I className={cn("size-3.5", softText[issueTypeMeta[t].color])} /> {issueTypeMeta[t].label}
                 </MenuItem>
               );
@@ -164,7 +200,22 @@ function IssueDetail({ issue }: { issue: Issue }) {
           </MenuContent>
         </Menu>
         <div className="ml-auto flex items-center gap-1">
-          <ConvertToSubtask issue={issue} allIssues={allIssues} subtaskCount={subtasks.length} onConvert={(patch) => updateIssue(issue.id, patch)} />
+          <BlockedBadge blockers={blockers} />
+          {issue.triage !== "pending" && issue.type !== "subtask" && (
+            <Button
+              size="xs"
+              variant="ghost"
+              title="Send to the triage inbox (takes it out of any sprint)"
+              onClick={() => {
+                const snap = captureIssues([issue.id]);
+                triageIssue(issue.id, { kind: "send" });
+                notify(`${issue.key} sent to triage`, { label: "Undo", run: () => restoreIssueFields(snap) });
+              }}
+            >
+              <ListTodo /> Triage
+            </Button>
+          )}
+          <ConvertToSubtask issue={issue} allIssues={allIssues} subtaskCount={subtasks.length} onConvert={(patch) => updateIssue(issue.id, patch)} open={convertOpen} onOpenChange={setConvertOpen} />
           <Button size="xs" variant="ghost" onClick={cloneIssue} title="Clone issue (copies fields and labels)">
             <Layers /> Clone
           </Button>
@@ -184,8 +235,21 @@ function IssueDetail({ issue }: { issue: Issue }) {
         <div className="space-y-6 px-5 py-5 md:overflow-y-auto">
           <textarea
             value={summary}
-            onChange={(e) => setSummary(e.target.value)}
-            onBlur={() => summary.trim() && summary !== issue.summary && updateIssue(issue.id, { summary: summary.trim() })}
+            onChange={(e) => {
+              setSummary(e.target.value);
+              if (e.target.value.trim()) setSummaryError(false);
+            }}
+            onBlur={() => {
+              if (!summary.trim()) {
+                // never leave the title looking erased: revert and say why
+                setSummary(issue.summary);
+                setSummaryError(true);
+                return;
+              }
+              if (summary.trim() !== issue.summary) updateIssue(issue.id, { summary: summary.trim() });
+            }}
+            aria-label="Summary"
+            aria-invalid={summaryError}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -195,6 +259,29 @@ function IssueDetail({ issue }: { issue: Issue }) {
             rows={2}
             className="w-full resize-none rounded border border-transparent bg-transparent px-1 py-0.5 font-display text-xl font-extrabold leading-snug text-sg-white hover:border-sg-line focus:border-sg-white/50 focus:outline-none"
           />
+          {summaryError && (
+            <p role="status" className="-mt-4 flex items-center gap-1 px-1 text-2xs text-soft-orange">
+              <CircleAlert className="size-3" /> Summary can't be empty — kept “{issue.summary}”.
+            </p>
+          )}
+          {issue.triage === "pending" && (
+            <div className="-mt-2 flex flex-wrap items-center gap-2 rounded-md border border-soft-cyan/40 bg-soft-cyan/5 px-3 py-2 text-xs text-sg-muted">
+              <ListTodo className="size-3.5 text-soft-cyan" /> Waiting in triage — not on the board or backlog until accepted.
+              <span className="ml-auto flex gap-1">
+                <Button size="xs" variant="subtle" onClick={() => triageIssue(issue.id, { kind: "accept" })}>
+                  Accept
+                </Button>
+              </span>
+            </div>
+          )}
+          {issue.triage === "declined" && (
+            <div className="-mt-2 flex flex-wrap items-center gap-2 rounded-md border border-sg-line bg-sg-bg/40 px-3 py-2 text-xs text-sg-muted">
+              Declined in triage{issue.triageNote ? `: ${issue.triageNote}` : ""}.
+              <Button size="xs" variant="ghost" className="ml-auto" onClick={() => triageIssue(issue.id, { kind: "send" })}>
+                Reopen in triage
+              </Button>
+            </div>
+          )}
 
           {/* status bar */}
           <div className="flex flex-wrap items-center gap-1.5">
@@ -202,8 +289,9 @@ function IssueDetail({ issue }: { issue: Issue }) {
               <button
                 key={s}
                 type="button"
-                onClick={() => updateIssue(issue.id, { status: s })}
-                title={`Press ${i + 1}`}
+                onClick={() => setStatus(s)}
+                aria-pressed={issue.status === s}
+                title={`Press ${i + 1}${s === "backlog" && activeSprintOfIssue ? " — takes it out of the running sprint" : ""}`}
                 className={cn(
                   "flex h-7 items-center rounded border px-2.5 text-xs font-semibold transition-colors",
                   issue.status === s ? cn("ring-1 ring-inset", softChip[issueStatusMeta[s].color], "border-transparent") : "border-sg-line text-sg-muted hover:text-sg-white",
@@ -289,8 +377,9 @@ function IssueDetail({ issue }: { issue: Issue }) {
                         unlink(l.id);
                         notify("Link removed");
                       }}
-                      className="rounded p-1 text-sg-dim opacity-0 hover:text-soft-red group-hover:opacity-100"
-                      aria-label="Unlink"
+                      className="rounded p-1 text-sg-dim opacity-0 hover:text-soft-red focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/60 group-focus-within:opacity-100 group-hover:opacity-100"
+                      aria-label={`Unlink ${l.label}`}
+                      title="Unlink"
                     >
                       <Unlink className="size-3.5" />
                     </button>
@@ -300,6 +389,8 @@ function IssueDetail({ issue }: { issue: Issue }) {
               {!links.length && <p className="rounded-md border border-dashed border-sg-line-2 px-3 py-3 text-center text-xs text-sg-dim">Not linked to any deal, ticket, company or contact.</p>}
             </div>
           </section>
+
+          <IssueLinksSection issue={issue} />
 
           {/* initiative (policy register) via the epic */}
           <section>
@@ -470,6 +561,7 @@ function IssueDetail({ issue }: { issue: Issue }) {
               value={issue.epicId ?? ""}
               options={[{ value: "", label: "No epic" }, ...epics.filter((e) => e.projectId === issue.projectId).map((e) => ({ value: e.id, label: `${e.key} · ${e.name}` }))]}
               onChange={(v) => updateIssue(issue.id, { epicId: v || null })}
+              disabled={issue.type === "subtask"}
               display={
                 epic ? (
                   <span className="flex items-center gap-1.5">
@@ -487,27 +579,42 @@ function IssueDetail({ issue }: { issue: Issue }) {
               value={issue.sprintId ?? ""}
               options={[{ value: "", label: "Backlog" }, ...sprints.filter((s) => s.projectId === issue.projectId && s.state !== "closed").map((s) => ({ value: s.id, label: `${s.name}${s.state === "active" ? " (active)" : ""}` }))]}
               onChange={(v) => {
-                const toActive = sprints.find((s) => s.id === v)?.state === "active";
-                // "Backlog"-status work pulled into the running sprint goes to To Do so it shows on the board
-                updateIssue(issue.id, toActive && issue.status === "backlog" ? { sprintId: v, status: "todo" } : { sprintId: v || null });
+                // the slice moves "Backlog"-status work pulled into the running sprint to To Do, and carries sub-tasks along
+                updateIssue(issue.id, { sprintId: v || null });
+                if (subtasks.length) notify(`${subtasks.length} sub-task${subtasks.length === 1 ? "" : "s"} moved with ${issue.key}`);
               }}
+              disabled={issue.type === "subtask"}
               display={sprints.find((s) => s.id === issue.sprintId)?.name ?? <span className="text-sg-dim">Backlog</span>}
             />
           </Detail>
           <Detail label="Due date">
             <input
               type="date"
+              lang="en-GB"
+              aria-label="Due date"
               value={toDateInput(issue.dueDate)}
               onChange={(e) => updateIssue(issue.id, { dueDate: e.target.value ? fromDateInput(e.target.value) : null })}
               className="h-7 w-full rounded border border-transparent bg-transparent px-1 text-sm text-sg-text hover:border-sg-line focus:border-sg-white/50 focus:outline-none"
             />
+            {issue.dueDate && (
+              <div className="mt-0.5 flex items-center gap-1.5 px-1 text-2xs text-sg-dim">
+                {formatDate(issue.dueDate, "medium")} <DueChip issue={issue} />
+              </div>
+            )}
           </Detail>
           <Detail label="Labels">
             <div className="flex flex-wrap gap-1">
               {issue.labels.map((l) => (
-                <button key={l} type="button" onClick={() => updateIssue(issue.id, { labels: issue.labels.filter((x) => x !== l) })} className="group flex items-center gap-0.5 rounded-sm bg-sg-card-3 px-1.5 py-0.5 text-2xs text-sg-text hover:bg-soft-red/20" title="Remove label">
+                <button
+                  key={l}
+                  type="button"
+                  onClick={() => updateIssue(issue.id, { labels: issue.labels.filter((x) => x !== l) })}
+                  className="group flex items-center gap-0.5 rounded-sm bg-sg-card-3 px-1.5 py-0.5 text-2xs text-sg-text hover:bg-soft-red/20 focus-visible:bg-soft-red/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sg-white/60"
+                  title="Remove label"
+                  aria-label={`Remove label ${l}`}
+                >
                   {l}
-                  <X className="size-2.5 opacity-0 group-hover:opacity-100" />
+                  <X className="size-2.5 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
                 </button>
               ))}
               <input
@@ -522,6 +629,7 @@ function IssueDetail({ issue }: { issue: Issue }) {
                   }
                 }}
                 placeholder="+ label"
+                aria-label="Add label"
                 className="h-5 w-16 bg-transparent text-2xs text-sg-text placeholder:text-sg-dim focus:outline-none"
               />
             </div>
@@ -553,11 +661,11 @@ function Detail({ label, children }: { label: string; children: React.ReactNode 
   );
 }
 
-function PickMenu({ value, options, onChange, display }: { value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; display: React.ReactNode }) {
+function PickMenu({ value, options, onChange, display, disabled }: { value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; display: React.ReactNode; disabled?: boolean }) {
   return (
     <Menu>
-      <MenuTrigger asChild>
-        <button type="button" className="flex h-7 w-full items-center gap-1 rounded border border-transparent px-1 text-left text-sm text-sg-text hover:border-sg-line">
+      <MenuTrigger asChild disabled={disabled}>
+        <button type="button" title={disabled ? "Sub-tasks follow their parent" : undefined} className="flex h-7 w-full items-center gap-1 rounded border border-transparent px-1 text-left text-sm text-sg-text hover:border-sg-line disabled:cursor-not-allowed disabled:opacity-60">
           <span className="min-w-0 flex-1 truncate">{display}</span>
           <ChevronDown className="size-3 shrink-0 text-sg-dim" />
         </button>
@@ -593,9 +701,8 @@ function RichText({ text }: { text: string }) {
 
 
 /** "Convert to sub-task of…" (or change parent / back to a task when already a sub-task). */
-function ConvertToSubtask({ issue, allIssues, subtaskCount, onConvert }: { issue: Issue; allIssues: Issue[]; subtaskCount: number; onConvert: (patch: Partial<Issue>) => void }) {
+function ConvertToSubtask({ issue, allIssues, subtaskCount, onConvert, open, onOpenChange: setOpen }: { issue: Issue; allIssues: Issue[]; subtaskCount: number; onConvert: (patch: Partial<Issue>) => void; open: boolean; onOpenChange: (o: boolean) => void }) {
   const notify = useUi((s) => s.notify);
-  const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const isSub = issue.type === "subtask";
   const candidates = useMemo(() => {
@@ -688,6 +795,10 @@ const FIELD_LABEL: Record<IssueHistoryEntry["field"], string> = {
   epicId: "Epic",
   parentId: "Parent",
   type: "Type",
+  summary: "Summary",
+  description: "Description",
+  labels: "Labels",
+  dueDate: "Due date",
   created: "Created",
 };
 
@@ -718,6 +829,8 @@ function HistoryList({ entries, issue }: { entries: IssueHistoryEntry[]; issue: 
       }
       case "parentId":
         return issues.find((x) => x.id === v)?.key ?? "Deleted issue";
+      case "dueDate":
+        return formatDate(String(v), "medium");
       default:
         return String(v);
     }
@@ -764,7 +877,7 @@ function HistoryList({ entries, issue }: { entries: IssueHistoryEntry[]; issue: 
           </span>
         </div>
       </li>
-      {!entries.length && <li className="text-2xs text-sg-dim">Changes to status, assignee, priority, sprint, points, epic, parent and type are recorded here from now on (stored in this browser).</li>}
+      {!entries.length && <li className="text-2xs text-sg-dim">Changes to status, assignee, priority, sprint, points, epic, parent, type, summary, description, labels and due date are recorded here and shared with everyone on the workspace.</li>}
     </ol>
   );
 }

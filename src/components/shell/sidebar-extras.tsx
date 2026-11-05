@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Fragment, useMemo } from "react";
-import { Cloud, CloudOff, RefreshCw, Settings } from "lucide-react";
+import { Cloud, CloudOff, Lock, RefreshCw, Settings, UserX } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
+import { describeActor } from "@/lib/sync/collections";
 import { syncNow } from "@/lib/sync/engine";
-import { actAs, canActAs } from "@/lib/sync/identity";
+import { actAs, canActAs, isUnmatched } from "@/lib/sync/identity";
 import { governanceByUser } from "@/lib/sync/roles";
 import type { SyncInfo } from "@/lib/slices/platform";
 import { cn, formatDate, relativeTime } from "@/lib/utils";
@@ -20,6 +21,7 @@ export function SidebarExtras({ collapsed }: { collapsed: boolean }) {
     <div className="space-y-px">
       <SyncIndicator collapsed={collapsed} />
       {canActAs(identity) && <ActingAs collapsed={collapsed} />}
+      {isUnmatched(identity) && <Unmatched collapsed={collapsed} email={identity.email} />}
       <SettingsLink collapsed={collapsed} />
     </div>
   );
@@ -37,16 +39,22 @@ export function syncLabel(sync: SyncInfo): string {
       return "Offline · local only";
     case "conflict":
       return "Sync conflict";
+    case "locked":
+      return "Locked · local only";
     default:
       return "Not synced yet";
   }
 }
 
-export function syncTooltip(sync: SyncInfo): string {
+export function syncTooltip(sync: SyncInfo, users: { email: string; name: string }[] = []): string {
   const lines = [syncLabel(sync)];
   lines.push(sync.lastSyncedAt ? `Last sync ${formatDate(sync.lastSyncedAt, "datetime")} (${relativeTime(sync.lastSyncedAt)})` : "Never synced with the server");
+  if (sync.updatedBy) lines.push(`Last change by ${describeActor(sync.updatedBy, users)}${sync.updatedAt ? ` · ${formatDate(sync.updatedAt, "datetime")} (${relativeTime(sync.updatedAt)})` : ""}`);
   if (sync.dirty) lines.push("Local changes not on the server yet");
+  if (sync.scope === "own") lines.push("Your copy holds only your own pay data (§13.4)");
+  if (sync.lastMerge) lines.push(`Last merge: ${sync.lastMerge.merged} change${sync.lastMerge.merged === 1 ? "" : "s"} re-applied on v${sync.lastMerge.version}${sync.lastMerge.conflicts ? `, ${sync.lastMerge.conflicts} kept theirs` : ""}`);
   if (sync.lastError) lines.push(sync.lastError);
+  if (sync.nextRetryAt && (sync.status === "offline" || sync.status === "locked")) lines.push(`Next try ${relativeTime(sync.nextRetryAt)}`);
   lines.push("Click to sync now");
   return lines.join("\n");
 }
@@ -55,17 +63,19 @@ function SyncIcon({ sync, className }: { sync: SyncInfo; className?: string }) {
   if (sync.status === "syncing") return <RefreshCw className={cn("animate-spin text-sg-muted", className)} />;
   if (sync.status === "offline") return <CloudOff className={cn("text-soft-yellow", className)} />;
   if (sync.status === "conflict") return <CloudOff className={cn("text-soft-orange", className)} />;
+  if (sync.status === "locked") return <Lock className={cn("text-soft-yellow", className)} />;
   if (sync.status === "synced") return <Cloud className={cn(sync.dirty ? "text-sg-muted" : "text-soft-green", className)} />;
   return <Cloud className={cn("text-sg-dim", className)} />;
 }
 
 function SyncIndicator({ collapsed }: { collapsed: boolean }) {
   const sync = useCrm((s) => s.sync);
+  const users = useCrm((s) => s.users);
   const notify = useUi((s) => s.notify);
   return (
     <button
       type="button"
-      title={syncTooltip(sync)}
+      title={syncTooltip(sync, users)}
       aria-label={`${syncLabel(sync)} — sync now`}
       onClick={() => {
         void syncNow().then((err) => {
@@ -148,6 +158,21 @@ function ActingAs({ collapsed }: { collapsed: boolean }) {
         ))}
       </MenuContent>
     </Menu>
+  );
+}
+
+/* ───────────── signed in, but not a workspace user ───────────── */
+
+function Unmatched({ collapsed, email }: { collapsed: boolean; email: string | null }) {
+  return (
+    <Link
+      href="/settings#identity"
+      title={`Signed in as ${email ?? "—"} — no workspace user has this email, so you have no roles. Ask HR to add it.`}
+      className={cn("flex h-7 w-full items-center gap-2 rounded text-xs text-soft-yellow hover:bg-sg-card", collapsed ? "justify-center px-0" : "px-2")}
+    >
+      <UserX className="size-3.5 shrink-0" />
+      {!collapsed && <span className="min-w-0 truncate">No workspace user</span>}
+    </Link>
   );
 }
 

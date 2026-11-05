@@ -3,7 +3,7 @@
 /* /me — "My compensation" for the current user (useCrm currentUserId; the demo "acting as" switcher changes it). */
 import { useMemo } from "react";
 import Link from "next/link";
-import { BookOpen, CircleAlert, CircleCheck, CircleX, UserX } from "lucide-react";
+import { BarChart3, BookOpen, CircleAlert, CircleCheck, CircleX, Scale, UserX } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { concurrentNonLeadRoles, isLiveMember, leadershipLoad, paidInYear, participationEligibility, probationBalance } from "@/lib/initiatives/engine";
 import { EMPLOYMENT_META, POLICY, PROJECT_TYPE_META, ROLE_META } from "@/lib/initiatives/policy";
@@ -13,12 +13,15 @@ import { cn, formatDate } from "@/lib/utils";
 import { PageHeader } from "@/components/shell/page-header";
 import { Select } from "@/components/ui/input";
 import { Avatar, Chip, EmptyState } from "@/components/ui/misc";
-import { Cite, Metric, Money } from "@/components/initiatives/shared";
+import { Cite, Metric } from "@/components/initiatives/shared";
 import { AgreementCard } from "./agreement";
+import { CompanyResultsCard } from "./company";
+import { MyDisputes } from "./disputes";
+import { annexBState } from "./helpers";
 import { MyAmendments } from "./amendments";
 import { CycleProjection, ENDED, MyProjects } from "./projects";
 import { DeferredList, MyClawbacks, ProbationCard, StatementHistory } from "./statements";
-import { Card } from "./ui";
+import { Card, RpFull } from "./ui";
 
 export function MyCompensation() {
   const userId = useCrm((s) => s.currentUserId);
@@ -31,21 +34,49 @@ export function MyCompensation() {
   const outcomes = useCrm((s) => s.probationOutcomes);
   const members = useCrm((s) => s.initiativeMembers);
   const initiatives = useCrm((s) => s.initiatives);
+  const disputes = useCrm((s) => s.disputes);
 
   const me = users.find((u) => u.id === userId);
   const profile = profiles.find((p) => p.userId === userId);
   const switchable = canActAs(identity);
 
   const stats = useMemo(() => {
-    const year = String(new Date().getFullYear());
+    // WIB calendar year
+    const year = new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 4);
+    const liveRows = members.filter((m) => m.userId === userId && isLiveMember(m) && m.consent !== "declined" && !ENDED.has(initiatives.find((i) => i.id === m.initiativeId)?.status ?? "rejected"));
+    const liveIds = [...new Set(liveRows.map((m) => m.initiativeId))];
+    const leads = new Set(liveRows.filter((m) => m.roles.includes("project_lead") || m.roles.includes("technical_lead")).map((m) => m.initiativeId));
+    // amounts held for a reason other than probation (§10, §15.1) — paid once the reason clears
+    const heldOther = runs.filter((r) => r.status === "certified" || r.status === "released").reduce((s, r) => s + r.lines.filter((l) => l.userId === userId).reduce((a, l) => a + l.held, 0), 0);
     return {
       year,
       paid: paidInYear(userId, runs, year, deferred),
       deferred: deferred.filter((d) => d.userId === userId && d.status === "pending").reduce((s, d) => s + d.amount, 0),
       held: Math.max(0, probationBalance(userId, runs) - outcomes.filter((o) => o.userId === userId).reduce((s, o) => s + o.amount, 0)),
-      live: new Set(members.filter((m) => m.userId === userId && isLiveMember(m) && m.consent !== "declined" && !ENDED.has(initiatives.find((i) => i.id === m.initiativeId)?.status ?? "rejected")).map((m) => m.initiativeId)).size,
+      heldOther,
+      live: liveIds.length,
+      liveCaption: liveIds.length
+        ? liveIds
+            .map((id) => initiatives.find((i) => i.id === id))
+            .map((i) => (i ? `${i.code || i.trackingNo || i.title}${leads.has(i.id) ? " (lead)" : ""}` : ""))
+            .filter(Boolean)
+            .join(" · ")
+        : "no live role",
+      leadCount: leads.size,
+      openDisputes: disputes.filter((d) => d.raisedById === userId && d.stage !== "closed").length,
     };
-  }, [userId, runs, deferred, outcomes, members, initiatives]);
+  }, [userId, runs, deferred, outcomes, members, initiatives, disputes]);
+
+  // why money is held, and what clears it (§10, §15.1)
+  const heldReasons = useMemo(() => {
+    const out: { text: string; href: string }[] = [];
+    const a = annexBState(profile);
+    if (a === "missing" || a === "stale") out.push({ text: a === "missing" ? "Sign Annex B" : "Re-sign Annex B for v4.0", href: "#annex-b" });
+    if (profile?.suspended) out.push({ text: "Suspension — paid if cleared (§10)", href: "/policy#s-10" });
+    if (profile && profile.unpaidLeaveDays > 30) out.push({ text: `Unpaid leave ${profile.unpaidLeaveDays} days — paid on return (§3.2)`, href: "/policy#s-3-2" });
+    if (profile?.separation?.kind === "retirement" && !profile.separation.prcConfirmed) out.push({ text: "Retirement awaiting PRC confirmation (§10)", href: "/policy#s-10" });
+    return out;
+  }, [profile]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -59,6 +90,12 @@ export function MyCompensation() {
           ) : null
         }
       >
+        <Link href="/me/company" className="inline-flex items-center gap-1 text-2xs text-sg-dim hover:text-sg-white">
+          <BarChart3 className="size-3.5" /> Company results
+        </Link>
+        <Link href="/disputes" className="inline-flex items-center gap-1 text-2xs text-sg-dim hover:text-sg-white">
+          <Scale className="size-3.5" /> Disputes
+        </Link>
         <Link href="/policy" className="inline-flex items-center gap-1 text-2xs text-sg-dim hover:text-sg-white">
           <BookOpen className="size-3.5" /> Policy v4.0
         </Link>
@@ -92,11 +129,32 @@ export function MyCompensation() {
           </EmptyState>
         ) : (
           <div className="mx-auto max-w-[1240px] space-y-4">
-            <div className="grid grid-cols-2 gap-4 rounded-xl border border-sg-line bg-sg-card px-4 py-3 md:grid-cols-4">
-              <Metric label={`Paid in ${stats.year}`} value={<Money value={stats.paid} />} tone="green" hint="released runs + vested deferrals" />
-              <Metric label="Deferred, not yet due" value={<Money value={stats.deferred} />} hint="§9.3" />
-              <Metric label="Held during probation" value={<Money value={stats.held} />} tone={stats.held ? "yellow" : undefined} hint="§11.3" />
-              <Metric label="Live project roles" value={stats.live} hint={me.title} />
+            <div className="grid grid-cols-2 gap-4 rounded-xl border border-sg-line bg-sg-card px-4 py-3 md:grid-cols-3 xl:grid-cols-6">
+              <Metric label={`Paid in ${stats.year}`} value={<RpFull value={stats.paid} />} tone="green" hint="released runs + vested deferrals" />
+              <Metric label="Deferred, not yet due" value={<RpFull value={stats.deferred} />} hint="§9.3" />
+              <Metric label="Held during probation" value={<RpFull value={stats.held} />} tone={stats.held ? "yellow" : undefined} hint="§11.3" />
+              <Metric
+                label="Held — action needed"
+                value={<RpFull value={stats.heldOther} />}
+                tone={stats.heldOther || heldReasons.length ? "orange" : undefined}
+                hint={
+                  heldReasons.length ? (
+                    <span className="flex flex-col">
+                      {heldReasons.map((r) => (
+                        <Link key={r.text} href={r.href} className="text-soft-orange hover:underline">
+                          {r.text} →
+                        </Link>
+                      ))}
+                    </span>
+                  ) : stats.heldOther ? (
+                    "paid in the next cycle once cleared (§10)"
+                  ) : (
+                    "nothing held"
+                  )
+                }
+              />
+              <Metric label="Live project roles" value={stats.live} hint={<span title={stats.liveCaption} className="line-clamp-2">{stats.live ? `${stats.leadCount ? `${stats.leadCount} as lead · ` : ""}${stats.liveCaption}` : "no live role"}</span>} />
+              <Metric label="Open disputes" value={stats.openDisputes} tone={stats.openDisputes ? "yellow" : undefined} hint={<Link href="#disputes" className="hover:underline">§14 · raise or follow →</Link>} />
             </div>
 
             <div className="grid gap-4 lg:grid-cols-3">
@@ -116,6 +174,11 @@ export function MyCompensation() {
             {profile?.employmentType === "probationary" && <MyClawbacks userId={userId} />}
 
             <StatementHistory userId={userId} />
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <MyDisputes userId={userId} />
+              <CompanyResultsCard />
+            </div>
           </div>
         )}
       </div>
