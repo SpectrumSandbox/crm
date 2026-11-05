@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { notFound, useRouter } from "next/navigation";
-import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Globe, Mail, MapPin, Network, Phone, Sparkles, SquareCheck, StickyNote, Timer, Trash2, TriangleAlert } from "lucide-react";
+import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Globe, Mail, MapPin, MessageSquare, Network, Phone, Sparkles, SquareCheck, StickyNote, Timer, Trash2, TriangleAlert } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { slaDueFor, ticketSla, useRecordSequence, useStageMap, useUserMap } from "@/lib/selectors";
 import { previewDelete } from "@/lib/slices/crm-extras";
@@ -15,6 +15,8 @@ import { applyDealChange, requestDealStage } from "@/components/crm/deal-close";
 import { DealOutcome, OriginationCard } from "@/components/crm/deal-panels";
 import { FORECAST_META, FORECAST_ORDER, forecastOf, idleDays, isRotting, rottingThreshold, dealActivityIndex } from "@/components/crm/deal-signals";
 import { formatNpwp, npwpValid } from "@/components/crm/quote-math";
+import { SLA_POLICY } from "@/lib/slices/crm-service";
+import { formatPhone, whatsappLink } from "@/lib/smart-lists";
 import { PageHeader } from "@/components/shell/page-header";
 import { Avatar, Chip, RecordAvatar, ScoreRing } from "@/components/ui/misc";
 import { Button } from "@/components/ui/button";
@@ -332,9 +334,12 @@ function ContactLeft({ id }: { id: string }) {
         <a href={`mailto:${c.email}`} className="flex items-center gap-2 hover:text-sg-white">
           <Mail className="size-3.5" /> {c.email}
         </a>
-        <a href={`tel:${c.phone.replace(/[^\d+]/g, "")}`} className="flex items-center gap-2 hover:text-sg-white">
-          <Phone className="size-3.5" /> {c.phone}
-        </a>
+        {c.phone && (
+          <a href={`tel:${c.phone.replace(/[^\d+]/g, "")}`} className="flex items-center gap-2 hover:text-sg-white">
+            <Phone className="size-3.5" /> {formatPhone(c.phone)}
+          </a>
+        )}
+        <WhatsAppLink contactId={id} phone={c.phone} firstName={c.firstName} />
       </div>
       <QuickActions type="contact" id={id} email={c.email} phone={c.phone} />
 
@@ -363,7 +368,7 @@ function ContactLeft({ id }: { id: string }) {
       <EditableProperty label="First name" display={c.firstName} editor={{ kind: "text", value: c.firstName }} onSave={(v) => update(id, { firstName: v })} />
       <EditableProperty label="Last name" display={c.lastName} editor={{ kind: "text", value: c.lastName }} onSave={(v) => update(id, { lastName: v })} />
       <EditableProperty label="Email" display={c.email} editor={{ kind: "email", value: c.email }} onSave={(v) => update(id, { email: v })} />
-      <EditableProperty label="Phone" display={c.phone} editor={{ kind: "text", value: c.phone }} onSave={(v) => update(id, { phone: v })} />
+      <EditableProperty label="Phone" display={c.phone ? formatPhone(c.phone) : undefined} editor={{ kind: "text", value: c.phone }} onSave={(v) => update(id, { phone: v })} />
       <EditableProperty label="Job title" display={c.jobTitle} editor={{ kind: "text", value: c.jobTitle }} onSave={(v) => update(id, { jobTitle: v })} />
       <EditableProperty
         label="Company"
@@ -390,6 +395,29 @@ function ContactLeft({ id }: { id: string }) {
       <EditableProperty label="Last contacted" display={c.lastContactedAt ? `${formatDate(c.lastContactedAt)} (${relativeTime(c.lastContactedAt)})` : "Never"} readOnly />
       <EditableProperty label="Create date" display={formatDate(c.createdAt)} readOnly />
     </div>
+  );
+}
+
+/** wa.me click-to-chat; opening it logs the WhatsApp touch on the contact (W4 logWhatsApp) */
+function WhatsAppLink({ contactId, phone, firstName }: { contactId: string; phone: string; firstName: string }) {
+  const logWhatsApp = useCrm((s) => s.logWhatsApp);
+  const notify = useUi((s) => s.notify);
+  const deleteActivity = useCrm((s) => s.deleteActivity);
+  const href = whatsappLink(phone, `Halo ${firstName}, `);
+  if (!href) return phone ? <span className="flex items-center gap-2 text-sg-dim" title="Not an Indonesian mobile number — WhatsApp unavailable"><MessageSquare className="size-3.5" /> WhatsApp unavailable</span> : null;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={() => {
+        const aid = logWhatsApp(contactId);
+        if (aid) notify("WhatsApp chat logged on the timeline", { label: "Undo", run: () => deleteActivity(aid) });
+      }}
+      className="flex items-center gap-2 hover:text-soft-green"
+    >
+      <MessageSquare className="size-3.5" /> WhatsApp
+    </a>
   );
 }
 
@@ -496,7 +524,7 @@ function CompanyLeft({ id }: { id: string }) {
       />
       <EditableProperty label="Employees" display={formatNumber(c.employees)} editor={{ kind: "number", value: c.employees, min: 0 }} onSave={(v) => update(id, { employees: Number(v) })} />
       <EditableProperty label="Annual revenue" display={formatIDR(c.annualRevenue, "full")} editor={{ kind: "money", value: c.annualRevenue, allowZero: true }} onSave={(v) => update(id, { annualRevenue: Number(v) })} />
-      <EditableProperty label="Phone" display={c.phone} editor={{ kind: "text", value: c.phone }} onSave={(v) => update(id, { phone: v })} />
+      <EditableProperty label="Phone" display={c.phone ? formatPhone(c.phone) : undefined} editor={{ kind: "text", value: c.phone }} onSave={(v) => update(id, { phone: v })} />
       <EditableProperty label="City" display={c.city} editor={{ kind: "text", value: c.city }} onSave={(v) => update(id, { city: v })} />
       <EditableProperty label="Description" display={c.description} editor={{ kind: "textarea", value: c.description }} onSave={(v) => update(id, { description: v })} />
       <EditableProperty label="Company owner" display={<OwnerDisplay ownerId={c.ownerId} />} editor={{ kind: "select", value: c.ownerId, options: owners }} onSave={(v) => update(id, { ownerId: v })} />
@@ -752,7 +780,7 @@ function TicketLeft({ id }: { id: string }) {
         onSave={(v) => changePriority(v as Ticket["priority"])}
       />
       <EditableProperty label="Category" display={t.category} editor={{ kind: "select", value: t.category, options: categories.map((c) => ({ value: c, label: c })) }} onSave={(v) => update(id, { category: v as Ticket["category"] })} />
-      <EditableProperty label="SLA due (WIB)" display={`${formatDate(t.slaDueAt, "datetime")} WIB`} editor={{ kind: "datetime", value: t.slaDueAt }} onSave={(v) => update(id, { slaDueAt: v })} />
+      <EditableProperty label="SLA due (WIB)" display={`${formatDate(t.slaDueAt, "datetime")} WIB`} editor={{ kind: "datetime", value: t.slaDueAt }} onSave={(v) => update(id, { slaDueAt: v, slaBasis: t.slaBasis ?? SLA_POLICY[t.priority].basis })} hint={`Target for ${ticketPriorityMeta[t.priority].label.toLowerCase()}: ${SLA_POLICY[t.priority].label}`} />
       <EditableProperty label="Ticket owner" display={<OwnerDisplay ownerId={t.ownerId} />} editor={{ kind: "select", value: t.ownerId, options: owners }} onSave={(v) => update(id, { ownerId: v })} />
       <EditableProperty label="Description" display={t.description} editor={{ kind: "textarea", value: t.description }} onSave={(v) => update(id, { description: v })} />
       <EditableProperty label="Create date" display={`${formatDate(t.createdAt, "datetime")} WIB`} readOnly />

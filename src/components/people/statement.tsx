@@ -13,6 +13,7 @@ import { Chip } from "@/components/ui/misc";
 import { Cite, Money, RoleChips, StatusChip, TypeChip } from "@/components/initiatives/shared";
 import { Block } from "./fields";
 import { exactIdr } from "@/components/compensation/common";
+import { RaiseDisputeButton } from "@/components/me/disputes";
 
 const LINE_STATUS: Record<LineStatus, { label: string; color: SpectrumColor }> = {
   payable: { label: "Paid", color: "green" },
@@ -181,6 +182,7 @@ function AnnexE({ run, line }: { run: BonusRun; line: BonusLine }) {
 
   const user = users.find((u) => u.id === line.userId);
   const profile = profiles.find((p) => p.userId === line.userId);
+  const currentUserId = useCrm((s) => s.currentUserId);
   const ini = initiatives.find((i) => i.id === line.initiativeId);
   const data = useMemo(() => {
     if (!ini) return null;
@@ -339,6 +341,13 @@ function AnnexE({ run, line }: { run: BonusRun; line: BonusLine }) {
       <p className={cn("border-t border-sg-line px-4 py-2 text-2xs", disputeOpen ? "text-soft-yellow" : "text-sg-dim")}>
         Queries and corrections must be raised with Finance within {POLICY.statementDisputeDays} days of the statement date — by {formatDate(disputeBy, "medium")}
         {disputeOpen ? "" : " (window closed)"} (§14).
+        {disputeOpen && currentUserId === line.userId ? (
+          <RaiseDisputeButton
+            className="ml-2"
+            label="Dispute this statement"
+            prefill={{ category: "calculation", subject: `Statement ${run.month} · ${ini.code ?? ini.title}`, initiativeId: ini.id, runMonth: run.month, lineRef: `line:${run.id}:${ini.id}`, amount: line.payable, source: `Annex E ${run.month} — gross paid ${formatIDR(line.payable, "full")}` }}
+          />
+        ) : null}
       </p>
     </div>
   );

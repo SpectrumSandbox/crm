@@ -1,16 +1,15 @@
 /* Sequence scheduling helpers (W10): due dates in WIB business days, progress and queue rows. Pure. */
 import type { Sequence, SequenceEnrollment, SequenceStep } from "../../lib/types";
-import { addBusinessDaysWib } from "../../lib/slices/crm-extras";
+import { addBusinessDays, wibAt, wibDateKey } from "../../lib/calendar";
 import type { SequenceEvent } from "./types";
 
 const WIB = 7 * 3_600_000;
 
-/** Add WIB business days (Mon–Fri) and land at 09:00 WIB when days > 0; 0 days keeps the instant. */
+/** Add WIB business days (Mon–Fri, Indonesian public holidays and cuti bersama skipped — src/lib/calendar.ts) and land at
+ * 09:00 WIB when days > 0; 0 days keeps the instant. */
 export function addBusinessDaysAt9(fromMs: number, days: number) {
   if (days <= 0) return fromMs;
-  const t = addBusinessDaysWib(fromMs, days);
-  const d = new Date(t + WIB);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 9, 0, 0) - WIB;
+  return Date.parse(wibAt(wibDateKey(addBusinessDays(fromMs, days)), 9));
 }
 
 export function sortedSteps(seq: Pick<Sequence, "steps">) {

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useMemo } from "react";
-import { BookOpen, Briefcase, Building2, ChevronsLeft, ChevronsRight, CircleUser, ClipboardList, FileText, Gavel, Handshake, House, Kanban, Keyboard, Landmark, ListChecks, ListTodo, Search, Ticket, UserCheck, Users, Wallet, Workflow, type LucideIcon } from "lucide-react";
+import { BookOpen, Briefcase, Building2, ChevronsLeft, ChevronsRight, CircleUser, BarChart3, ClipboardList, FileText, Handshake, House, Kanban, Keyboard, ListChecks, ListTodo, Scale, Search, Ticket, UserCheck, Users, Wallet, Workflow, type LucideIcon } from "lucide-react";
 import { SidebarExtras } from "./sidebar-extras";
 import { NotificationBell } from "./notifications";
 import { useCrm, useUi } from "@/lib/store";
@@ -86,8 +86,8 @@ export function Sidebar() {
     ...(access.seeAllPay ? [{ href: "/compensation", label: "Compensation", icon: Wallet, shortcut: "G M" }] : []),
     { href: "/people", label: "People", icon: UserCheck, shortcut: "G P" },
     { href: "/me", label: "My compensation", icon: CircleUser, shortcut: "G Y" },
-    { href: "/me/company", label: "Company results", icon: Landmark },
-    { href: "/disputes", label: "Disputes", icon: Gavel, shortcut: "G X" },
+    { href: "/me/company", label: "Company results", icon: BarChart3 },
+    { href: "/disputes", label: "Disputes", icon: Scale, shortcut: "G X" },
     { href: "/policy", label: "Policy", icon: BookOpen, shortcut: "G K" },
   ];
   const agile: NavItem[] = [

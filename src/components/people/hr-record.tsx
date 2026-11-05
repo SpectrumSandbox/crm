@@ -22,6 +22,8 @@ export function HrRecordForm({ profile, readOnly }: { profile: EmployeeProfile; 
   const users = useCrm((s) => s.users);
   const [leaving, setLeaving] = useState<EmploymentType | null>(null);
   const updateProfile = useCrm((s) => s.updateProfile);
+  const signatures = useCrm((s) => s.agreementSignatures);
+  const signature = useMemo(() => signatures.filter((x) => x.userId === profile.userId).sort((a, b) => b.signedAt.localeCompare(a.signedAt))[0] ?? null, [signatures, profile.userId]);
   const notify = useUi((s) => s.notify);
   const managers = useMemo(() => users.filter((u) => u.id !== profile.userId), [users, profile.userId]);
 
@@ -168,6 +170,14 @@ export function HrRecordForm({ profile, readOnly }: { profile: EmployeeProfile; 
               <p className="mt-1.5 text-2xs text-sg-dim">Addendum to the employment agreement, signed by the employee, line manager and HR.</p>
             )}
             {probationary ? <p className="mt-1 text-2xs text-sg-dim">Probationers also sign the Annex C acknowledgment before their first project (§11.2).</p> : null}
+            {signature ? (
+              <p className="mt-1.5 rounded border border-sg-line bg-sg-card px-2 py-1 text-2xs text-sg-muted">
+                <span className="font-semibold text-sg-text">E-signature on file:</span> &ldquo;{signature.typedName}&rdquo; · v{signature.policyVersion}
+                {signature.annexC ? " + Annex C" : ""} · {signature.language === "id" ? "Bahasa Indonesia" : "English"} · {formatDate(signature.signedAt, "datetime")} · {signature.identitySource === "access" ? `verified ${signature.email ?? ""}` : `demo (${signature.email ?? "acting as"})`} · fingerprint <span className="sg-num">{signature.fingerprint}</span>
+              </p>
+            ) : profile.acknowledgmentSignedAt ? (
+              <p className="mt-1.5 text-2xs text-sg-dim">No e-signature record — the date was entered by HR from a paper copy; keep the signed document reference (§13.3).</p>
+            ) : null}
           </div>
         </div>
       </div>

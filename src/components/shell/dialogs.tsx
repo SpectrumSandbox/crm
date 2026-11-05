@@ -8,7 +8,8 @@ import { useCrm, useUi, type DialogState } from "@/lib/store";
 import { CAPABILITIES, ISSUE_PRIORITIES, ISSUE_STATUSES, ISSUE_TYPES, LIFECYCLE_STAGES, LINK_TYPES, type Capability, type CompanyTier, type CrmObjectType, type IssuePriority, type IssueStatus, type IssueType, type LifecycleStage, type LinkType, type Ticket as TicketRecord, type TicketPriority } from "@/lib/types";
 import { issueStatusMeta, issueTypeMeta, lifecycleMeta, linkTypeMeta, priorityMeta, ticketPriorityMeta } from "@/lib/meta";
 import { cn, formatDate, formatIDR, fromDateInput, fromDateTimeInput, isDateInput, parseIDR, toDateInput, toDateTimeInput } from "@/lib/utils";
-import { defaultSlaDue, SLA_TARGETS } from "@/lib/slices/crm-extras";
+import { SLA_POLICY } from "@/lib/slices/crm-service";
+import { slaDueFor } from "@/lib/selectors";
 import type { Contact, Company, Deal, EmailTemplate, User as UserRecord } from "@/lib/types";
 import { Modal, Tabs } from "@/components/ui/overlays";
 import { Button } from "@/components/ui/button";
@@ -780,7 +781,7 @@ export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId,
   const contacts = useCrm((s) => s.contacts);
   const users = useCrm((s) => s.users);
   const currentUserId = useCrm((s) => s.currentUserId);
-  const createTicket = useCrm((s) => s.createTicket);
+  const openServiceTicket = useCrm((s) => s.openServiceTicket);
   const notify = useUi((s) => s.notify);
 
   const supportLead = users.find((u) => u.team === "Service")?.id ?? currentUserId;
@@ -791,21 +792,22 @@ export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId,
   const [priority, setPriority] = useState<TicketPriority>("medium");
   const [category, setCategory] = useState<TicketRecord["category"]>("Field Support");
   const [ownerId, setOwnerId] = useState(supportLead);
-  const [slaLocal, setSlaLocal] = useState(() => toWibLocal(defaultSlaDue("medium")));
+  const [slaLocal, setSlaLocal] = useState(() => toWibLocal(slaDueFor("medium").dueAt));
   const [slaTouched, setSlaTouched] = useState(false);
 
   const companyContacts = useMemo(() => contacts.filter((c) => !companyId || c.companyId === companyId).sort((a, b) => `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`)), [contacts, companyId]);
 
   const pickPriority = (p: TicketPriority) => {
     setPriority(p);
-    if (!slaTouched) setSlaLocal(toWibLocal(defaultSlaDue(p)));
+    if (!slaTouched) setSlaLocal(toWibLocal(slaDueFor(p).dueAt));
   };
 
   const slaValid = !!slaLocal && !Number.isNaN(Date.parse(fromWibLocal(slaLocal)));
   const valid = subject.trim().length > 2 && slaValid && !!ownerId;
   const submit = () => {
     if (!valid) return;
-    const id = createTicket({
+    // business-hours SLA (24/7 for urgent); an explicit deadline is kept as typed
+    const id = openServiceTicket({
       subject,
       description,
       companyId: companyId || null,
@@ -814,7 +816,7 @@ export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId,
       category,
       ownerId,
       stageId,
-      slaDueAt: fromWibLocal(slaLocal),
+      slaDueAt: slaTouched ? fromWibLocal(slaLocal) : undefined,
     });
     notify(`Ticket ${id.toUpperCase()} opened`, { label: "Open", run: () => router.push(`/tickets/${id}`) });
     onCreated?.(id);
@@ -900,7 +902,7 @@ export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId,
             ))}
           </Select>
         </Field>
-        <Field label="SLA due (WIB)" className="col-span-2" hint={slaTouched ? `Set manually · default for ${ticketPriorityMeta[priority].label.toLowerCase()} is ${SLA_TARGETS[priority]}` : `Default for ${ticketPriorityMeta[priority].label.toLowerCase()} priority: ${SLA_TARGETS[priority]} → ${slaValid ? formatDate(fromWibLocal(slaLocal), "datetime") : "—"}`}>
+        <Field label="SLA due (WIB)" className="col-span-2" hint={slaTouched ? `Set manually · default for ${ticketPriorityMeta[priority].label.toLowerCase()} is ${SLA_POLICY[priority].label}` : `Default for ${ticketPriorityMeta[priority].label.toLowerCase()} priority: ${SLA_POLICY[priority].label} → ${slaValid ? formatDate(fromWibLocal(slaLocal), "datetime") : "—"}`}>
           <div className="flex items-center gap-2">
             <Input
               type="datetime-local"
@@ -917,7 +919,7 @@ export function NewTicketDialog({ onClose, companyId: initialCompanyId, stageId,
                 size="sm"
                 onClick={() => {
                   setSlaTouched(false);
-                  setSlaLocal(toWibLocal(defaultSlaDue(priority)));
+                  setSlaLocal(toWibLocal(slaDueFor(priority).dueAt));
                 }}
               >
                 Reset

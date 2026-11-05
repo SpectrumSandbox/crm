@@ -134,7 +134,7 @@ function StepsEditor({ sequenceId }: { sequenceId: string }) {
     <section className="rounded-xl border border-sg-line bg-sg-card p-4">
       <div className="mb-2 flex items-center">
         <h2 className="sg-eyebrow">Steps</h2>
-        <span className="ml-2 text-2xs text-sg-dim">Delays count WIB business days (Mon–Fri) from the previous step; steps come due at 09:00 WIB.</span>
+        <span className="ml-2 text-2xs text-sg-dim">Delays count WIB business days (Mon–Fri, skipping Indonesian public holidays and cuti bersama) from the previous step; steps come due at 09:00 WIB.</span>
       </div>
       <ol className="space-y-2">
         {steps.map((s, i) => {

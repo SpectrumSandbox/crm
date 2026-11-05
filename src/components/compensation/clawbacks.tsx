@@ -11,7 +11,7 @@ import { useUserMap } from "@/lib/selectors";
 import type { Clawback, ClawbackTrigger, EmployeeProfile, PrcVote } from "@/lib/initiatives/types";
 import { useAccess } from "@/lib/access-control";
 import { prcRoster } from "@/lib/initiatives/engine";
-import { addBusinessDays, addMonths, carriedForward, clawbackAmount, clawbackExempt, clawbackSchedule, cycleMonth, paymentDate } from "@/lib/initiatives/engine";
+import { addBusinessDays, addMonths, carriedOnly, clawbackAmount, clawbackExempt, clawbackSchedule, cycleMonth, paymentDate, safeHarbourLeft } from "@/lib/initiatives/engine";
 import { POLICY } from "@/lib/initiatives/policy";
 import { cn, formatDate, formatIDR, fromDateInput, toDateInput } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -84,7 +84,7 @@ function useRecoverySources(userId: string) {
   const bonusRuns = useCrm((s) => s.bonusRuns);
   return useMemo(() => {
     const pending = deferred.filter((d) => d.userId === userId && d.status === "pending");
-    const carried = carriedForward(bonusRuns, "9999-12").filter((c) => c.userId === userId);
+    const carried = carriedOnly(bonusRuns, "9999-12").filter((c) => c.userId === userId);
     return { pending, deferredTotal: pending.reduce((s, d) => s + d.amount, 0), carried, carriedTotal: carried.reduce((s, c) => s + c.amount, 0) };
   }, [deferred, bonusRuns, userId]);
 }
@@ -103,9 +103,9 @@ export function ClawbacksTab() {
     const open = clawbacks.filter((c) => !["closed", "waived"].includes(c.status));
     return {
       open: open.length,
-      outstanding: open.reduce((s, c) => s + Math.max(0, clawbackAmount(c) - c.recovered), 0),
+      outstanding: open.reduce((s, c) => s + Math.max(0, clawbackAmount(c, clawbacks) - c.recovered), 0),
       recovered: clawbacks.reduce((s, c) => s + c.recovered, 0),
-      waived: clawbacks.filter((c) => c.status === "waived").reduce((s, c) => s + clawbackAmount(c), 0),
+      waived: clawbacks.filter((c) => c.status === "waived").reduce((s, c) => s + clawbackAmount(c, clawbacks), 0),
     };
   }, [clawbacks]);
 
@@ -187,10 +187,12 @@ export function ClawbacksTab() {
 function ClawbackRow({ c, profile, onModal, set }: { c: Clawback; profile: EmployeeProfile | undefined; onModal: (k: "decide" | "dispute" | "disputeDecision" | "recover") => void; set: (c: Clawback, patch: Partial<Clawback>, msg: string) => void }) {
   const sources = useRecoverySources(c.userId);
   const access = useAccess();
-  const amount = clawbackAmount(c);
+  const all = useCrm((s) => s.clawbacks);
+  // §9.4 the Rp10,000,000 safe harbour is per person per project — other cases share it
+  const amount = clawbackAmount(c, all);
   // §9.4 the 24-month window is tested when the trigger arises, not today
   const trigger = c.triggeredAt ?? c.createdAt;
-  const exempt = clawbackExempt(c, trigger);
+  const exempt = clawbackExempt(c, trigger, all);
   const sched = clawbackSchedule(Math.max(0, amount - c.recovered), profile?.annualBaseSalary ?? 0);
   const disputeDeadline = c.notifiedAt ? addBusinessDays(c.notifiedAt, POLICY.clawback.disputeBusinessDays) : null;
   const inWindow = disputeDeadline ? Date.parse(disputeDeadline) >= Date.now() : false;
@@ -355,6 +357,7 @@ function DecisionModal({ c, dispute, onClose }: { c: Clawback; dispute?: boolean
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
   const access = useAccess();
+  const all = useCrm((s) => s.clawbacks);
   const roster = useMemo(() => prcRoster(profiles).map((p) => p.userId), [profiles]);
   const team = useMemo(() => new Set(members.filter((m) => m.initiativeId === c.initiativeId).map((m) => m.userId)), [members, c.initiativeId]);
   const recusal = (u: string) => (u === c.userId ? "the employee concerned" : team.has(u) ? "on the project's team" : null);
@@ -387,7 +390,7 @@ function DecisionModal({ c, dispute, onClose }: { c: Clawback; dispute?: boolean
   if (tie && !casting) errors.push("Tie — the chair gives the casting vote");
   if (reasons.trim().length < 5) errors.push("Record the reasons (§9.4: every clawback decision is recorded with its reasons)");
   const valid = errors.length === 0;
-  const amountAfter = clawbackAmount({ ...c, recalculated: recalc });
+  const amountAfter = clawbackAmount({ ...c, recalculated: recalc }, all);
 
   const submit = () => {
     if (!valid) return;
@@ -418,7 +421,7 @@ function DecisionModal({ c, dispute, onClose }: { c: Clawback; dispute?: boolean
       open
       onOpenChange={(o) => !o && onClose()}
       title={dispute ? "PRC decision on the dispute" : "Record PRC decision"}
-      description={`${formatIDR(clawbackAmount(c), "full")} · simple majority of members present; quorum incl. the CFO or a Finance delegate; the chair has the casting vote (§9.4, §13.1)`}
+      description={`${formatIDR(clawbackAmount(c, all), "full")} · simple majority of members present; quorum incl. the CFO or a Finance delegate; the chair has the casting vote (§9.4, §13.1)`}
       className="w-[min(640px,calc(100vw-32px))]"
       footer={
         <>
@@ -556,9 +559,10 @@ function RecoverModal({ c, onClose }: { c: Clawback; onClose: () => void }) {
   const notify = useUi((s) => s.notify);
   const iniMap = useInitiativeMap();
   const sources = useRecoverySources(c.userId);
+  const all = useCrm((s) => s.clawbacks);
   const profile = profiles.find((p) => p.userId === c.userId);
   const left = !!profile?.separation && Date.parse(profile.separation.effectiveAt) <= Date.now();
-  const amount = clawbackAmount(c);
+  const amount = clawbackAmount(c, all);
   const remaining = Math.max(0, amount - c.recovered);
   const monthlyGross = (profile?.annualBaseSalary ?? 0) / 12;
   const sched = clawbackSchedule(remaining, profile?.annualBaseSalary ?? 0);
@@ -762,10 +766,11 @@ function NewClawbackModal({ onClose }: { onClose: () => void }) {
   const recalc = Math.max(0, recalculated);
   const draft = { trigger, personallyAtFault: fault, originalPaid: orig, recalculated: recalc, paidAt: fromDateInput(paidAt || toDateInput(new Date().toISOString())) };
   const triggeredAt = fromDateInput(triggerDate || toDateInput(new Date().toISOString()));
-  const amount = clawbackAmount(draft);
+  const others = useCrm((s) => s.clawbacks);
+  const amount = clawbackAmount({ ...draft, userId, initiativeId }, others);
   const profile = profiles.find((p) => p.userId === userId);
   const sched = clawbackSchedule(amount, profile?.annualBaseSalary ?? 0);
-  const exempt = paidAt && orig > 0 ? clawbackExempt(draft, triggeredAt) : null;
+  const exempt = paidAt && orig > 0 ? clawbackExempt({ ...draft, userId, initiativeId, triggeredAt }, triggeredAt, others) : null;
   const valid = !!userId && !!initiativeId && !!paidAt && !!triggerDate && orig > 0 && orig > recalc && notes.trim().length >= 5;
 
   const pickPayment = (key: string) => {
@@ -894,7 +899,7 @@ function NewClawbackModal({ onClose }: { onClose: () => void }) {
 
         <div className="col-span-2 space-y-2 rounded-lg border border-sg-line bg-sg-card-2/50 p-3 text-xs">
           <div className="flex items-center justify-between">
-            <span className="text-sg-muted">Clawback (paid − corrected{trigger === "data_error" && !fault ? ` − ${formatIDR(POLICY.clawback.dataErrorSafeHarbour)} safe harbour` : ""})</span>
+            <span className="text-sg-muted">Clawback (paid − corrected{trigger === "data_error" && !fault ? ` − ${formatIDR(safeHarbourLeft({ ...draft, userId, initiativeId }, others), "full")} safe harbour left for this person and project` : ""})</span>
             <span className="sg-num font-display text-base font-extrabold text-sg-white">{formatIDR(amount, "full")}</span>
           </div>
           {amount > 0 ? (

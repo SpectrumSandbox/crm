@@ -261,7 +261,22 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
       </Card>
 
       {type !== "ticket" && (
-        <Card title="Tickets" icon={Ticket} count={a.tickets.length}>
+        <Card
+          title="Tickets"
+          icon={Ticket}
+          count={a.tickets.length}
+          action={
+            type === "contact" || type === "company" ? (
+              <Link
+                href={`/tickets?new=1${type === "company" ? `&companyId=${encodeURIComponent(id)}` : `${a.companies[0] ? `&companyId=${encodeURIComponent(a.companies[0].id)}` : ""}&contactId=${encodeURIComponent(id)}`}`}
+                className="inline-flex h-6 items-center gap-1 rounded px-2 text-2xs font-semibold text-sg-muted hover:bg-sg-card-2 hover:text-sg-white"
+                title="Open a support ticket for this account"
+              >
+                <Plus className="size-3" /> Ticket
+              </Link>
+            ) : undefined
+          }
+        >
           {a.tickets.map((t) => {
             const st = stageMap.get(t.stageId);
             return (

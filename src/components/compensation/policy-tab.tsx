@@ -38,7 +38,7 @@ export function PolicyTab() {
   const lastReleased = useMemo(() => [...bonusRuns].filter((r) => r.status === "released").sort((a, b) => b.month.localeCompare(a.month))[0], [bonusRuns]);
   const agg = useMemo(() => {
     const active = clawbacks.filter((c) => c.status !== "waived");
-    return { count: active.length, amount: active.reduce((s, c) => s + clawbackAmount(c), 0), recovered: active.reduce((s, c) => s + c.recovered, 0), deferred: deferred.filter((d) => d.status === "pending").reduce((s, d) => s + d.amount, 0) };
+    return { count: active.length, amount: active.reduce((s, c) => s + clawbackAmount(c, clawbacks), 0), recovered: active.reduce((s, c) => s + c.recovered, 0), deferred: deferred.filter((d) => d.status === "pending").reduce((s, d) => s + d.amount, 0) };
   }, [clawbacks, deferred]);
 
   const [tryX, setTryX] = useState(600_000_000);

@@ -263,7 +263,7 @@ function SeparationDialog({ profile, kind, onClose }: { profile: EmployeeProfile
       });
     }
     for (const c of carriedForward(bonusRuns, "9999-12").filter((x) => x.userId === userId)) {
-      rows.push({ label: link(c.initiativeId), sub: "Carried forward after a failed check (§9.2)", amount: c.amount, outcome: kind === "termination_for_cause" ? "forfeit" : "pay", reason: kind === "termination_for_cause" ? "All unpaid amounts are forfeited" : "Collected before the end date — paid first in the next passing month" });
+      rows.push({ label: link(c.initiativeId), sub: c.kind === "held" ? `Held since ${c.fromMonth ?? "an earlier cycle"} — ${c.reason ?? "§10 hold"}` : "Carried forward after a failed check (§9.2)", amount: c.amount, outcome: kind === "termination_for_cause" ? "forfeit" : "pay", reason: kind === "termination_for_cause" ? "All unpaid amounts are forfeited" : "Collected before the end date — paid first in the next passing month" });
     }
     const settled = outcomes.some((o) => o.userId === userId);
     const probation = probationBalance(userId, bonusRuns);

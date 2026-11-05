@@ -6,7 +6,8 @@ import { useCrm } from "@/lib/store";
 import type { User, SpectrumColor } from "@/lib/types";
 import type { EmployeeProfile, GovernanceRole, SeparationKind } from "@/lib/initiatives/types";
 import { concurrentNonLeadRoles, leadershipLoad, maxAllocationFactor, paidInYear, participationEligibility, probationBalance, type EligibilityResult } from "@/lib/initiatives/engine";
-import { EMPLOYMENT_META, POLICY_DATED } from "@/lib/initiatives/policy";
+import { EMPLOYMENT_META } from "@/lib/initiatives/policy";
+import { annexBState as meAnnexBState } from "@/components/me/helpers";
 
 export const GOVERNANCE_META: Record<GovernanceRole, { label: string; title: string; color: SpectrumColor }> = {
   prc: { label: "PRC", title: "Project Review Committee member", color: "magenta" },
@@ -31,10 +32,9 @@ export const SEPARATION_LABEL: Record<SeparationKind, string> = {
 /** Annex B signature state: missing → payments held (§15.1); signed before v4.0 was issued → re-sign the updated agreement. */
 export type AnnexBState = "missing" | "pre_v4" | "signed";
 export function annexBState(p: EmployeeProfile | undefined): AnnexBState | null {
-  if (!p) return null;
-  if (!p.acknowledgmentSignedAt) return "missing";
-  // WIB midnight of the policy date — the same instant the engine (§15.1 hold) and /me use
-  return Date.parse(p.acknowledgmentSignedAt) < Date.parse(`${POLICY_DATED}T00:00:00+07:00`) ? "pre_v4" : "signed";
+  // one rule with /me and the engine (WIB midnight of the policy date, qa-finance#24)
+  const st = meAnnexBState(p);
+  return st === "none" ? null : st === "missing" ? "missing" : st === "stale" ? "pre_v4" : "signed";
 }
 
 export interface PersonRow {

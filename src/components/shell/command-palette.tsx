@@ -8,6 +8,7 @@ import { Command } from "cmdk";
 import {
   ArrowLeft,
   ArrowRight,
+  BarChart3,
   BookOpen,
   Briefcase,
   Building2,
@@ -19,13 +20,11 @@ import {
   ClipboardList,
   Copy,
   FileText,
-  Gavel,
   Handshake,
   History,
   House,
   Kanban,
   Keyboard,
-  Landmark,
   Layers,
   ListChecks,
   ListTodo,
@@ -33,6 +32,7 @@ import {
   MessageSquare,
   Phone,
   Plus,
+  Scale,
   Settings,
   Target,
   Ticket,
@@ -57,6 +57,9 @@ import { applyDealChange, requestDealStage } from "@/components/crm/deal-close";
 import { normalizePhone, phoneKeywords, tokenFilter, topMatches } from "@/lib/search";
 import { readRecent, recordFromPath, toggleNavigation, type RecentVisit } from "./hotkeys";
 
+const TriageInbox = dynamic(() => import("@/components/agile/triage").then((m) => m.TriageInbox), { ssr: false, loading: () => null });
+const CreateProjectDialog = dynamic(() => import("@/components/agile/create-project-dialog").then((m) => m.CreateProjectDialog), { ssr: false, loading: () => null });
+const EditSprintModal = dynamic(() => import("@/components/agile/sprint-dialogs").then((m) => m.EditSprintModal), { ssr: false, loading: () => null });
 const RegisterProjectDialog = dynamic(() => import("@/components/projects/register-project-dialog").then((m) => m.RegisterProjectDialog), { ssr: false, loading: () => null });
 
 const itemCls =
@@ -95,8 +98,8 @@ const NAV_ITEMS: NavEntry[] = [
   { href: "/people", label: "People", icon: UserCheck, keys: "G P", keywords: ["hr", "eligibility", "employees", "probation", "directory"] },
   { href: "/me", label: "My compensation", icon: CircleUser, keys: "G Y", keywords: ["my bonus", "payslip", "me", "statement"] },
   { href: "/policy", label: "Policy", icon: BookOpen, keys: "G K", keywords: ["handbook", "rules", "initiative policy"] },
-  { href: "/me/company", label: "Company results", icon: Landmark, keywords: ["§9.6", "financial summary", "monthly results", "company performance"] },
-  { href: "/disputes", label: "Disputes", icon: Gavel, keys: "G X", keywords: ["§14", "appeal", "complaint", "objection"] },
+  { href: "/me/company", label: "Company results", icon: BarChart3, keywords: ["§9.6", "financial summary", "monthly results", "company performance"] },
+  { href: "/disputes", label: "Disputes", icon: Scale, keys: "G X", keywords: ["§14", "appeal", "complaint", "objection"] },
   { href: "/automation", label: "Automation", icon: Workflow, keys: "G A", keywords: ["workflows", "sequences", "templates", "whatsapp", "email"] },
   { href: "/settings", label: "Settings", icon: Settings, keywords: ["preferences", "workspace", "admin", "sync"] },
 ];
@@ -111,7 +114,8 @@ type Page =
   | { kind: "ticketStage"; ticketId: string }
   | { kind: "ticketPriority"; ticketId: string }
   | { kind: "person"; userId: string }
-  | { kind: "jiraProject"; projectId: string };
+  | { kind: "jiraProject"; projectId: string }
+  | { kind: "sprint" };
 
 const PAGE_PLACEHOLDER: Record<Page["kind"], string> = {
   dealStage: "Move the deal to…",
@@ -122,7 +126,17 @@ const PAGE_PLACEHOLDER: Record<Page["kind"], string> = {
   ticketPriority: "Priority…",
   person: "Choose an action",
   jiraProject: "Choose where to go",
+  sprint: "Which sprint?",
 };
+
+const SETTINGS_SECTIONS: { id: string; label: string; keywords: string[]; admin?: boolean }[] = [
+  { id: "sync", label: "Workspace sync", keywords: ["d1", "conflict", "offline", "saved"] },
+  { id: "identity", label: "Identity & security", keywords: ["cloudflare access", "sso", "acting as", "sign in"] },
+  { id: "inventory", label: "Data inventory", keywords: ["collections", "storage", "what is stored"] },
+  { id: "audit", label: "Audit trail", keywords: ["who changed", "log", "writes"], admin: true },
+  { id: "history", label: "Version history", keywords: ["snapshots", "restore", "versions"], admin: true },
+  { id: "health", label: "System health", keywords: ["status", "api", "database"] },
+];
 
 /* ───────────── close-date shortcuts (WIB days) ───────────── */
 
@@ -170,6 +184,9 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState<Page | null>(null);
   const [registering, setRegistering] = useState(false);
+  const [triageFor, setTriageFor] = useState<string | null>(null);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [editSprintId, setEditSprintId] = useState<string | null>(null);
 
   const contacts = useCrm((s) => s.contacts);
   const companies = useCrm((s) => s.companies);
@@ -182,6 +199,7 @@ export function CommandPalette() {
   const users = useCrm((s) => s.users);
   const projects = useCrm((s) => s.projects);
   const currentUserId = useCrm((s) => s.currentUserId);
+  const sprints = useCrm((s) => s.sprints);
 
   const stageName = useMemo(() => new Map(pipelines.flatMap((p) => p.stages.map((s) => [s.id, s.name] as const))), [pipelines]);
   const companyName = useMemo(() => new Map(companies.map((c) => [c.id, c.name] as const)), [companies]);
@@ -575,6 +593,34 @@ export function CommandPalette() {
           </>
         );
       }
+      case "sprint": {
+        const projectKey = new Map(projects.map((p) => [p.id, p.key] as const));
+        const list = sprints
+          .filter((sp) => sp.state !== "closed" && (!pageProject || sp.projectId === pageProject.id))
+          .sort((a, b) => Number(b.state === "active") - Number(a.state === "active") || a.name.localeCompare(b.name));
+        return (
+          <Command.Group heading={pageProject ? `Sprints · ${pageProject.key}` : "Open sprints"} className={groupCls}>
+            {list.map((sp) => (
+              <Command.Item
+                key={sp.id}
+                value={`sprint ${sp.name} ${projectKey.get(sp.projectId) ?? ""}`}
+                onSelect={() => {
+                  close();
+                  setEditSprintId(sp.id);
+                }}
+                className={itemCls}
+              >
+                <ListChecks className={cn("size-4", sp.state === "active" ? "text-soft-cyan" : "text-sg-muted")} />
+                {sp.name}
+                <span className="ml-auto text-xs text-sg-dim">
+                  {projectKey.get(sp.projectId)} · {sp.state === "active" ? "active" : "planned"}
+                </span>
+              </Command.Item>
+            ))}
+            {backItem}
+          </Command.Group>
+        );
+      }
       case "jiraProject": {
         const pr = projects.find((x) => x.id === p.projectId);
         if (!pr) return backItem;
@@ -858,6 +904,36 @@ export function CommandPalette() {
                 )}
 
                 {!page && (
+                  <Command.Group heading="Delivery" className={groupCls}>
+                    <Command.Item
+                      value={`delivery open triage inbox ${pageProject ? pageProject.key : ""}`}
+                      keywords={["requests", "escalations", "accept", "decline"]}
+                      onSelect={() => {
+                        close();
+                        setTriageFor(pageProject?.id ?? "all");
+                      }}
+                      className={itemCls}
+                    >
+                      <ListTodo className="size-4 text-soft-orange" /> Open triage {pageProject ? <span className="text-sg-dim">for {pageProject.key}</span> : <span className="text-sg-dim">(all projects)</span>}
+                    </Command.Item>
+                    <Command.Item value="delivery edit sprint" keywords={["capacity", "dates", "goal", "rename", "delete sprint"]} onSelect={() => enter({ kind: "sprint" })} className={itemCls}>
+                      <ListChecks className="size-4 text-soft-cyan" /> Edit sprint…
+                    </Command.Item>
+                    <Command.Item
+                      value="delivery create jira project"
+                      keywords={["new project", "project key", "agile project"]}
+                      onSelect={() => {
+                        close();
+                        setCreatingProject(true);
+                      }}
+                      className={itemCls}
+                    >
+                      <Plus className="size-4 text-soft-cyan" /> Create Jira project
+                    </Command.Item>
+                  </Command.Group>
+                )}
+
+                {!page && (
                   <Command.Group heading="Navigate" className={groupCls}>
                     {navItems.map((n) => (
                       <Command.Item key={n.href} value={`nav ${n.label}`} keywords={n.keywords} onSelect={() => go(n.href)} className={itemCls}>
@@ -874,6 +950,11 @@ export function CommandPalette() {
                     <Command.Item value="nav keyboard shortcuts help" onSelect={() => openDialog({ kind: "shortcuts" })} className={itemCls}>
                       <Keyboard className="size-4 text-sg-muted" /> Keyboard shortcuts <Kbd className="ml-auto">?</Kbd>
                     </Command.Item>
+                    {SETTINGS_SECTIONS.filter((x) => !x.admin || access.admin).map((x) => (
+                      <Command.Item key={x.id} value={`nav settings ${x.label}`} keywords={x.keywords} onSelect={() => go(`/settings#${x.id}`)} className={itemCls}>
+                        <Settings className="size-4 text-sg-dim" /> Settings · {x.label}
+                      </Command.Item>
+                    ))}
                   </Command.Group>
                 )}
 
@@ -1035,6 +1116,18 @@ export function CommandPalette() {
         </DialogPrimitive.Portal>
       </DialogPrimitive.Root>
       {registering ? <RegisterProjectDialog open={registering} onOpenChange={setRegistering} /> : null}
+      {triageFor ? <TriageInbox open onOpenChange={(o: boolean) => !o && setTriageFor(null)} projectId={triageFor} /> : null}
+      {creatingProject ? (
+        <CreateProjectDialog
+          open
+          onOpenChange={(o: boolean) => !o && setCreatingProject(false)}
+          onCreated={(projectId: string) => {
+            const key = useCrm.getState().projects.find((p) => p.id === projectId)?.key ?? projectId;
+            router.push(`/backlog?project=${encodeURIComponent(key)}`);
+          }}
+        />
+      ) : null}
+      {editSprintId ? <EditSprintModal sprint={sprints.find((sp) => sp.id === editSprintId) ?? null} open onOpenChange={(o: boolean) => !o && setEditSprintId(null)} /> : null}
     </>
   );
 }
