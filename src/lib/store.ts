@@ -27,6 +27,10 @@ import { createCrmExtrasSlice, type CrmExtrasSlice } from "./slices/crm-extras";
 import { createAgileExtrasSlice, type AgileExtrasSlice } from "./slices/agile-extras";
 import { createPlatformSlice, type PlatformSlice } from "./slices/platform";
 import { createProgramExtrasSlice, type ProgramExtrasSlice } from "./slices/program-extras";
+import { createCrmServiceSlice, type CrmServiceSlice } from "./slices/crm-service";
+import { createGovernanceSlice, type GovernanceSlice } from "./slices/governance";
+import { createAutomationSlice, type AutomationSlice } from "./slices/automation";
+import { createCompExtrasSlice, type CompExtrasSlice } from "./slices/comp-extras";
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 const nowIso = () => new Date().toISOString();
@@ -51,7 +55,7 @@ export type NewIssueInput = Pick<Issue, "projectId" | "type" | "summary"> & Part
   link?: { crmType: CrmObjectType; crmId: string; linkType: LinkType };
 };
 
-export interface CrmState extends SeedData, InitiativeActions, CrmExtrasSlice, AgileExtrasSlice, PlatformSlice, ProgramExtrasSlice {
+export interface CrmState extends SeedData, InitiativeActions, CrmExtrasSlice, AgileExtrasSlice, PlatformSlice, ProgramExtrasSlice, CrmServiceSlice, GovernanceSlice, AutomationSlice, CompExtrasSlice {
   currentUserId: string;
 
   /* CRM */
@@ -315,6 +319,10 @@ export const useCrm = create<CrmState>()(
         ...createAgileExtrasSlice<CrmState>(set, get, uid),
         ...createPlatformSlice<CrmState>(set, get, uid),
         ...createProgramExtrasSlice<CrmState>(set, get, uid),
+        ...createCrmServiceSlice<CrmState>(set, get, uid),
+        ...createGovernanceSlice<CrmState>(set, get, uid),
+        ...createAutomationSlice<CrmState>(set, get, uid),
+        ...createCompExtrasSlice<CrmState>(set, get, uid),
       };
     },
     {
