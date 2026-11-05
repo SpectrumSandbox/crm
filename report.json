@@ -1,0 +1,1259 @@
+{
+  "base": "http://localhost:3000",
+  "at": "2026-11-05T14:10:15.606Z",
+  "sha": "9a0636e7bea8b9a164ce56852c406341a5500474",
+  "total": 32,
+  "passed": 32,
+  "failed": 0,
+  "journeys": [
+    {
+      "name": "Deals — create a deal via the dialog and see it on the board",
+      "id": "deals-create-a-deal-via-the-dialog-and-see-it-on-the-board",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /deals",
+          "status": "pass",
+          "ms": 1636
+        },
+        {
+          "n": 2,
+          "label": "open the Create deal dialog",
+          "status": "pass",
+          "ms": 107
+        },
+        {
+          "n": 3,
+          "label": "fill name, amount and company",
+          "status": "pass",
+          "ms": 79
+        },
+        {
+          "n": 4,
+          "label": "submit and land on the new deal record",
+          "status": "pass",
+          "ms": 377
+        },
+        {
+          "n": 5,
+          "label": "deal card shows on the board in the first stage",
+          "status": "pass",
+          "ms": 1300
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "deals-create-a-deal-via-the-dialog-and-see-it-on-the-board.png"
+      ],
+      "ms": 3570
+    },
+    {
+      "name": "Deals — drag a deal to the next stage (keyboard drag) and it persists",
+      "id": "deals-drag-a-deal-to-the-next-stage-keyboard-drag-and-it-persists",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /deals",
+          "status": "pass",
+          "ms": 1463
+        },
+        {
+          "n": 2,
+          "label": "keyboard-drag the first Discovery card one column right",
+          "status": "pass",
+          "ms": 1758
+        },
+        {
+          "n": 3,
+          "label": "stage survives a reload",
+          "status": "pass",
+          "ms": 1245
+        },
+        {
+          "n": 4,
+          "label": "record page shows the new stage",
+          "status": "pass",
+          "ms": 1187
+        }
+      ],
+      "notes": [
+        "deal d-rct-fire: st-discovery → st-qualified"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "deals-drag-a-deal-to-the-next-stage-keyboard-drag-and-it-persists.png"
+      ],
+      "ms": 5729
+    },
+    {
+      "name": "Deals — quick-edit the amount from the card, then Undo",
+      "id": "deals-quick-edit-the-amount-from-the-card-then-undo",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /deals",
+          "status": "pass",
+          "ms": 1453
+        },
+        {
+          "n": 2,
+          "label": "open the quick-edit popover",
+          "status": "pass",
+          "ms": 219
+        },
+        {
+          "n": 3,
+          "label": "change the amount and save",
+          "status": "pass",
+          "ms": 105
+        },
+        {
+          "n": 4,
+          "label": "re-opened popover shows the saved amount",
+          "status": "pass",
+          "ms": 117
+        },
+        {
+          "n": 5,
+          "label": "Undo from a second edit's toast restores the amount",
+          "status": "pass",
+          "ms": 556
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "deals-quick-edit-the-amount-from-the-card-then-undo.png"
+      ],
+      "ms": 2533
+    },
+    {
+      "name": "Deals — page filter via the / shortcut narrows the board",
+      "id": "deals-page-filter-via-the-shortcut-narrows-the-board",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /deals",
+          "status": "pass",
+          "ms": 1427
+        },
+        {
+          "n": 2,
+          "label": "press / and type a company prefix",
+          "status": "pass",
+          "ms": 89
+        },
+        {
+          "n": 3,
+          "label": "only matching deals remain",
+          "status": "pass",
+          "ms": 6
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "deals-page-filter-via-the-shortcut-narrows-the-board.png"
+      ],
+      "ms": 1594
+    },
+    {
+      "name": "Deals — delete from the record page, then Undo restores it",
+      "id": "deals-delete-from-the-record-page-then-undo-restores-it",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open the deal record",
+          "status": "pass",
+          "ms": 1386
+        },
+        {
+          "n": 2,
+          "label": "Actions → Delete deal",
+          "status": "pass",
+          "ms": 132
+        },
+        {
+          "n": 3,
+          "label": "confirm delete → back on /deals with an Undo toast",
+          "status": "pass",
+          "ms": 411
+        },
+        {
+          "n": 4,
+          "label": "Undo restores the deal and reopens it",
+          "status": "pass",
+          "ms": 206
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "deals-delete-from-the-record-page-then-undo-restores-it.png"
+      ],
+      "ms": 2224
+    },
+    {
+      "name": "Contacts — log a call from the record quick actions",
+      "id": "contacts-log-a-call-from-the-record-quick-actions",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open contact Hendra Gunawan",
+          "status": "pass",
+          "ms": 1373
+        },
+        {
+          "n": 2,
+          "label": "click the Call quick action",
+          "status": "pass",
+          "ms": 75
+        },
+        {
+          "n": 3,
+          "label": "fill subject, outcome and notes; submit",
+          "status": "pass",
+          "ms": 224
+        },
+        {
+          "n": 4,
+          "label": "call appears on the timeline",
+          "status": "pass",
+          "ms": 6
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "contacts-log-a-call-from-the-record-quick-actions.png"
+      ],
+      "ms": 1782
+    },
+    {
+      "name": "Contacts — L shortcut opens Log call on a record",
+      "id": "contacts-l-shortcut-opens-log-call-on-a-record",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open contact Rina Susanto",
+          "status": "pass",
+          "ms": 1408
+        },
+        {
+          "n": 2,
+          "label": "press L",
+          "status": "pass",
+          "ms": 61
+        },
+        {
+          "n": 3,
+          "label": "Escape closes it",
+          "status": "pass",
+          "ms": 28
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "contacts-l-shortcut-opens-log-call-on-a-record.png"
+      ],
+      "ms": 1572
+    },
+    {
+      "name": "Contacts — duplicate warnings in Create contact",
+      "id": "contacts-duplicate-warnings-in-create-contact",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /contacts and the Create contact dialog",
+          "status": "pass",
+          "ms": 1598
+        },
+        {
+          "n": 2,
+          "label": "existing email blocks creation",
+          "status": "pass",
+          "ms": 109
+        },
+        {
+          "n": 3,
+          "label": "new email + same name at same company only warns",
+          "status": "pass",
+          "ms": 38
+        },
+        {
+          "n": 4,
+          "label": "create anyway → lands on the new contact",
+          "status": "pass",
+          "ms": 368
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "contacts-duplicate-warnings-in-create-contact.png"
+      ],
+      "ms": 2235
+    },
+    {
+      "name": "Contacts — smart list tab + Export CSV downloads the rows in view",
+      "id": "contacts-smart-list-tab-export-csv-downloads-the-rows-in-view",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /contacts",
+          "status": "pass",
+          "ms": 1504
+        },
+        {
+          "n": 2,
+          "label": "switch to the Hot leads smart list",
+          "status": "pass",
+          "ms": 289
+        },
+        {
+          "n": 3,
+          "label": "Export CSV downloads a file with the same row count",
+          "status": "pass",
+          "ms": 148
+        }
+      ],
+      "notes": [
+        "hot leads in view: 7",
+        "downloaded contacts-hot-leads-2026-11-05.csv"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "contacts-smart-list-tab-export-csv-downloads-the-rows-in-view.png"
+      ],
+      "ms": 2060
+    },
+    {
+      "name": "Contacts table — j / Enter opens the focused row; Alt+→ walks to the next record",
+      "id": "contacts-table-j-enter-opens-the-focused-row-alt-walks-to-the-next-record",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /contacts",
+          "status": "pass",
+          "ms": 1471
+        },
+        {
+          "n": 2,
+          "label": "press j then Enter",
+          "status": "pass",
+          "ms": 348
+        },
+        {
+          "n": 3,
+          "label": "Alt+ArrowRight opens the next contact",
+          "status": "pass",
+          "ms": 123
+        }
+      ],
+      "notes": [
+        "opened /contacts/k-budi"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "contacts-table-j-enter-opens-the-focused-row-alt-walks-to-the-next-record.png"
+      ],
+      "ms": 2049
+    },
+    {
+      "name": "Deal record — Propose initiative link prefills a PRC proposal",
+      "id": "deal-record-propose-initiative-link-prefills-a-prc-proposal",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open deal d-nhs-ai",
+          "status": "pass",
+          "ms": 1376
+        },
+        {
+          "n": 2,
+          "label": "click Propose initiative",
+          "status": "pass",
+          "ms": 215
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "deal-record-propose-initiative-link-prefills-a-prc-proposal.png"
+      ],
+      "ms": 1680
+    },
+    {
+      "name": "Companies — duplicate domain blocks Create company",
+      "id": "companies-duplicate-domain-blocks-create-company",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /companies and press C",
+          "status": "pass",
+          "ms": 1470
+        },
+        {
+          "n": 2,
+          "label": "an existing domain is flagged and blocks saving",
+          "status": "pass",
+          "ms": 46
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "companies-duplicate-domain-blocks-create-company.png"
+      ],
+      "ms": 1632
+    },
+    {
+      "name": "Tickets — create a ticket and move it to the next stage",
+      "id": "tickets-create-a-ticket-and-move-it-to-the-next-stage",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /tickets",
+          "status": "pass",
+          "ms": 1445
+        },
+        {
+          "n": 2,
+          "label": "New ticket dialog → fill subject and company",
+          "status": "pass",
+          "ms": 116
+        },
+        {
+          "n": 3,
+          "label": "create → toast and card on the board",
+          "status": "pass",
+          "ms": 171
+        },
+        {
+          "n": 4,
+          "label": "keyboard-drag the ticket one stage right",
+          "status": "pass",
+          "ms": 1699
+        }
+      ],
+      "notes": [
+        "ticket t-1010: ts-new → ts-waiting"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "tickets-create-a-ticket-and-move-it-to-the-next-stage.png"
+      ],
+      "ms": 3500
+    },
+    {
+      "name": "⌘K palette — search a contact and an issue, open them",
+      "id": "k-palette-search-a-contact-and-an-issue-open-them",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /home",
+          "status": "pass",
+          "ms": 1413
+        },
+        {
+          "n": 2,
+          "label": "Ctrl+K, type 'Rina', pick the contact",
+          "status": "pass",
+          "ms": 401
+        },
+        {
+          "n": 3,
+          "label": "Ctrl+K, type 'UAV-102', open the issue drawer",
+          "status": "pass",
+          "ms": 322
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "k-palette-search-a-contact-and-an-issue-open-them.png"
+      ],
+      "ms": 2240
+    },
+    {
+      "name": "Keyboard — G-shortcuts navigate and ? opens the shortcut sheet",
+      "id": "keyboard-g-shortcuts-navigate-and-opens-the-shortcut-sheet",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /home",
+          "status": "pass",
+          "ms": 1410
+        },
+        {
+          "n": 2,
+          "label": "g d → /deals",
+          "status": "pass",
+          "ms": 428
+        },
+        {
+          "n": 3,
+          "label": "g c → /contacts",
+          "status": "pass",
+          "ms": 460
+        },
+        {
+          "n": 4,
+          "label": "g b → /board",
+          "status": "pass",
+          "ms": 557
+        },
+        {
+          "n": 5,
+          "label": "g i → /initiatives",
+          "status": "pass",
+          "ms": 433
+        },
+        {
+          "n": 6,
+          "label": "g j → /projects",
+          "status": "pass",
+          "ms": 403
+        },
+        {
+          "n": 7,
+          "label": "g k → /policy",
+          "status": "pass",
+          "ms": 398
+        },
+        {
+          "n": 8,
+          "label": "g y → /me",
+          "status": "pass",
+          "ms": 641
+        },
+        {
+          "n": 9,
+          "label": "? opens Keyboard shortcuts",
+          "status": "pass",
+          "ms": 36
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "keyboard-g-shortcuts-navigate-and-opens-the-shortcut-sheet.png"
+      ],
+      "ms": 4859
+    },
+    {
+      "name": "Notifications — bell opens and Mark all read clears the badge",
+      "id": "notifications-bell-opens-and-mark-all-read-clears-the-badge",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /home",
+          "status": "pass",
+          "ms": 1433
+        },
+        {
+          "n": 2,
+          "label": "open the bell",
+          "status": "pass",
+          "ms": 61
+        },
+        {
+          "n": 3,
+          "label": "Mark all read → bell has no unread count",
+          "status": "pass",
+          "ms": 58
+        }
+      ],
+      "notes": [
+        "bell label: Notifications, 8 unread"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "notifications-bell-opens-and-mark-all-read-clears-the-badge.png"
+      ],
+      "ms": 1634
+    },
+    {
+      "name": "Settings — Download backup produces a JSON workspace snapshot",
+      "id": "settings-download-backup-produces-a-json-workspace-snapshot",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /settings",
+          "status": "pass",
+          "ms": 1392
+        },
+        {
+          "n": 2,
+          "label": "click Download backup (.json)",
+          "status": "pass",
+          "ms": 48
+        }
+      ],
+      "notes": [
+        "downloaded spectrum-crm-backup-2026-11-05.json",
+        "backup keys: users, companies, contacts, pipelines, deals, tickets, products, lineItems, quotes, activities, projects, sprints…"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "settings-download-backup-produces-a-json-workspace-snapshot.png"
+      ],
+      "ms": 1520
+    },
+    {
+      "name": "Not found — branded 404 with working links",
+      "id": "not-found-branded-404-with-working-links",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open a missing route",
+          "status": "pass",
+          "ms": 1404
+        },
+        {
+          "n": 2,
+          "label": "Deals link goes to /deals",
+          "status": "pass",
+          "ms": 86
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "not-found-branded-404-with-working-links.png"
+      ],
+      "ms": 1625
+    },
+    {
+      "name": "Mobile 390px — navigation drawer opens, navigates and closes",
+      "id": "mobile-390px-navigation-drawer-opens-navigates-and-closes",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /deals at 390×844",
+          "status": "pass",
+          "ms": 1322
+        },
+        {
+          "n": 2,
+          "label": "Open navigation shows the drawer",
+          "status": "pass",
+          "ms": 98
+        },
+        {
+          "n": 3,
+          "label": "tap Contacts → /contacts and the drawer closes",
+          "status": "pass",
+          "ms": 521
+        },
+        {
+          "n": 4,
+          "label": "search button opens the palette",
+          "status": "pass",
+          "ms": 110
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "mobile-390px-navigation-drawer-opens-navigates-and-closes.png"
+      ],
+      "ms": 2195
+    },
+    {
+      "name": "Mobile 390px — no page scrolls horizontally",
+      "id": "mobile-390px-no-page-scrolls-horizontally",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "measure /home",
+          "status": "pass",
+          "ms": 1337
+        },
+        {
+          "n": 2,
+          "label": "measure /deals",
+          "status": "pass",
+          "ms": 1136
+        },
+        {
+          "n": 3,
+          "label": "measure /contacts",
+          "status": "pass",
+          "ms": 1219
+        },
+        {
+          "n": 4,
+          "label": "measure /tickets",
+          "status": "pass",
+          "ms": 1059
+        },
+        {
+          "n": 5,
+          "label": "measure /board",
+          "status": "pass",
+          "ms": 1105
+        },
+        {
+          "n": 6,
+          "label": "measure /initiatives",
+          "status": "pass",
+          "ms": 1061
+        },
+        {
+          "n": 7,
+          "label": "measure /projects",
+          "status": "pass",
+          "ms": 1053
+        },
+        {
+          "n": 8,
+          "label": "measure /compensation",
+          "status": "pass",
+          "ms": 1074
+        },
+        {
+          "n": 9,
+          "label": "measure /people",
+          "status": "pass",
+          "ms": 1076
+        },
+        {
+          "n": 10,
+          "label": "measure /me",
+          "status": "pass",
+          "ms": 1100
+        },
+        {
+          "n": 11,
+          "label": "measure /policy",
+          "status": "pass",
+          "ms": 1280
+        },
+        {
+          "n": 12,
+          "label": "measure /settings",
+          "status": "pass",
+          "ms": 1117
+        },
+        {
+          "n": 13,
+          "label": "no page wider than the viewport",
+          "status": "pass",
+          "ms": 1
+        }
+      ],
+      "notes": [
+        "no horizontal overflow"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "mobile-390px-no-page-scrolls-horizontally.png"
+      ],
+      "ms": 13652
+    },
+    {
+      "name": "Board — j/k focus and Shift+→ moves an issue to the next column",
+      "id": "board-j-k-focus-and-shift-moves-an-issue-to-the-next-column",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /board",
+          "status": "pass",
+          "ms": 1421
+        },
+        {
+          "n": 2,
+          "label": "press j twice then Shift+ArrowRight",
+          "status": "pass",
+          "ms": 127
+        },
+        {
+          "n": 3,
+          "label": "the issue card now sits in the announced column",
+          "status": "pass",
+          "ms": 23
+        }
+      ],
+      "notes": [
+        "toast: UAV-104 → In Progress"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "board-j-k-focus-and-shift-moves-an-issue-to-the-next-column.png"
+      ],
+      "ms": 1656
+    },
+    {
+      "name": "Issue drawer — open UAV-102 and set status with the 5 key",
+      "id": "issue-drawer-open-uav-102-and-set-status-with-the-5-key",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /board?issue=UAV-102",
+          "status": "pass",
+          "ms": 1538
+        },
+        {
+          "n": 2,
+          "label": "drawer shows UAV-102",
+          "status": "pass",
+          "ms": 9
+        },
+        {
+          "n": 3,
+          "label": "press 5 (Done) and close",
+          "status": "pass",
+          "ms": 782
+        },
+        {
+          "n": 4,
+          "label": "card is in the Done column",
+          "status": "pass",
+          "ms": 21
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "issue-drawer-open-uav-102-and-set-status-with-the-5-key.png"
+      ],
+      "ms": 2426
+    },
+    {
+      "name": "Backlog — create a sprint, complete the active one, start the new one",
+      "id": "backlog-create-a-sprint-complete-the-active-one-start-the-new-one",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /backlog",
+          "status": "pass",
+          "ms": 1390
+        },
+        {
+          "n": 2,
+          "label": "Create sprint",
+          "status": "pass",
+          "ms": 77
+        },
+        {
+          "n": 3,
+          "label": "complete the active sprint (if any)",
+          "status": "pass",
+          "ms": 485
+        },
+        {
+          "n": 4,
+          "label": "start the next sprint — the new one, or the one planned before it",
+          "status": "pass",
+          "ms": 381
+        }
+      ],
+      "notes": [
+        "created UAV Sprint 26",
+        "UAV Sprint 26 can't start yet: Start UAV Sprint 25 first — it is planned before UAV Sprint 26. Change the dates to reorder."
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "backlog-create-a-sprint-complete-the-active-one-start-the-new-one.png"
+      ],
+      "ms": 2427
+    },
+    {
+      "name": "Backlog — quick-add an issue to the backlog",
+      "id": "backlog-quick-add-an-issue-to-the-backlog",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /backlog",
+          "status": "pass",
+          "ms": 1373
+        },
+        {
+          "n": 2,
+          "label": "type a summary and press Enter",
+          "status": "pass",
+          "ms": 79
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "backlog-quick-add-an-issue-to-the-backlog.png"
+      ],
+      "ms": 1529
+    },
+    {
+      "name": "Issues — bulk-select two issues and set status Done, then Undo",
+      "id": "issues-bulk-select-two-issues-and-set-status-done-then-undo",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /issues",
+          "status": "pass",
+          "ms": 1387
+        },
+        {
+          "n": 2,
+          "label": "select the first two rows",
+          "status": "pass",
+          "ms": 188
+        },
+        {
+          "n": 3,
+          "label": "Status → Done",
+          "status": "pass",
+          "ms": 241
+        },
+        {
+          "n": 4,
+          "label": "Undo from the toast",
+          "status": "pass",
+          "ms": 329
+        }
+      ],
+      "notes": [
+        "selected IOT-208, UAV-111",
+        "Status → Done — 2 of 2 issues selected"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "issues-bulk-select-two-issues-and-set-status-done-then-undo.png"
+      ],
+      "ms": 2237
+    },
+    {
+      "name": "Projects register — register a project, add people, figures, payment, PRC ratification",
+      "id": "projects-register-register-a-project-add-people-figures-payment-prc-ratification",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /projects → Register project",
+          "status": "pass",
+          "ms": 1393
+        },
+        {
+          "n": 2,
+          "label": "name it and register → project page",
+          "status": "pass",
+          "ms": 483
+        },
+        {
+          "n": 3,
+          "label": "add an existing person as Project Lead",
+          "status": "pass",
+          "ms": 977
+        },
+        {
+          "n": 4,
+          "label": "add a new person (not yet in the system)",
+          "status": "pass",
+          "ms": 479
+        },
+        {
+          "n": 5,
+          "label": "enter the expected case and save figures",
+          "status": "pass",
+          "ms": 131
+        },
+        {
+          "n": 6,
+          "label": "record a collected client payment",
+          "status": "pass",
+          "ms": 280
+        },
+        {
+          "n": 7,
+          "label": "open PRC ratification",
+          "status": "pass",
+          "ms": 100
+        },
+        {
+          "n": 8,
+          "label": "payment work period ends today (5 Nov), the default \"Work period to\"",
+          "status": "pass",
+          "ms": 8
+        }
+      ],
+      "notes": [
+        "blocked by policy — Dimas Saputra: Leadership capacity would reach 2.50 of 2.0 (2.00 used + 0.50 for a Type B lead role) — §7.3",
+        "Project Lead: Nadia Rahman",
+        "ratification blocked — Fix first: Role and Weight Agreement signed by every member · Line manager agreement to the time",
+        "work period shown: 5 Nov – 5 Nov INV-QA-001 milestone 1"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "projects-register-register-a-project-add-people-figures-payment-prc-ratification.png"
+      ],
+      "ms": 3964
+    },
+    {
+      "name": "Initiatives — new proposal prefilled from a deal (?fromDeal=) and saved as draft",
+      "id": "initiatives-new-proposal-prefilled-from-a-deal-fromdeal-and-saved-as-draft",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /initiatives/new?fromDeal=d-nhs-ai",
+          "status": "pass",
+          "ms": 1382
+        },
+        {
+          "n": 2,
+          "label": "prefill toast and project name filled from the deal",
+          "status": "pass",
+          "ms": 11
+        },
+        {
+          "n": 3,
+          "label": "Save draft",
+          "status": "pass",
+          "ms": 100
+        }
+      ],
+      "notes": [
+        "prefilled name: Seabed Classification AI"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "initiatives-new-proposal-prefilled-from-a-deal-fromdeal-and-saved-as-draft.png"
+      ],
+      "ms": 1603
+    },
+    {
+      "name": "Initiatives — propose a team amendment and record a vote",
+      "id": "initiatives-propose-a-team-amendment-and-record-a-vote",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open the SBS initiative → Team tab",
+          "status": "pass",
+          "ms": 1445
+        },
+        {
+          "n": 2,
+          "label": "Propose amendment → add a member",
+          "status": "pass",
+          "ms": 557
+        },
+        {
+          "n": 3,
+          "label": "circulate to the team",
+          "status": "pass",
+          "ms": 89
+        },
+        {
+          "n": 4,
+          "label": "as a current member (Dimas Saputra), record a For vote on the open amendment",
+          "status": "pass",
+          "ms": 1315
+        }
+      ],
+      "notes": [
+        "joining: Ayu Kartika",
+        "Amendment circulated to 6 members — vote within 5 business days"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "initiatives-propose-a-team-amendment-and-record-a-vote.png"
+      ],
+      "ms": 3500
+    },
+    {
+      "name": "Compensation — change monthly-cycle inputs and save provisional bonuses",
+      "id": "compensation-change-monthly-cycle-inputs-and-save-provisional-bonuses",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "as the CEO (no certify role) the finance inputs are read-only",
+          "status": "pass",
+          "ms": 1400
+        },
+        {
+          "n": 2,
+          "label": "open /compensation acting as Maria Gunadi (CFO / Finance)",
+          "status": "pass",
+          "ms": 1163
+        },
+        {
+          "n": 3,
+          "label": "edit operating overheads",
+          "status": "pass",
+          "ms": 27
+        },
+        {
+          "n": 4,
+          "label": "Save provisional",
+          "status": "pass",
+          "ms": 83
+        },
+        {
+          "n": 5,
+          "label": "value persists after reload",
+          "status": "pass",
+          "ms": 1144
+        }
+      ],
+      "notes": [
+        "overheads before: 4000000000",
+        "overheads after reload: 4050000000"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "compensation-change-monthly-cycle-inputs-and-save-provisional-bonuses.png"
+      ],
+      "ms": 3884
+    },
+    {
+      "name": "People — Add person dialog creates an HR record",
+      "id": "people-add-person-dialog-creates-an-hr-record",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /people → Add person",
+          "status": "pass",
+          "ms": 1430
+        },
+        {
+          "n": 2,
+          "label": "fill the form and save",
+          "status": "pass",
+          "ms": 255
+        },
+        {
+          "n": 3,
+          "label": "the new person's HR sheet opens and the list has the row",
+          "status": "pass",
+          "ms": 327
+        },
+        {
+          "n": 4,
+          "label": "a11y: the success toast is announced (not under aria-hidden while the sheet is open)",
+          "status": "pass",
+          "ms": 470
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "people-add-person-dialog-creates-an-hr-record.png"
+      ],
+      "ms": 2572
+    },
+    {
+      "name": "My compensation — sign the Project Participation Agreement (Annex B)",
+      "id": "my-compensation-sign-the-project-participation-agreement-annex-b",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /me acting as Lia Anggraini (unsigned)",
+          "status": "pass",
+          "ms": 1364
+        },
+        {
+          "n": 2,
+          "label": "open the agreement",
+          "status": "pass",
+          "ms": 107
+        },
+        {
+          "n": 3,
+          "label": "tick the acknowledgement, type the full name and sign",
+          "status": "pass",
+          "ms": 444
+        }
+      ],
+      "notes": [],
+      "consoleErrors": [],
+      "screenshots": [
+        "my-compensation-sign-the-project-participation-agreement-annex-b.png"
+      ],
+      "ms": 1995
+    },
+    {
+      "name": "Policy — search highlights matches and anchors jump to sections",
+      "id": "policy-search-highlights-matches-and-anchors-jump-to-sections",
+      "status": "pass",
+      "steps": [
+        {
+          "n": 1,
+          "label": "open /policy",
+          "status": "pass",
+          "ms": 1524
+        },
+        {
+          "n": 2,
+          "label": "search 'clawback' narrows the handbook",
+          "status": "pass",
+          "ms": 67
+        },
+        {
+          "n": 3,
+          "label": "Enter jumps to the first match (URL hash)",
+          "status": "pass",
+          "ms": 23
+        },
+        {
+          "n": 4,
+          "label": "fresh deep link /policy#s-9-1 scrolls §9.1 into view",
+          "status": "pass",
+          "ms": 3321
+        },
+        {
+          "n": 5,
+          "label": "Jump to section select navigates",
+          "status": "pass",
+          "ms": 11
+        },
+        {
+          "n": 6,
+          "label": "changing the hash while a search filter hides the target still jumps (clears the search)",
+          "status": "pass",
+          "ms": 858
+        }
+      ],
+      "notes": [
+        "highlights: 17",
+        "hash: #s-1-5",
+        "Jump to section select hidden at this width"
+      ],
+      "consoleErrors": [],
+      "screenshots": [
+        "policy-search-highlights-matches-and-anchors-jump-to-sections.png"
+      ],
+      "ms": 5888
+    }
+  ]
+}
