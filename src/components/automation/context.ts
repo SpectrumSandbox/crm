@@ -1,7 +1,7 @@
 /* Record → condition fields, label, link and token context for workflows (W10). Pure; only type imports from the store. */
-import type { CrmState } from "@/lib/store";
-import type { CrmObjectType } from "@/lib/types";
-import { issueStatusMeta } from "@/lib/meta";
+import type { CrmState } from "../../lib/store";
+import type { CrmObjectType } from "../../lib/types";
+import { issueStatusMeta } from "../../lib/meta";
 import type { RecordFields } from "./conditions";
 import type { WfObject } from "./types";
 

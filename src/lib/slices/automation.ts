@@ -3,12 +3,12 @@
 import type { CrmState } from "../store";
 import type { Activity, ActivityLinks, EmailTemplate, Sequence, SequenceEnrollment, SequenceStep, Workflow } from "../types";
 import type { GetFn, SetFn, Uid } from "./types";
-import type { PipelineSnapshot, SequenceEvent, SequenceEventKind } from "@/components/automation/types";
-import { detectEvents, isReply, newActivities, runWorkflow, scheduledEvents, type Api, type RunResult, type WfEvent } from "@/components/automation/runtime";
-import { addBusinessDaysAt9, currentStepOf, dueAtOf, sortedSteps } from "@/components/automation/sequences";
-import { renderTemplate, tokenContext } from "@/components/automation/tokens";
-import { triggerDef } from "@/components/automation/catalog";
-import type { WfObject } from "@/components/automation/types";
+import type { PipelineSnapshot, SequenceEvent, SequenceEventKind } from "../../components/automation/types";
+import { detectEvents, isReply, newActivities, runWorkflow, scheduledEvents, type Api, type RunResult, type WfEvent } from "../../components/automation/runtime";
+import { addBusinessDaysAt9, currentStepOf, dueAtOf, sortedSteps } from "../../components/automation/sequences";
+import { renderTemplate, tokenContext } from "../../components/automation/tokens";
+import { triggerDef } from "../../components/automation/catalog";
+import type { WfObject } from "../../components/automation/types";
 
 const nowIso = () => new Date().toISOString();
 const emptyLinks = (): ActivityLinks => ({ contactIds: [], companyIds: [], dealIds: [], ticketIds: [] });

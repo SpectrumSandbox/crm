@@ -1,6 +1,6 @@
 /* Sequence scheduling helpers (W10): due dates in WIB business days, progress and queue rows. Pure. */
-import type { Sequence, SequenceEnrollment, SequenceStep } from "@/lib/types";
-import { addBusinessDaysWib } from "@/lib/slices/crm-extras";
+import type { Sequence, SequenceEnrollment, SequenceStep } from "../../lib/types";
+import { addBusinessDaysWib } from "../../lib/slices/crm-extras";
 import type { SequenceEvent } from "./types";
 
 const WIB = 7 * 3_600_000;

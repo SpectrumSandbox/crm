@@ -1,7 +1,7 @@
 /* Template personalisation for email + WhatsApp templates, sequences and workflow actions (W10).
  * Same token syntax as the log-email dialog ({{contact.first_name}}), extended with a few more fields. Pure — no React. */
-import type { Company, Contact, CrmObjectType, Deal, EmailTemplate, Ticket, User } from "@/lib/types";
-import { formatDate, formatIDR } from "@/lib/utils";
+import type { Company, Contact, CrmObjectType, Deal, EmailTemplate, Ticket, User } from "../../lib/types";
+import { formatDate, formatIDR } from "../../lib/utils";
 
 export const TOKEN_RE = /\{\{\s*([\w.]+)\s*\}\}/g;
 

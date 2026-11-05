@@ -9,7 +9,7 @@ import type {
   SequenceEvent,
   SnapshotDeal,
   WorkflowRun,
-} from "@/components/automation/types";
+} from "../automation-types";
 
 /** Same anchor as seed.ts: Wed 4 Nov 2026, 09:00 WIB. */
 const SEED_NOW = Date.UTC(2026, 10, 4, 2, 0, 0);

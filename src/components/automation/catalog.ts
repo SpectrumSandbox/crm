@@ -1,5 +1,5 @@
 /* What a workflow can listen to and do — drives the builder UI, the runtime and the recipe gallery (W10). */
-import type { EmailTemplate, Workflow } from "@/lib/types";
+import type { EmailTemplate, Workflow } from "../../lib/types";
 import type { WfObject } from "./types";
 
 export const OBJECT_LABEL: Record<WfObject, string> = { deal: "Deal", contact: "Contact", company: "Company", ticket: "Ticket", issue: "Jira issue", epic: "Jira epic" };

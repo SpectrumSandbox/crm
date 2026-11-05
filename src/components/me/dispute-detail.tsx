@@ -25,8 +25,9 @@ import { PageHeader } from "@/components/shell/page-header";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Avatar, Chip, EmptyState } from "@/components/ui/misc";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Cite } from "@/components/initiatives/shared";
-import { DisputeSlaChip, DisputeStageChip, parseRupiah } from "./disputes";
+import { DisputeSlaChip, DisputeStageChip } from "./disputes";
 import { cycleLabel } from "./helpers";
 import { Card, RpFull } from "./ui";
 
@@ -49,10 +50,8 @@ function Facts({ rows }: { rows: [string, React.ReactNode][] }) {
 function DecisionForm({ allowed, submitLabel, onSubmit, showAmounts }: { allowed: Outcome[]; submitLabel: string; onSubmit: (o: { outcome: Outcome; text: string; correction: number | null }) => void; showAmounts: boolean }) {
   const [outcome, setOutcome] = useState<Outcome>(allowed[0]);
   const [text, setText] = useState("");
-  const [corr, setCorr] = useState("");
-  const correction = parseRupiah(corr);
-  const bad = corr.trim() !== "" && correction == null;
-  const ok = text.trim().length >= 5 && !bad && allowed.includes(outcome);
+  const [correction, setCorrection] = useState<number | null>(null);
+  const ok = text.trim().length >= 5 && allowed.includes(outcome);
   return (
     <div
       className="space-y-2"
@@ -74,8 +73,8 @@ function DecisionForm({ allowed, submitLabel, onSubmit, showAmounts }: { allowed
           </Select>
         </Field>
         {outcome !== "rejected" && showAmounts && (
-          <Field label="Correction to pay (optional)" hint={bad ? "Use digits, e.g. 1.250.000" : correction ? `${formatIDR(correction, "full")} — paid in the next open cycle (§8.5)` : "Underpayment corrected next cycle (§8.5)"}>
-            <Input value={corr} onChange={(e) => setCorr(e.target.value)} inputMode="numeric" placeholder="Rp" className={cn(bad && "border-soft-red")} />
+          <Field label="Correction to pay (optional)" hint={correction ? `${formatIDR(correction, "full")} — paid in the next open cycle (§8.5)` : "Underpayment corrected next cycle (§8.5)"}>
+            <MoneyInput value={correction} onValueChange={setCorrection} />
           </Field>
         )}
       </div>

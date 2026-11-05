@@ -17,6 +17,7 @@ import { cn, formatDate, formatIDR, toDateInput } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Chip } from "@/components/ui/misc";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Modal } from "@/components/ui/overlays";
 import { Cite } from "@/components/initiatives/shared";
 import { cycleLabel } from "./helpers";
@@ -42,20 +43,6 @@ export function DisputeSlaChip({ d, now = Date.now() }: { d: Dispute; now?: numb
       {sla.overdue ? `${-sla.days || "<1"} bd overdue` : sla.days === 0 ? "due today" : `${sla.days} bd left`}
     </Chip>
   );
-}
-
-/** "Rp 4.137.512", "4137512", "4,1 jt", "4.1M" → whole rupiah (null when empty / unreadable). */
-export function parseRupiah(raw: string): number | null {
-  const s = raw.trim().toLowerCase().replace(/^rp\.?\s*/, "");
-  if (!s) return null;
-  const m = /^([\d.,\s]+)\s*(jt|juta|rb|ribu|m|miliar|b)?$/.exec(s);
-  if (!m) return null;
-  const mult = m[2] === "jt" || m[2] === "juta" ? 1e6 : m[2] === "rb" || m[2] === "ribu" ? 1e3 : m[2] === "m" || m[2] === "miliar" || m[2] === "b" ? 1e9 : 1;
-  let num = m[1].replace(/\s/g, "");
-  if (mult === 1) num = num.replace(/[.,]/g, "");
-  else num = num.replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".");
-  const v = Number(num) * mult;
-  return Number.isFinite(v) ? Math.floor(v) : null;
 }
 
 export interface DisputePrefill {
@@ -95,7 +82,7 @@ export function RaiseDisputeModal({ open, onOpenChange, prefill }: { open: boole
   const [initiativeId, setInitiativeId] = useState<string>(prefill.initiativeId ?? "");
   const [subject, setSubject] = useState(prefill.subject ?? "");
   const [detail, setDetail] = useState("");
-  const [claimed, setClaimed] = useState("");
+  const [claimedAmount, setClaimedAmount] = useState<number | null>(null);
   const [eventDate, setEventDate] = useState(toDateInput(prefill.eventAt ?? new Date().toISOString()));
   const [lateReason, setLateReason] = useState("");
 
@@ -109,9 +96,7 @@ export function RaiseDisputeModal({ open, onOpenChange, prefill }: { open: boole
   const eventAt = meta.basis === "statement" && prefill.runMonth ? statementDate(prefill.runMonth) : eventDate ? new Date(`${eventDate}T12:00:00+07:00`).toISOString() : "";
   const validDate = !!eventAt && !Number.isNaN(Date.parse(eventAt)) && Date.parse(eventAt) <= Date.now() + 86_400_000;
   const late = validDate && isLateDispute(eventAt);
-  const claimedAmount = parseRupiah(claimed);
-  const claimedBad = claimed.trim() !== "" && claimedAmount == null;
-  const ok = subject.trim().length >= 4 && detail.trim().length >= 10 && validDate && (!late || lateReason.trim().length >= 5) && !claimedBad;
+  const ok = subject.trim().length >= 4 && detail.trim().length >= 10 && validDate && (!late || lateReason.trim().length >= 5);
 
   const submit = () => {
     if (!ok) return;
@@ -201,8 +186,8 @@ export function RaiseDisputeModal({ open, onOpenChange, prefill }: { open: boole
           <Textarea value={detail} onChange={(e) => setDetail(e.target.value)} autoFocus={!!prefill.subject} />
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Amount you think is right (optional)" hint={claimedBad ? "Use digits, e.g. 4.137.512 or 4,1 jt" : claimedAmount != null ? formatIDR(claimedAmount, "full") : "Whole rupiah"}>
-            <Input value={claimed} onChange={(e) => setClaimed(e.target.value)} inputMode="numeric" placeholder="Rp" aria-invalid={claimedBad || undefined} className={cn(claimedBad && "border-soft-red")} />
+          <Field label="Amount you think is right (optional)" hint={claimedAmount != null ? formatIDR(claimedAmount, "full") : "Whole rupiah, e.g. 4.137.512 or 4,1 jt"}>
+            <MoneyInput value={claimedAmount} onValueChange={setClaimedAmount} />
           </Field>
           {meta.basis === "statement" && prefill.runMonth ? (
             <Field label="Statement date" hint={`${cycleLabel(prefill.runMonth)} cycle · salary date`}>

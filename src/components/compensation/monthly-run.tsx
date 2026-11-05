@@ -1381,7 +1381,7 @@ interface ExportRow {
   code: string;
 }
 
-/** One payroll row per employee for the cycle (§8.5): project lines plus deferred releases, probation bonuses and recoveries. */
+/** One payroll row per employee for the cycle (§8.5): project lines incl. deferred releases, probation bonuses and held amounts now cleared, net of §9.4 recoveries. */
 interface PayrollRow {
   userId: string;
   name: string;
@@ -1389,12 +1389,13 @@ interface PayrollRow {
   employeeNumber: string;
   npwp: string;
   ptkp: string;
-  projectBonus: number;
+  /** gross bonus payable with this salary (after any clawback recovery) */
+  gross: number;
   deferredRelease: number;
   probationBonus: number;
-  recovery: number; // ≤ 0
-  gross: number;
-  pph: { withheld: number; net: number } | null;
+  heldReleased: number;
+  recovered: number;
+  pph: { withheld: number; net: number; rate: number; category: string } | null;
   split: string;
   notes: string[];
 }
@@ -1405,9 +1406,6 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
   const profiles = useCrm((s) => s.employeeProfiles);
   const bonusRuns = useCrm((s) => s.bonusRuns);
   const outcomes = useCrm((s) => s.probationOutcomes);
-  const deferredBonuses = useCrm((s) => s.deferredBonuses);
-  const recoveryDeductions = useCrm((s) => s.recoveryDeductions);
-  const auditLog = useCrm((s) => s.auditLog);
   const notify = useUi((s) => s.notify);
   const access = useAccess();
 
@@ -1424,32 +1422,41 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
 
   const payroll = useMemo<PayrollRow[]>(() => {
     if (!run) return [];
-    const extras = payrollExtras(run.month, { deferredBonuses, probationOutcomes: outcomes, recoveryDeductions, auditLog });
-    const ids = Array.from(new Set([...run.lines.filter((l) => l.payable > 0).map((l) => l.userId), ...extras.map((e) => e.userId)]));
+    const ids = Array.from(new Set(run.lines.filter((l) => l.payable > 0 || (l.recovered ?? 0) > 0).map((l) => l.userId)));
     return ids
       .map((userId) => {
         const u = users.find((x) => x.id === userId);
         const p = profiles.find((x) => x.userId === userId);
-        const mine = run.lines.filter((l) => l.userId === userId && l.payable > 0);
-        const ex = extras.filter((e) => e.userId === userId);
-        const projectBonus = mine.reduce((s, l) => s + Math.floor(l.payable), 0);
-        const deferredRelease = ex.filter((e) => e.kind === "deferred_release").reduce((s, e) => s + e.amount, 0);
-        const probationBonus = ex.filter((e) => e.kind === "probation_completion" || e.kind === "probation_final_pay").reduce((s, e) => s + e.amount, 0);
-        const due = projectBonus + deferredRelease + probationBonus;
-        const wanted = -ex.filter((e) => e.kind === "clawback_recovery").reduce((s, e) => s + e.amount, 0);
-        const recovery = -Math.min(due, wanted);
-        const pphs = mine.map(pph21Of);
-        const pph = pphs.length && pphs.every((x) => x) ? { withheld: pphs.reduce((s, x) => s + x!.withheld, 0), net: due + recovery - pphs.reduce((s, x) => s + x!.withheld, 0) } : null;
-        const split = [
-          ...mine.map((l) => `${codeOf(initiatives.find((i) => i.id === l.initiativeId), l.initiativeId)}:${Math.floor(l.payable)}`),
-          ...ex.filter((e) => e.kind === "deferred_release").map((e) => `${codeOf(initiatives.find((i) => i.id === e.initiativeId), e.initiativeId ?? "")}/deferred:${e.amount}`),
-        ].join("; ");
-        const notes = [...ex.map((e) => e.label), ...(wanted > -recovery ? [`Recovery capped at the bonus due — ${wanted + recovery} carried to a later cycle`] : [])];
-        return { userId, name: u?.name ?? userId, email: u?.email ?? "", employeeNumber: p?.employeeNumber ?? "", npwp: p?.npwp ?? "", ptkp: p?.ptkpStatus ?? "", projectBonus, deferredRelease, probationBonus, recovery, gross: due + recovery, pph, split, notes };
+        const mine = run.lines.filter((l) => l.userId === userId);
+        const sumExtra = (kinds: string[]) => mine.reduce((s, l) => s + (l.extras ?? []).filter((x) => kinds.includes(x.kind)).reduce((a, x) => a + x.amount, 0), 0);
+        const gross = mine.reduce((s, l) => s + Math.floor(l.payable), 0);
+        const pphs = mine.filter((l) => l.payable > 0).map((l) => l.pph21);
+        const withheld = pphs.reduce((s, x) => s + (x?.withheld ?? 0), 0);
+        const pph = pphs.length && pphs.every((x) => x) ? { withheld, net: gross - withheld, rate: pphs[0]!.rate, category: pphs[0]!.category } : null;
+        const split = mine
+          .filter((l) => l.payable > 0)
+          .map((l) => `${codeOf(initiatives.find((i) => i.id === l.initiativeId), l.initiativeId)}:${Math.floor(l.payable)}`)
+          .join("; ");
+        const notes = mine.flatMap((l) => (l.extras ?? []).map((x) => x.note)).concat(mine.some((l) => (l.recovered ?? 0) > 0) ? ["Clawback recovered from this bonus (§9.4)"] : []);
+        return {
+          userId,
+          name: u?.name ?? userId,
+          email: u?.email ?? "",
+          employeeNumber: p?.employeeNumber ?? "",
+          npwp: p?.npwp ?? "",
+          ptkp: p?.ptkpStatus ?? "",
+          gross,
+          deferredRelease: sumExtra(["deferred_release"]),
+          probationBonus: sumExtra(["probation_completion", "probation_final_pay"]),
+          heldReleased: mine.reduce((s, l) => s + (l.heldIn ?? 0), 0),
+          recovered: mine.reduce((s, l) => s + (l.recovered ?? 0), 0),
+          pph,
+          split,
+          notes: Array.from(new Set(notes)),
+        };
       })
-      .filter((r) => r.gross > 0 || r.recovery < 0)
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [run, users, profiles, deferredBonuses, outcomes, recoveryDeductions, auditLog, initiatives]);
+  }, [run, users, profiles, initiatives]);
 
   if (!run) return null;
   const ready = run.status === "certified" || run.status === "released";
@@ -1472,17 +1479,13 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
     { header: "Cycle", value: () => run.month },
     { header: "Salary date", value: () => salaryDate },
     { header: "Component", value: () => "PROJECT_BONUS (irregular income, PPh 21)" },
-    { header: "Project bonus (IDR)", value: (r) => r.projectBonus },
-    { header: "Deferred release (IDR)", value: (r) => r.deferredRelease },
-    { header: "Probation bonus (IDR)", value: (r) => r.probationBonus },
-    { header: "Clawback recovery (IDR)", value: (r) => r.recovery },
     { header: "Gross bonus payable (IDR)", value: (r) => r.gross },
-    ...(hasPph
-      ? ([
-          { header: "PPh 21 withheld — estimate (IDR)", value: (r) => (r.pph ? r.pph.withheld : "") },
-          { header: "Net bonus — estimate (IDR)", value: (r) => (r.pph ? r.pph.net : "") },
-        ] as CsvColumn<PayrollRow>[])
-      : []),
+    { header: "of which deferred release (IDR)", value: (r) => r.deferredRelease },
+    { header: "of which probation bonus (IDR)", value: (r) => r.probationBonus },
+    { header: "of which held earlier, now released (IDR)", value: (r) => r.heldReleased },
+    { header: "Clawback recovered, already deducted (IDR)", value: (r) => r.recovered },
+    { header: "PPh 21 withheld — estimate (IDR)", value: (r) => (r.pph ? r.pph.withheld : "") },
+    { header: "Net bonus — estimate (IDR)", value: (r) => (r.pph ? r.pph.net : "") },
     { header: "Cost centres (project:amount)", value: (r) => r.split },
     { header: "Notes", value: (r) => r.notes.join(" · ") },
   ];
@@ -1532,10 +1535,10 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
                 <thead>
                   <tr className="border-b border-sg-line">
                     <th className={thCls}>Employee</th>
-                    <th className={thRight}>Project bonus</th>
                     <th className={thRight}>Deferred release</th>
                     <th className={thRight}>Probation bonus</th>
-                    <th className={thRight}>Recovery</th>
+                    <th className={thRight}>Held, now paid</th>
+                    <th className={thRight}>Clawback recovered</th>
                     <th className={thRight}>Gross payable</th>
                     {hasPph ? <th className={thRight}>PPh 21 est.</th> : null}
                     {hasPph ? <th className={thRight}>Net est.</th> : null}
@@ -1545,12 +1548,12 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
                   {payroll.map((r) => (
                     <tr key={r.userId} className="border-b border-sg-line last:border-b-0">
                       <td className={tdCls}>
-                        <UserCell userId={r.userId} sub={[r.employeeNumber || "no employee no.", r.npwp ? `NPWP ${r.npwp}` : "no NPWP"].join(" · ")} />
+                        <UserCell userId={r.userId} sub={[r.employeeNumber || "no employee no.", r.npwp ? `NPWP ${r.npwp}` : "no NPWP", r.ptkp || "PTKP not recorded"].join(" · ")} />
                       </td>
-                      <td className={tdNum}>{r.projectBonus ? exactIdr(r.projectBonus) : "—"}</td>
                       <td className={tdNum}>{r.deferredRelease ? exactIdr(r.deferredRelease) : "—"}</td>
                       <td className={tdNum}>{r.probationBonus ? exactIdr(r.probationBonus) : "—"}</td>
-                      <td className={cn(tdNum, r.recovery ? "text-soft-red" : "")}>{r.recovery ? exactIdr(r.recovery) : "—"}</td>
+                      <td className={tdNum}>{r.heldReleased ? exactIdr(r.heldReleased) : "—"}</td>
+                      <td className={cn(tdNum, r.recovered ? "text-soft-red" : "")}>{r.recovered ? exactIdr(-r.recovered) : "—"}</td>
                       <td className={cn(tdNum, "font-semibold text-sg-white")}>{exactIdr(r.gross)}</td>
                       {hasPph ? <td className={tdNum}>{r.pph ? exactIdr(r.pph.withheld) : "—"}</td> : null}
                       {hasPph ? <td className={cn(tdNum, "text-soft-green")}>{r.pph ? exactIdr(r.pph.net) : "—"}</td> : null}
@@ -1578,8 +1581,8 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
             <RoleNote>Finance exports the payroll files (§13.2).</RoleNote>
           )}
           <p className="text-2xs text-sg-dim">
-            One row per employee: project lines, deferred releases and Probation Completion Bonuses paid with this salary, less any §9.4 recovery netted in payroll. Amounts are gross, rounded down to whole rupiah; payroll withholds PPh 21 <Cite s="8.5" />
-            {hasPph ? " — the PPh 21 and net columns are estimates (TER), payroll's figure is final" : ""}.{!final ? " The run is certified but not released — the file is marked DRAFT and must not be paid." : ""}
+            One row per employee: project lines including deferred releases, Probation Completion Bonuses and held amounts whose condition has cleared, after any §9.4 recovery. Amounts are gross, rounded down to whole rupiah; payroll withholds PPh 21 <Cite s="8.5" />
+            {hasPph ? " — the PPh 21 and net columns are TER estimates on the base salary plus bonus (PMK 168/2023); payroll's figure is final" : ""}.{!final ? " The run is certified but not released — the file is marked DRAFT and must not be paid." : ""}
             {missingIds ? ` ${missingIds} employee${missingIds === 1 ? "" : "s"} without an employee number or NPWP — HR completes the record on /people.` : ""} The files contain confidential individual amounts (§13.4).
           </p>
         </div>

@@ -1,10 +1,10 @@
 /* Workflow runtime (W10): turns store changes into trigger events, evaluates conditions and executes actions
  * client-side through the store's own actions. Every run is logged to `workflowRuns`. Only type imports from the store
  * (the watcher in the automation slice loads the store lazily to avoid an import cycle). */
-import type { CrmState } from "@/lib/store";
-import type { Activity, ActivityLinks, CrmObjectType, Epic, Issue, IssuePriority, IssueStatus, IssueType, LinkType, Workflow } from "@/lib/types";
-import { ISSUE_PRIORITIES, ISSUE_STATUSES, LEAD_STATUSES, LIFECYCLE_STAGES } from "@/lib/types";
-import { formatDate } from "@/lib/utils";
+import type { CrmState } from "../../lib/store";
+import type { Activity, ActivityLinks, CrmObjectType, Epic, Issue, IssuePriority, IssueStatus, IssueType, LinkType, Workflow } from "../../lib/types";
+import { ISSUE_PRIORITIES, ISSUE_STATUSES, LEAD_STATUSES, LIFECYCLE_STAGES } from "../../lib/types";
+import { formatDate } from "../../lib/utils";
 import { actionDef, CHECKLISTS, triggerDef, triggerLabel } from "./catalog";
 import { evaluateCondition } from "./conditions";
 import { issueLinks, lastActivityAt, recordContext, slaState, type RecordCtx, type WfEvent } from "./context";
