@@ -62,6 +62,13 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: ["P"], label: "Next priority on the focused issue", group: "Issue keys", routes: ["/board", "/issues"] },
   { keys: ["E"], label: "Next estimate on the focused issue", group: "Issue keys", routes: ["/board", "/issues"] },
 
+  // Triage inbox (Board / Backlog → Triage)
+  { keys: ["J", "K"], label: "Next / previous request (in the triage inbox)", group: "Triage inbox", routes: ["/board", "/backlog"] },
+  { keys: ["1"], label: "Accept into the backlog", group: "Triage inbox", routes: ["/board", "/backlog"] },
+  { keys: ["2"], label: "Decline with a reason", group: "Triage inbox", routes: ["/board", "/backlog"] },
+  { keys: ["3"], label: "Mark as duplicate", group: "Triage inbox", routes: ["/board", "/backlog"] },
+  { keys: ["H"], label: "Snooze", group: "Triage inbox", routes: ["/board", "/backlog"] },
+
   // List / table views
   { keys: ["J", "K"], label: "Next / previous row", group: "Table", routes: TABLE_ROUTES },
   { keys: ["X"], label: "Select / deselect the current row", group: "Table", routes: TABLE_ROUTES },

@@ -4,31 +4,71 @@
  *   npm run test:policy
  */
 import {
+  addBusinessDays,
+  allocateDeferralCosts,
+  amendmentDeadline,
+  amendmentTally,
+  annexBStatus,
   approvalTier,
+  breakEvenDeadline,
+  buildRunInputs,
+  businessDaysBetween,
   capacityCheck,
+  carriedForward,
+  certifyBlock,
+  certifyCheck,
   clawbackAmount,
   clawbackExempt,
+  clawbackRecoveriesFor,
   clawbackSchedule,
+  collectionWindow,
   computeRun,
   concurrentNonLeadRoles,
   contractedMonths,
+  cycleDates,
   cycleMonth,
+  cycleTiming,
   deferralTriggers,
+  endDateForMonths,
+  entryCycle,
+  extraPaymentsFor,
+  finalReconciliation,
   leadershipLoad,
+  liabilityRollForward,
   maxAllocationFactor,
   memberWeight,
   netRevenue,
+  nextProjectCode,
+  nextTrackingNo,
+  normalizeWorkPeriodEnd,
+  normalizeWorkPeriodStart,
+  paidInYear,
   participationEligibility,
+  paymentDate,
   paymentOutcome,
+  pph21BonusEstimate,
+  probationBalance,
+  probationBalanceByProject,
   projectCycles,
+  projectPayments,
   projectRate,
   proposalEconomics,
+  provisionalDeadline,
+  releaseCheck,
+  revenueEntryLock,
   revenueShareRate,
+  safeHarbourLeft,
   splitBonus,
+  taxRegimeAt,
+  terRate,
+  umkmTurnover,
+  workPeriodFromDates,
+  type RunResult,
 } from "../src/lib/initiatives/engine";
+import * as cal from "../src/lib/calendar";
 import { POLICY } from "../src/lib/initiatives/policy";
 import { initiativeSeed } from "../src/lib/initiatives/seed";
-import type { EmployeeProfile, Initiative, InitiativeMember, ProjectRole, ProjectType, RevenueEntry } from "../src/lib/initiatives/types";
+import type { BonusLine, BonusRun, DeferredBonus, EmployeeProfile, GovernanceRole, Initiative, InitiativeMember, ProjectRole, ProjectType, RevenueEntry } from "../src/lib/initiatives/types";
 
 let failures = 0;
 let passes = 0;
@@ -346,6 +386,289 @@ eq("4.2 Tier 3: over Rp2B", approvalTier({ type: "B", revenue: { expected: 2_100
   ok("seed: draft academy on the v4 curve", econ.rate.source === "curve" && econ.share < 0.4);
   const cb = S.clawbacks[0];
   ok("seed: clawback positive and within 20% of salary", !!cb && clawbackAmount(cb) > 0 && cb.monthlyDeduction <= (600 * M / 12) * POLICY.clawback.maxSalaryDeductionPct + 1);
+}
+
+/* ═════════════════════ W7 — money correctness (calendar, held ledger, controls, tax) ═════════════════════ */
+
+const keyOf = (iso: string) => cal.wibDateKey(iso);
+const toRun = (r: RunResult, status: BonusRun["status"], extra: Partial<BonusRun> = {}): BonusRun => ({
+  id: `run-${r.month}`, month: r.month, status, policyVersion: "4.0", companyRevenue: 0, directCosts: 0, overheads: 0, cash: 0, fixedCostsMonthly: 0,
+  operatingResult: r.operatingResult, cashAfter: r.cashAfter, payoutPct: r.payoutPct, totals: r.totals, lines: r.lines, certifiedById: "maria", certifiedAt: null, releasedById: null, releasedAt: null, entryIds: r.entryIds, ...extra,
+});
+const lineOf = (r: { lines: BonusLine[] }, u: string) => r.lines.find((l) => l.userId === u);
+
+/* ── calendar.ts: SKB 3 Menteri holidays + cuti bersama ── */
+ok("cal 25 Dec 2026 is a national holiday", cal.holidayOn("2026-12-25")?.kind === "national");
+ok("cal 24 Dec 2026 cuti bersama is not a business day", cal.holidayOn("2026-12-24")?.kind === "cuti_bersama" && !cal.isBusinessDay("2026-12-24"));
+ok("cal Saturday is not a business day", !cal.isBusinessDay("2027-01-23") && cal.isBusinessDay("2027-01-22"));
+ok("cal addBusinessDays skips Independence Day (Fri 14 Aug + 2 = Wed 19 Aug 2026)", keyOf(addBusinessDays(wib("2026-08-14"), 2)) === "2026-08-19");
+ok("cal addBusinessDays across Nyepi + Lebaran 2027 (Fri 5 Mar + 3 = Thu 18 Mar)", keyOf(addBusinessDays(wib("2027-03-05"), 3)) === "2027-03-18");
+eq("cal business days 23 → 31 Dec 2026 (Christmas + cuti bersama skipped)", businessDaysBetween(wib("2026-12-23"), wib("2026-12-31")), 4);
+ok("cal addBusinessDays keeps the time of day", addBusinessDays(wib("2027-02-01", 15), 1) === wib("2027-02-02", 15));
+ok("6.8 vote deadline 5 business days over Lebaran 2027", keyOf(amendmentDeadline({ circulatedAt: wib("2027-03-05", 10) })) === "2027-03-22");
+
+/* ── §8.2 dates move for weekends and holidays ── */
+ok("8.2 salary 25 Dec 2026 (Christmas; 24th cuti bersama) → Wed 23 Dec", keyOf(paymentDate("2026-12")) === "2026-12-23");
+ok("8.2 salary 25 Apr 2027 (Sunday) → Fri 23 Apr", keyOf(paymentDate("2027-04")) === "2027-04-23");
+ok("8.2 salary 25 Dec 2027 (Saturday; 24th cuti bersama) → Thu 23 Dec", keyOf(paymentDate("2027-12")) === "2027-12-23");
+ok("8.2 salary 25 Sep 2026 (Friday) unchanged", keyOf(paymentDate("2026-09")) === "2026-09-25");
+ok("8.2 provisional 22 Nov 2026 (Sunday) → Fri 20 Nov", keyOf(provisionalDeadline("2026-11")) === "2026-11-20");
+ok("8.2 certification 23 Jan 2027 (Saturday) → Fri 22 Jan", keyOf(breakEvenDeadline("2027-01")) === "2027-01-22");
+ok("8.2 cut-off 20 Dec 2026 (Sunday) → Fri 18 Dec", cycleDates("2026-12").cutoff.date === "2026-12-18" && cycleDates("2026-12").notes.length >= 2);
+ok("8.2 collected Fri 18 Dec evening → December cycle", cycleMonth(wib("2026-12-18", 20)) === "2026-12");
+ok("8.2 collected Sat 19 Dec → January cycle", cycleMonth(wib("2026-12-19", 10)) === "2027-01");
+ok("8.2 January window opens the day after the moved cut-off", keyOf(collectionWindow("2027-01").from) === "2026-12-19");
+ok("8.2 certification blocked until the cut-off has passed (20 Mar 2027 Sat → cut-off Fri 19th)", certifyBlock("2027-03", wib("2027-03-19", 16)) !== null && certifyBlock("2027-03", wib("2027-03-20", 8)) === null);
+ok("8.2 cycle timing: late after the salary date", cycleTiming("2026-10", wib("2026-11-05")).phase === "late" && cycleTiming("2027-03", wib("2027-03-22")).phase === "provisional");
+
+/* ── §10 / §15.1 held amounts are carried and paid when the condition clears ── */
+{
+  const ini = mkIni("A", { lockedSharePct: 0.2 });
+  const mems = [mkMem("lia", ini, ["project_lead"])];
+  const entries = [entry(ini, "h1", wib("2027-03-10"), 100 * M, 0)];
+  const unsigned = { ...base, userId: "lia", acknowledgmentSignedAt: null };
+  const mar = computeRun({ month: "2027-03", initiatives: [ini], members: mems, entries, profiles: [unsigned], adjustments: [], ...RICH });
+  const held = lineOf(mar, "lia")?.held ?? 0;
+  ok("15.1 March share held without Annex B", held > 0 && (lineOf(mar, "lia")?.payable ?? 1) === 0);
+  const fwd = carriedForward([toRun(mar, "released")], "2027-04");
+  ok("15.1 held amount brought forward with its collection date", fwd.length === 1 && fwd[0].kind === "held" && fwd[0].collectedAt === entries[0].collectedAt);
+  const signed = { ...unsigned, acknowledgmentSignedAt: wib("2027-04-02") };
+  const apr = computeRun({ month: "2027-04", initiatives: [ini], members: mems, entries, profiles: [signed], adjustments: [], ...RICH, carriedIn: fwd, runs: [toRun(mar, "released")] });
+  eq("15.1 held amount paid once Annex B is signed", lineOf(apr, "lia")?.payable ?? 0, held);
+  eq("15.1 paid amount reported as released from hold", lineOf(apr, "lia")?.heldIn ?? 0, held);
+  const still = computeRun({ month: "2027-04", initiatives: [ini], members: mems, entries, profiles: [unsigned], adjustments: [], ...RICH, carriedIn: fwd });
+  ok("15.1 still unsigned → still held (not lost)", (lineOf(still, "lia")?.held ?? 0) === held && (lineOf(still, "lia")?.heldItems?.[0]?.fromMonth ?? "") === "2027-03");
+  const suspended = computeRun({ month: "2027-03", initiatives: [ini], members: mems, entries, profiles: [{ ...signed, suspended: true }], adjustments: [], ...RICH });
+  const cleared = computeRun({ month: "2027-04", initiatives: [ini], members: mems, entries, profiles: [signed], adjustments: [], ...RICH, carriedIn: carriedForward([toRun(suspended, "released")], "2027-04") });
+  ok("10 suspension cleared → held payments paid", (lineOf(suspended, "lia")?.held ?? 0) > 0 && (lineOf(cleared, "lia")?.payable ?? 0) === lineOf(suspended, "lia")?.held);
+  const retiring = { ...signed, separation: { kind: "retirement" as const, effectiveAt: wib("2027-03-31", 17), recordedAt: wib("2027-03-01") } };
+  const retHeld = computeRun({ month: "2027-04", initiatives: [ini], members: mems, entries: [entry(ini, "r1", wib("2027-04-12"), 100 * M, 0, [wib("2027-03-01", 0), wib("2027-03-31", 17)])], profiles: [retiring], adjustments: [], ...RICH });
+  const retPaid = computeRun({ month: "2027-05", initiatives: [ini], members: mems, entries: [], profiles: [{ ...retiring, separation: { ...retiring.separation, prcConfirmed: true } }], adjustments: [], ...RICH, carriedIn: carriedForward([toRun(retHeld, "released")], "2027-05") });
+  ok("10 retirement held until the PRC confirms, then paid", (lineOf(retHeld, "lia")?.held ?? 0) > 0 && (lineOf(retPaid, "lia")?.payable ?? 0) === lineOf(retHeld, "lia")?.held);
+
+  /* §10 carried and held amounts are re-checked with their original dates */
+  const fired = { ...signed, separation: { kind: "termination_for_cause" as const, effectiveAt: wib("2027-04-01"), recordedAt: wib("2027-04-01") } };
+  const firedRun = computeRun({ month: "2027-04", initiatives: [ini], members: mems, entries, profiles: [fired], adjustments: [], ...RICH, carriedIn: fwd });
+  ok("9.2/10 dismissal for cause forfeits a held amount", (lineOf(firedRun, "lia")?.forfeited ?? 0) === held && (lineOf(firedRun, "lia")?.payable ?? 1) === 0);
+  const carriedItem = [{ initiativeId: ini.id, userId: "lia", amount: 30 * M, kind: "carried" as const, collectedAt: wib("2027-03-10"), workStart: wib("2027-02-01", 0), fromMonth: "2027-03" }];
+  ok("9.2/10 dismissal for cause forfeits a carried-forward amount", (lineOf(computeRun({ month: "2027-04", initiatives: [ini], members: mems, entries: [], profiles: [fired], adjustments: [], ...RICH, carriedIn: carriedItem }), "lia")?.forfeited ?? 0) === 30 * M);
+  const resigned = { ...signed, separation: { kind: "resignation" as const, effectiveAt: wib("2027-03-31", 17), recordedAt: wib("2027-03-01") } };
+  eq("10 resignation: carried amount collected before the last day still paid", lineOf(computeRun({ month: "2027-04", initiatives: [ini], members: mems, entries: [], profiles: [resigned], adjustments: [], ...RICH, carriedIn: carriedItem }), "lia")?.payable ?? 0, 30 * M);
+  ok("10 resignation: carried amount collected after the last day forfeited", (lineOf(computeRun({ month: "2027-05", initiatives: [ini], members: mems, entries: [], profiles: [resigned], adjustments: [], ...RICH, carriedIn: [{ ...carriedItem[0], collectedAt: wib("2027-04-10") }] }), "lia")?.forfeited ?? 0) === 30 * M);
+}
+
+/* ── §8.5 late collections for a released cycle roll into the next open cycle ── */
+{
+  const ini = mkIni("A", { lockedSharePct: 0.2 });
+  const mems = [mkMem("a", ini, ["project_lead"])];
+  const e1 = entry(ini, "late-1", wib("2027-03-10"), 100 * M, 0);
+  const mar = computeRun({ month: "2027-03", initiatives: [ini], members: mems, entries: [e1], profiles: profilesFor(["a"]), adjustments: [], ...RICH });
+  ok("8.5 run records the entries it paid", (mar.entryIds ?? []).includes("late-1"));
+  const released = toRun(mar, "released");
+  const e2 = entry(ini, "late-2", wib("2027-03-15"), 50 * M, 0); // collected in March, entered after the March release
+  ok("8.5 late entry assigned to the next open cycle", entryCycle(e2, [released]) === "2027-04" && entryCycle(e1, [released]) === "2027-03");
+  const apr = computeRun({ month: "2027-04", initiatives: [ini], members: mems, entries: [e1, e2], profiles: profilesFor(["a"]), adjustments: [], ...RICH, runs: [released] });
+  eq("8.5 late collection paid in April", lineOf(apr, "a")?.payable ?? 0, Math.floor(50 * M * 0.995 * 0.2));
+  ok("8.5 April line says which cycle it corrects", (lineOf(apr, "a")?.rolledFrom ?? []).includes("2027-03"));
+  const marAgain = computeRun({ month: "2027-03", initiatives: [ini], members: mems, entries: [e1, e2], profiles: profilesFor(["a"]), adjustments: [], ...RICH, runs: [released] });
+  eq("8.5 released March figures unchanged by the late entry", marAgain.totals.payable, mar.totals.payable);
+  ok("8.5 payments in a released cycle are locked", revenueEntryLock(e1, [released]) !== null && revenueEntryLock(e2, [released]) === null && revenueEntryLock(e1, [toRun(mar, "certified")]) === null);
+}
+
+/* ── §9.2 probationers pro-rated like everyone else ── */
+{
+  const ini = mkIni("A", { lockedSharePct: 1 });
+  const mems = [mkMem("a", ini, ["project_lead"]), mkMem("b", ini, ["project_lead"])];
+  const entries = [entry(ini, "pp", wib("2027-03-10"), 320 * M, 158.4 * M, [wib("2027-02-01", 0), wib("2027-02-28", 17)])];
+  const profiles = [...profilesFor(["a"]), { ...base, userId: "b", employmentType: "probationary" as const, probationEndDate: wib("2027-12-31", 17) }];
+  const r = computeRun({ month: "2027-03", initiatives: [ini], members: mems, entries, profiles, adjustments: [], companyRevenue: 1_200 * M, directCosts: 380 * M, overheads: 760 * M, cash: 10_000 * M, fixedCostsMonthly: 100 * M });
+  eq("9.2 payout 75% (probation accrual not double counted)", Math.round(r.payoutPct * 10_000) / 100, 75);
+  eq("9.2 permanent member paid 75%", lineOf(r, "a")?.payable ?? 0, 60 * M, 2);
+  eq("9.2 probationer accrues the same 75%", lineOf(r, "b")?.withheld ?? 0, 60 * M, 2);
+  eq("9.2 probationer's remainder carried forward", lineOf(r, "b")?.carriedOver ?? 0, 20 * M, 2);
+  const next = computeRun({ month: "2027-04", initiatives: [ini], members: mems, entries, profiles, adjustments: [], ...RICH, carriedIn: carriedForward([toRun(r, "released")], "2027-04") });
+  eq("9.2 carried probation remainder accrues next passing month", lineOf(next, "b")?.withheld ?? 0, 20 * M, 2);
+  eq("11.3 probation liability roll-forward", liabilityRollForward("2027-03", { runs: [toRun(r, "released")] }).accounts.find((a) => a.key === "probation")?.closing ?? 0, lineOf(r, "b")?.withheld ?? -1);
+  eq("9.2 carried liability roll-forward", liabilityRollForward("2027-03", { runs: [toRun(r, "released")] }).accounts.find((a) => a.key === "carried")?.closing ?? 0, r.totals.carriedOver);
+
+  /* §11.4 Probation Completion Bonus becomes a payable line (§9.1 tested) */
+  const runs = [toRun(r, "released"), toRun(next, "released")];
+  const balance = probationBalance("b", runs);
+  const outcome = { id: "po1", userId: "b", outcome: "completed" as const, amount: balance, decidedAt: wib("2027-05-02"), payMonth: "2027-05", byProject: probationBalanceByProject("b", runs), endedAt: wib("2027-04-30", 17) };
+  const extras = extraPaymentsFor("2027-05", { probationOutcomes: [outcome], runs });
+  const may = computeRun({ month: "2027-05", initiatives: [ini], members: mems, entries, profiles: [...profilesFor(["a", "b"])], adjustments: [], ...RICH, extraPayments: extras });
+  eq("11.4 Probation Completion Bonus paid as a run line", lineOf(may, "b")?.payable ?? 0, balance, 1);
+  ok("11.4 completion bonus counted in the break-even test", Math.abs(may.proposed - balance) <= 1 && (lineOf(may, "b")?.extras?.[0]?.kind ?? "") === "probation_completion");
+}
+
+/* ── §9.3 deferred releases become payable lines ── */
+{
+  const ini = mkIni("A", { lockedSharePct: 0.2, newClient: true, deferralPct: 0.3 });
+  const mems = [mkMem("a", ini, ["project_lead"])];
+  const mar = computeRun({ month: "2027-03", initiatives: [ini], members: mems, entries: [entry(ini, "d1", wib("2027-03-10"), 100 * M, 0)], profiles: profilesFor(["a"]), adjustments: [], ...RICH });
+  ok("9.3 line keeps the collection date for the deferral", lineOf(mar, "a")?.lastCollectedAt === wib("2027-03-10"));
+  const d: DeferredBonus = { id: "def1", month: "2027-03", initiativeId: ini.id, userId: "a", amount: lineOf(mar, "a")!.deferred, vestAt: wib("2027-12-31"), status: "released", releasedAmount: lineOf(mar, "a")!.deferred, note: "", payMonth: "2028-01", collectedAt: wib("2027-03-10"), workStart: null };
+  const jan = computeRun({ month: "2028-01", initiatives: [ini], members: mems, entries: [], profiles: profilesFor(["a"]), adjustments: [], ...RICH, extraPayments: extraPaymentsFor("2028-01", { deferred: [d] }) });
+  eq("9.3 deferred release paid in its cycle", lineOf(jan, "a")?.payable ?? 0, d.releasedAmount);
+  const tight = computeRun({ month: "2028-01", initiatives: [ini], members: mems, entries: [], profiles: profilesFor(["a"]), adjustments: [], companyRevenue: 100 * M, directCosts: 0, overheads: 100 * M - Math.floor(d.releasedAmount / 2), cash: 10_000 * M, fixedCostsMonthly: 0, extraPayments: extraPaymentsFor("2028-01", { deferred: [d] }) });
+  ok("9.1 deferred release passes the break-even test (pro rata when it fails)", (lineOf(tight, "a")?.payable ?? 0) < d.releasedAmount && (lineOf(tight, "a")?.carriedOver ?? 0) > 0);
+  const resigned = { ...base, userId: "a", separation: { kind: "resignation" as const, effectiveAt: wib("2027-06-30", 17), recordedAt: wib("2027-06-01") } };
+  eq("10 deferred release for work before the last day still paid after resigning", lineOf(computeRun({ month: "2028-01", initiatives: [ini], members: mems, entries: [], profiles: [resigned], adjustments: [], ...RICH, extraPayments: extraPaymentsFor("2028-01", { deferred: [d] }) }), "a")?.payable ?? 0, d.releasedAmount);
+  eq("9.3 paidInYear does not double count a run-paid deferral", paidInYear("a", [toRun(jan, "released")], "2028", [d]), d.releasedAmount);
+  const split = allocateDeferralCosts([{ id: "x", amount: 50 * M }, { id: "y", amount: 50 * M }], 10 * M);
+  ok("9.3 warranty costs deducted once across a project's deferrals", split.rows.every((r) => r.deduction === 5 * M) && split.deducted === 10 * M);
+  const over = allocateDeferralCosts([{ id: "x", amount: 3 * M }, { id: "y", amount: 1 * M }], 7 * M);
+  ok("9.3 costs beyond the deferred pool absorbed by the company", over.deducted === 4 * M && over.absorbedByCompany === 3 * M && over.rows.every((r) => r.net === 0));
+}
+
+/* ── §9.5 curve applies by approval date ── */
+{
+  const adj = [{ id: "ca", from: { start: 0.4, floor: 0.1, decay: 1_500 * M }, to: { start: 0.3, floor: 0.1, decay: 1_500 * M }, proposedAt: wib("2026-12-20"), effectiveFrom: wib("2027-02-01", 0), rationale: "", approvedById: "ben" }];
+  const pending = mkIni("A", { status: "evaluation", approvedAt: null, submittedAt: wib("2027-01-10"), revenue: { expected: 600 * M, best: 600 * M, worst: 600 * M }, costs: { materials: 100 * M, subcontractors: 0, equipment: 0, travel: 0, other: 0, contingencyPct: 0 } });
+  ok("9.5 submitted before, approved after the change → new curve", projectRate(pending, adj, wib("2027-03-01")).curve.start === 0.3);
+  ok("9.5 approved before the change → old curve", projectRate(pending, adj, wib("2027-01-20")).curve.start === 0.4);
+  ok("9.5 approved projects keep their curve", projectRate({ ...pending, status: "active", approvedAt: wib("2027-01-20") }, adj, wib("2027-03-01")).curve.start === 0.4);
+}
+
+/* ── §9.4 safe harbour per person per project; 24-month window to the trigger date ── */
+{
+  const c1 = { id: "c1", userId: "u", initiativeId: "p", trigger: "data_error" as const, personallyAtFault: false, originalPaid: 8 * M, recalculated: 0, createdAt: wib("2027-01-01") };
+  const c2 = { ...c1, id: "c2", originalPaid: 7 * M, createdAt: wib("2027-02-01") };
+  const c3 = { ...c1, id: "c3", initiativeId: "q", originalPaid: 7 * M };
+  const all = [c1, c2, c3];
+  eq("9.4 first data-error case inside the Rp10M harbour", clawbackAmount(c1, all), 0);
+  eq("9.4 second case on the same project uses what is left (8M + 7M → 5M)", clawbackAmount(c2, all), 5 * M);
+  eq("9.4 harbour is per project", clawbackAmount(c3, all), 0);
+  eq("9.4 harbour left after the first case", safeHarbourLeft(c2, all), 2 * M);
+  const window = { trigger: "revenue_reversal" as const, personallyAtFault: false, originalPaid: 80 * M, recalculated: 0, paidAt: wib("2025-01-25") };
+  ok("9.4 trigger within 24 months stays recoverable after month 24", clawbackExempt({ ...window, createdAt: wib("2026-12-01") }, wib("2027-06-01")) === null);
+  ok("9.4 trigger after 24 months is exempt", clawbackExempt({ ...window, triggeredAt: wib("2027-02-01") }) !== null);
+  const rec = clawbackRecoveriesFor([{ ...window, id: "cbr", userId: "a", initiativeId: "p", originalPaid: 20 * M, recalculated: 10 * M, status: "recovering", recoverFromBonuses: true, recovered: 2 * M, notifiedAt: null, months: 6, monthlyDeduction: 0, notes: "", createdAt: wib("2027-02-01") }]);
+  eq("9.4 outstanding recovery from future bonuses", rec[0]?.amount ?? 0, 8 * M);
+  const ini = mkIni("A", { lockedSharePct: 0.2 });
+  const r = computeRun({ month: "2027-03", initiatives: [ini], members: [mkMem("a", ini, ["project_lead"])], entries: [entry(ini, "rc", wib("2027-03-10"), 100 * M, 0)], profiles: profilesFor(["a"]), adjustments: [], ...RICH, recoveries: rec });
+  eq("9.4 recovered from the next bonus", lineOf(r, "a")?.recovered ?? 0, 8 * M);
+  eq("9.4 bonus paid net of the recovery", lineOf(r, "a")?.payable ?? 0, Math.floor(100 * M * 0.995 * 0.2) - 8 * M);
+}
+
+/* ── §4.5 one code / tracking-number sequence per year ── */
+{
+  const coded = [{ code: "PRJ-2026-004" }, { code: "PRJ-2026-007" }, { code: null }, { code: "PRJ-2025-011" }];
+  ok("4.5 next 2026 code is max + 1", nextProjectCode(coded, wib("2026-11-05")) === "PRJ-2026-008");
+  ok("4.5 numbering restarts in 2027", nextProjectCode(coded, wib("2027-01-02")) === "PRJ-2027-001");
+  ok("4.5 approval after a ratification never reuses its code", nextProjectCode([...coded, { code: "PRJ-2027-001" }], wib("2027-01-05")) === "PRJ-2027-002");
+  ok("4.5 year taken in WIB (00:30 on 1 Jan WIB is 2027)", nextProjectCode(coded, new Date("2027-01-01T00:30:00+07:00").toISOString()) === "PRJ-2027-001");
+  ok("4.5 tracking numbers follow the same rule", nextTrackingNo([{ trackingNo: "PRC-2026-012" }, { trackingNo: "" }], wib("2026-11-05")) === "PRC-2026-013");
+}
+
+/* ── §6.8 amendment tally ── */
+{
+  const v = (pairs: [string, "for" | "against"][]) => pairs.map(([userId, vote]) => ({ userId, vote, at: wib("2027-01-05") }));
+  const team = ["a", "b", "c", "d"];
+  ok("6.8 4 members, 1 for 2 against → still open (a tie is possible)", amendmentTally(v([["a", "for"], ["b", "against"], ["c", "against"]]), team) === "open");
+  ok("6.8 4 members, 3 against → failed", amendmentTally(v([["b", "against"], ["c", "against"], ["d", "against"]]), team) === "failed");
+  ok("6.8 2–2 → tied (PRC decides)", amendmentTally(v([["a", "for"], ["b", "for"], ["c", "against"], ["d", "against"]]), team) === "tied");
+  ok("6.8 3 of 4 for → passed", amendmentTally(v([["a", "for"], ["b", "for"], ["c", "for"]]), team) === "passed");
+  ok("6.8 2 members, one against → open", amendmentTally(v([["a", "against"]]), ["a", "b"]) === "open");
+  ok("6.8 deadline: 2 for of 4 → tied", amendmentTally(v([["a", "for"], ["b", "for"]]), team, true) === "tied");
+  ok("6.8 deadline: 1 for 1 against of 4 → failed", amendmentTally(v([["a", "for"], ["b", "against"]]), team, true) === "failed");
+}
+
+/* ── §5.1 contract-length default; §6.5 work periods in WIB days ── */
+{
+  const start = wib("2026-11-04");
+  eq("5.1 six-month default counts as 6 contracted months", contractedMonths({ startDate: start, endDate: endDateForMonths(start, 6) }), 6);
+  ok("5.1 six months from 4 Nov ends 3 May", keyOf(endDateForMonths(start, 6)) === "2027-05-03");
+  for (const i of initiativeSeed.initiatives.filter((x) => x.registeredRetroactively)) eq(`5.1 ongoing ${i.title} contracted 6 months`, contractedMonths(i), 6);
+  const end = new Date("2027-03-31T23:59:59.999+07:00").toISOString();
+  ok("6.5 work period from dates ends 23:59:59.999 WIB", workPeriodFromDates("2027-03-01", "2027-03-31").end === end && workPeriodFromDates("2027-03-01", "2027-03-31").start === wib("2027-03-01", 0));
+  ok("6.5 date-input end (17:00) normalised to end of day", normalizeWorkPeriodEnd(wib("2027-03-31", 17)) === end);
+  ok("6.5 end 17:00 + 23:59:59 (next day 16:59:59) normalised to the right day", normalizeWorkPeriodEnd(new Date("2027-04-01T16:59:59+07:00").toISOString()) === end);
+  ok("6.5 end of day kept", normalizeWorkPeriodEnd(end) === end && normalizeWorkPeriodStart(wib("2027-03-01", 17)) === wib("2027-03-01", 0));
+}
+
+/* ── §8.2 / §13.1 maker-checker, recusal, quorum ── */
+{
+  const prof = (userId: string, roles: GovernanceRole[]) => ({ ...base, userId, governanceRoles: roles });
+  const profiles = [prof("maria", ["prc", "cfo", "finance"]), prof("ben", ["prc", "ceo"]), prof("fajar", ["prc"]), prof("rani", ["prc"]), prof("eng", [])];
+  const ini = mkIni("A", { lockedSharePct: 0.2 });
+  const r = computeRun({ month: "2027-03", initiatives: [ini], members: [mkMem("fajar", ini, ["project_lead"]), mkMem("eng", ini, ["engineer"])], entries: [entry(ini, "mc", wib("2027-03-10"), 100 * M, 0)], profiles, adjustments: [], ...RICH });
+  const run = toRun(r, "certified", { certifiedById: "maria", recordedById: "maria" });
+  const at = wib("2027-03-24");
+  ok("8.2 maker-checker: the certifier cannot release", !releaseCheck(run, { profiles, actorId: "maria", atIso: at }).ok);
+  ok("13.1 a PRC member with lines in the run is recused", !releaseCheck(run, { profiles, actorId: "fajar", atIso: at }).ok && releaseCheck(run, { profiles, actorId: "fajar", atIso: at }).recused.includes("fajar"));
+  ok("13.2 a non-PRC user cannot release", !releaseCheck(run, { profiles, actorId: "eng", atIso: at }).ok);
+  ok("13.1 an uninvolved PRC member can release", releaseCheck(run, { profiles, actorId: "ben", atIso: at }).ok);
+  ok("13.1 recused member records a quorum vote incl. the CFO", releaseCheck(run, { profiles, actorId: "fajar", atIso: at, votes: [{ userId: "ben", vote: "for" }, { userId: "maria", vote: "for" }, { userId: "rani", vote: "for" }] }).ok);
+  ok("13.1 quorum must include the CFO or Finance", !releaseCheck(run, { profiles, actorId: "ben", atIso: at, votes: [{ userId: "ben", vote: "for" }, { userId: "rani", vote: "for" }, { userId: "fajar", vote: "for" }] }).ok);
+  const five = [...profiles, prof("yoga", ["prc"])];
+  ok("13.1 tie decided by the chair's casting vote", releaseCheck(run, { profiles: five, actorId: "ben", atIso: at, votes: [{ userId: "ben", vote: "for" }, { userId: "yoga", vote: "for" }, { userId: "maria", vote: "against" }, { userId: "rani", vote: "against" }] }).ok);
+  ok("13.1 release refused before the cut-off", !releaseCheck(run, { profiles, actorId: "ben", atIso: wib("2027-03-18") }).ok);
+  ok("8.2 late release flagged", releaseCheck(run, { profiles, actorId: "ben", atIso: wib("2027-04-02") }).late);
+  ok("9.1 only the CFO or Finance certifies", !certifyCheck("2027-03", { profiles, actorId: "ben", atIso: at }).ok && certifyCheck("2027-03", { profiles, actorId: "maria", atIso: at }).ok);
+  ok("9.1 PRC secretary may enter the CFO's certification on her behalf", certifyCheck("2027-03", { profiles, actorId: "ben", certifiedById: "maria", atIso: at }).onBehalf && certifyCheck("2027-03", { profiles, actorId: "ben", certifiedById: "maria", atIso: at }).ok);
+  ok("9.1 an employee cannot enter it", !certifyCheck("2027-03", { profiles, actorId: "eng", certifiedById: "maria", atIso: at }).ok);
+}
+
+/* ── §8.5 PPh 21 TER estimate ── */
+{
+  eq("8.5 TER A Rp10,000,000 = 2%", terRate("A", 10 * M), 0.02);
+  eq("8.5 TER A Rp15,000,000 = 6%", terRate("A", 15 * M), 0.06);
+  eq("8.5 TER C Rp10,000,000 = 1.5%", terRate("C", 10 * M), 0.015);
+  eq("8.5 bonus PPh 21 = TER(S+B)(S+B) − TER(S)S", pph21BonusEstimate(10 * M, 5 * M, "TK/0").withheld, 700_000);
+  ok("8.5 K/3 uses category C", pph21BonusEstimate(10 * M, 5 * M, "K/3").category === "C");
+  const ini = mkIni("A", { lockedSharePct: 0.2 });
+  const r = computeRun({ month: "2027-03", initiatives: [ini], members: [mkMem("a", ini, ["project_lead"])], entries: [entry(ini, "tx", wib("2027-03-10"), 100 * M, 0)], profiles: profilesFor(["a"]), adjustments: [], ...RICH });
+  const l = lineOf(r, "a")!;
+  ok("8.5 every paid line carries a labelled PPh 21 estimate", l.pph21?.basis === "estimate" && l.pph21.withheld > 0 && l.pph21.net === l.payable - l.pph21.withheld && r.totals.pph21Estimate === l.pph21.withheld);
+}
+
+/* ── §5.4 UMKM turnover and the dated switch ── */
+{
+  const ini = mkIni("B", { lockedSharePct: 0.2 });
+  const entries = [entry(ini, "t1", wib("2027-02-10"), 2_000 * M, 0), entry(ini, "t2", wib("2027-05-10"), 2_000 * M, 0), entry(ini, "t3", wib("2027-08-10"), 2_000 * M, 0)];
+  const g = umkmTurnover(2027, { entries });
+  ok("5.4 turnover over Rp4.8bn flagged with the crossing month", g.level === "exceeded" && g.crossedIn === "2027-08" && g.switchFrom?.startsWith("2028-01-01") === true);
+  ok("5.4 Finance's company turnover overrides the programme figure", umkmTurnover(2027, { entries, companyTurnover: [{ month: "2027-01", revenue: 3_500 * M, recordedAt: wib("2027-02-01"), recordedById: "maria" }] }).level === "watch");
+  const change = [{ id: "tx", regime: "corporate" as const, effectiveFrom: wib("2028-01-01", 0), corporateEffectiveRate: 0.22, note: "", recordedAt: wib("2027-12-01"), recordedById: "maria" }];
+  ok("5.4 regime by date", taxRegimeAt(wib("2027-12-31"), change).regime === "umkm" && taxRegimeAt(wib("2028-01-02"), change).regime === "corporate");
+  eq("5.4 corporate tax on margin after the switch", netRevenue(100 * M, 60 * M, 0, taxRegimeAt(wib("2028-01-02"), change)).tax, 8.8 * M, 1);
+  const pays = projectPayments(ini, [entry(ini, "c1", wib("2027-12-10"), 100 * M, 60 * M), entry(ini, "c2", wib("2028-01-10"), 100 * M, 60 * M)], [], { taxChanges: change });
+  ok("5.4 new method from the switch date only; earlier revenue unchanged", pays[0].tax === 0.5 * M && Math.abs(pays[1].tax - 8.8 * M) < 1);
+}
+
+/* ── §8.3 final reconciliation ── */
+{
+  const ini = mkIni("A", { lockedSharePct: 0.2, status: "completed", completedAt: wib("2027-06-30") });
+  const mems = [mkMem("a", ini, ["project_lead"]), mkMem("b", ini, ["engineer"])];
+  const e1 = entry(ini, "f1", wib("2027-03-10"), 100 * M, 0, [wib("2027-01-01", 0), wib("2027-03-31", 17)]);
+  const mar = computeRun({ month: "2027-03", initiatives: [ini], members: mems, entries: [e1], profiles: profilesFor(["a", "b"]), adjustments: [], ...RICH });
+  const runs = [toRun(mar, "released")];
+  const up = finalReconciliation(ini, { entries: [e1, entry(ini, "f2", wib("2027-06-10"), 100 * M, 0)], runs });
+  ok("8.3 final pool above the amount allocated → top-up next salary", up.difference > 0 && up.topUpTotal <= up.difference && up.difference - up.topUpTotal <= 2);
+  const pending: DeferredBonus[] = [{ id: "dp", month: "2027-03", initiativeId: ini.id, userId: "a", amount: 50 * M, vestAt: wib("2027-12-31"), status: "pending", releasedAmount: 0, note: "" }];
+  const down = finalReconciliation(ini, { entries: [e1, { ...entry(ini, "cn", wib("2027-06-10"), -50 * M, 0), correctionOf: "f1" }], runs, deferred: pending });
+  ok("8.3 overpayment taken from deferred amounts first", down.difference < 0 && (down.members.find((m) => m.userId === "a")?.offsetFromDeferred ?? 0) > 0 && (down.members.find((m) => m.userId === "b")?.remainder ?? 0) > 0);
+  ok("8.3 reconciliation due 30 days after close", keyOf(up.dueBy ?? "") === "2027-07-30");
+  const adj = extraPaymentsFor("2027-07", { bonusAdjustments: [{ id: "adj1", kind: "reconciliation_topup", userId: "a", initiativeId: ini.id, amount: 3 * M, payMonth: "2027-07", note: "", createdAt: wib("2027-07-05"), createdById: "maria" }] });
+  eq("8.3 reconciliation top-up paid as a run line", lineOf(computeRun({ month: "2027-07", initiatives: [ini], members: mems, entries: [], profiles: profilesFor(["a", "b"]), adjustments: [], ...RICH, extraPayments: adj }), "a")?.payable ?? 0, 3 * M);
+}
+
+/* ── §15.1 one Annex B rule ── */
+ok("15.1 signed 23:30 WIB on 28 Oct → v3.0", !annexBStatus({ acknowledgmentSignedAt: new Date("2026-10-28T23:30:00+07:00").toISOString() }).current);
+ok("15.1 signed 00:30 WIB on 29 Oct → v4.0", annexBStatus({ acknowledgmentSignedAt: new Date("2026-10-29T00:30:00+07:00").toISOString() }).current);
+ok("15.1 v3.0 agreement blocks v4.0 payments only", !annexBStatus({ acknowledgmentSignedAt: wib("2026-04-10") }, wib("2026-12-23")).blocksPayment && annexBStatus({ acknowledgmentSignedAt: wib("2026-04-10") }, wib("2027-01-25")).blocksPayment);
+
+/* ── seed + buildRunInputs ── */
+{
+  const S = { ...initiativeSeed, bonusAdjustments: [], taxRegimeChanges: [] };
+  ok("seed: released runs record the entries they paid", S.bonusRuns.filter((r) => r.status === "released").every((r) => (r.entryIds?.length ?? 0) > 0));
+  ok("seed: released runs record the PRC approver and recusals", S.bonusRuns.filter((r) => r.status === "released").every((r) => (r.approvals?.length ?? 0) === 1 && r.recusedIds !== undefined));
+  ok("seed: deferred entries keep their collection date", S.deferredBonuses.every((d) => !!d.collectedAt));
+  const oct = S.bonusRuns.find((r) => r.month === "2026-10")!;
+  const nov = computeRun(buildRunInputs(S, "2026-11", { companyRevenue: oct.companyRevenue, directCosts: oct.directCosts, overheads: oct.overheads, cash: oct.cash, fixedCostsMonthly: oct.fixedCostsMonthly }));
+  const liaHeld = oct.lines.filter((l) => l.userId === "u-lia").reduce((s, l) => s + l.held, 0);
+  ok("seed: Lia's held October share is still held in November (not lost)", liaHeld === 0 || nov.lines.filter((l) => l.userId === "u-lia").reduce((s, l) => s + l.held, 0) >= liaHeld);
 }
 
 console.log(`${passes} checks passed, ${failures} failed`);

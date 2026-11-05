@@ -65,13 +65,17 @@ export interface CompExtrasSlice {
   approveRelease: (runId: string, vote: "for" | "against", onBehalfOf?: string) => string | null;
   withdrawReleaseApproval: (id: string) => void;
   addCycleNote: (month: string, kind: CycleNote["kind"], text: string) => void;
+  /** §10 withdraw a recorded separation (e.g. rescinded resignation): clears it, reopens the ledger rows it closed and restores what it forfeited. HR only. */
+  withdrawSeparation: (userId: string, reason: string) => boolean;
+  /** §10 PRC confirms a recorded retirement later — held retirement payments are paid in the next run. */
+  confirmRetirement: (userId: string, note: string) => boolean;
   /** §13.1 HR maintains governance roles; appointed PRC members serve two-year terms. */
   setGovernanceRoles: (userId: string, roles: GovernanceRole[], prcTermEndsAt: string | null) => boolean;
   /** HR identifiers used on statements and the payroll export. */
   updateHrIdentifiers: (userId: string, patch: Pick<EmployeeProfile, "employeeNumber" | "npwp" | "ptkpStatus">) => boolean;
 }
 
-type S0 = CompExtrasSlice & Pick<CrmState, "currentUserId" | "employeeProfiles" | "users" | "initiativeMembers" | "bonusRuns" | "auditLog" | "ledgerConfirmations" | "exceptionReviews" | "releaseApprovals" | "cycleNotes">;
+type S0 = CompExtrasSlice & Pick<CrmState, "currentUserId" | "employeeProfiles" | "users" | "initiativeMembers" | "deferredBonuses" | "probationOutcomes" | "bonusRuns" | "auditLog" | "ledgerConfirmations" | "exceptionReviews" | "releaseApprovals" | "cycleNotes">;
 
 const ROLE_LABEL: Record<GovernanceRole, string> = { prc: "PRC", ceo: "CEO", cfo: "CFO", hr: "HR", finance: "Finance", executive_committee: "ExCo" };
 
@@ -147,6 +151,34 @@ export function createCompExtrasSlice<S extends S0>(set: SetFn<S>, get: GetFn<S>
       audit("run", month, "CFO written certification reference recorded (§9.1)", t);
     },
 
+    withdrawSeparation: (userId, reason) => {
+      if (!can.manageHr(myRoles()) || reason.trim().length < 5) return false;
+      const p = get().employeeProfiles.find((x) => x.userId === userId);
+      const sep = p?.separation;
+      if (!p || !sep) return false;
+      const rows = sep.closedRowIds ?? get().initiativeMembers.filter((m) => m.userId === userId && m.leftAt === sep.effectiveAt).map((m) => m.id);
+      const runs = get().bonusRuns;
+      set((s) => ({
+        employeeProfiles: s.employeeProfiles.map((x) => (x.userId === userId ? { ...x, separation: null, resignationNoticeAt: sep.kind === "resignation" ? null : x.resignationNoticeAt, terminationNoticeAt: sep.kind.startsWith("termination") ? null : x.terminationNoticeAt } : x)),
+        // reopen the ledger rows the separation closed on its effective date (§6.5)
+        initiativeMembers: s.initiativeMembers.map((m) => (rows.includes(m.id) && m.leftAt === sep.effectiveAt && m.removal.stage !== "removed" ? { ...m, leftAt: null } : m)),
+        // deferrals forfeited by a dismissal that is withdrawn are restored
+        deferredBonuses: s.deferredBonuses.map((d) => (d.userId === userId && d.status === "forfeited" && d.note.startsWith("Forfeited — dismissal") ? { ...d, status: "pending" as const, note: `High-risk deferral restored — separation withdrawn: ${reason.trim()}` } : d)),
+        // a final-pay / forfeiture probation outcome not yet paid by a released run is undone (§11.4)
+        probationOutcomes: s.probationOutcomes.filter((o) => !(o.userId === userId && o.outcome !== "completed" && !(o.payMonth && runs.some((r) => r.month === o.payMonth && r.status === "released")))),
+      }) as Partial<S>);
+      audit("employee", userId, `separation withdrawn (${sep.kind.replace(/_/g, " ")} of ${sep.effectiveAt.slice(0, 10)})`, `${rows.length} ledger row${rows.length === 1 ? "" : "s"} reopened · ${reason.trim()}`);
+      return true;
+    },
+    confirmRetirement: (userId, note) => {
+      if (!can.prc(myRoles())) return false;
+      const p = get().employeeProfiles.find((x) => x.userId === userId);
+      if (!p?.separation || p.separation.kind !== "retirement" || p.separation.prcConfirmed) return false;
+      const ts = now();
+      set((s) => ({ employeeProfiles: s.employeeProfiles.map((x) => (x.userId === userId && x.separation ? { ...x, separation: { ...x.separation, prcConfirmed: true, prcConfirmedAt: ts, prcConfirmedById: s.currentUserId } } : x)) }) as Partial<S>);
+      audit("employee", userId, "PRC confirmed the retirement — held payments are paid in the next run (§10)", note.trim());
+      return true;
+    },
     setGovernanceRoles: (userId, roles, prcTermEndsAt) => {
       if (!can.manageHr(myRoles())) return false;
       const p = get().employeeProfiles.find((x) => x.userId === userId);

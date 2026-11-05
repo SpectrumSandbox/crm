@@ -10,7 +10,7 @@ import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
 import type { Clawback, ClawbackTrigger, EmployeeProfile, PrcVote } from "@/lib/initiatives/types";
 import { useAccess } from "@/lib/access-control";
-import { prcRoster } from "./run-controls";
+import { prcRoster } from "@/lib/initiatives/engine";
 import { addBusinessDays, addMonths, carriedForward, clawbackAmount, clawbackExempt, clawbackSchedule, cycleMonth, paymentDate } from "@/lib/initiatives/engine";
 import { POLICY } from "@/lib/initiatives/policy";
 import { cn, formatDate, formatIDR, fromDateInput, toDateInput } from "@/lib/utils";
@@ -355,7 +355,7 @@ function DecisionModal({ c, dispute, onClose }: { c: Clawback; dispute?: boolean
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
   const access = useAccess();
-  const roster = useMemo(() => prcRoster(profiles), [profiles]);
+  const roster = useMemo(() => prcRoster(profiles).map((p) => p.userId), [profiles]);
   const team = useMemo(() => new Set(members.filter((m) => m.initiativeId === c.initiativeId).map((m) => m.userId)), [members, c.initiativeId]);
   const recusal = (u: string) => (u === c.userId ? "the employee concerned" : team.has(u) ? "on the project's team" : null);
   const chair = roster.find((u) => profiles.find((p) => p.userId === u)?.governanceRoles.includes("ceo")) ?? null;

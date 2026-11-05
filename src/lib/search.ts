@@ -1,3 +1,5 @@
+import { normalisePhone } from "./smart-lists";
+
 /**
  * Command-palette ranking (cmdk `filter`): every typed word must appear somewhere in the item's value or
  * keywords; whole-word / prefix hits rank higher than mid-word hits. Returns 0 (hidden) … 1 (best).
@@ -17,18 +19,10 @@ export function tokenFilter(value: string, search: string, keywords?: string[]) 
 
 /**
  * Indonesian phone number in E.164 form for matching and WhatsApp links: "0812 8919 8729" / "62812…" / "+62-812-…" →
- * "+6281289198729". Numbers already in another country's +code keep it. Returns "" when there are no digits.
+ * "+6281289198729" (the CRM's one normaliser, normalisePhone in smart-lists.ts). Returns "" when there are no digits.
  */
 export function normalizePhone(raw: string | null | undefined) {
-  if (!raw) return "";
-  const plus = raw.trim().startsWith("+");
-  let digits = raw.replace(/\D/g, "");
-  if (!digits) return "";
-  if (plus) return `+${digits}`;
-  if (digits.startsWith("00")) return `+${digits.slice(2)}`;
-  if (digits.startsWith("62")) return `+${digits}`;
-  if (digits.startsWith("0")) digits = digits.slice(1);
-  return `+62${digits}`;
+  return normalisePhone(raw).e164 ?? "";
 }
 
 /** Search keywords for a phone number: E.164, bare digits and the local 0… form, so any way of typing it matches. */

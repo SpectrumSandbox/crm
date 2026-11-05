@@ -94,6 +94,9 @@ function isBulk(prev: CrmState, next: CrmState) {
 function startWatcher(api: Api) {
   if (watcherStarted || typeof window === "undefined") return;
   watcherStarted = true;
+  // Lazy so the store ⇄ slice import cycle resolves; the node16 resolver used by scripts/tsconfig.json wants an explicit
+  // extension on dynamic imports, which the Next bundler doesn't — hence the ignore (scripts never run this code).
+  // @ts-ignore TS2835 under moduleResolution node16 only
   void import("../store").then(({ useCrm, useUi }) => {
     const hydrated = () => {
       const p = (useCrm as unknown as { persist?: { hasHydrated?: () => boolean } }).persist;
