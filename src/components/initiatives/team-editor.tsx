@@ -111,6 +111,12 @@ export function TeamEditor({ initiativeId, mode }: { initiativeId: string; mode:
 
   const [dialog, setDialog] = useState<Dialog>(null);
   const [now] = useState(() => Date.now());
+  const closeOverdueAmendments = useCrm((s) => s.closeOverdueAmendments);
+  // §6.8.2 votes close after 5 business days — resolve overdue amendments whenever the Team tab opens
+  useEffect(() => {
+    const n = closeOverdueAmendments();
+    if (n) useUi.getState().notify(`${n} amendment${n === 1 ? "" : "s"} closed — the 5-business-day vote ended (§6.8)`);
+  }, [closeOverdueAmendments]);
 
   const rows = useMemo(() => allMembers.filter((m) => m.initiativeId === initiativeId), [allMembers, initiativeId]);
   const hasLedger = ledgerExists(allMembers, initiativeId);

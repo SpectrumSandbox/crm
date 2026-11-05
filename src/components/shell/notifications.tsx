@@ -26,15 +26,20 @@ import {
   Hourglass,
   Landmark,
   Layers,
+  ListChecks,
   ListTodo,
   Receipt,
   RotateCcw,
   Scale,
   Settings,
   ShieldAlert,
+  ShieldCheck,
+  Target,
   Ticket,
   Timer,
   TrendingDown,
+  TrendingUp,
+  Undo2,
   UserCheck,
   Users,
   X,
@@ -114,6 +119,13 @@ const KIND_ICON: Record<AlertKind, React.ComponentType<{ className?: string }>> 
   curve: TrendingDown,
   company_summary: BarChart3,
   dispute: Scale,
+  quote_expiry: Hourglass,
+  account_plan: Target,
+  issue_triage: ListChecks,
+  coi: ShieldCheck,
+  rate_reset: TrendingUp,
+  close_out: ClipboardCheck,
+  proposal_return: Undo2,
 };
 const TONE_TEXT: Record<AlertTone, string> = {
   red: "text-soft-red",
@@ -156,6 +168,14 @@ export function useMyAlerts(): Alert[] {
   const issues = useCrm((s) => s.issues);
   const issueLinks = useCrm((s) => s.issueLinks);
   const issueHistory = useCrm((s) => s.issueHistory);
+  const projects = useCrm((s) => s.projects);
+  const changeOrders = useCrm((s) => s.changeOrders);
+  const closeOutReports = useCrm((s) => s.closeOutReports);
+  const coiDeclarations = useCrm((s) => s.coiDeclarations);
+  const accountPlans = useCrm((s) => s.accountPlans);
+  const quoteSettings = useCrm((s) => s.quoteSettings);
+  const products = useCrm((s) => s.products);
+  const companies = useCrm((s) => s.companies);
   const access = useAccess();
   // re-evaluate time-based alerts (SLA breaches, the 20th / 23rd) every few minutes
   const [tick, setTick] = useState(0);
@@ -166,11 +186,11 @@ export function useMyAlerts(): Alert[] {
   return useMemo(
     () =>
       deriveAlerts(
-        { userId, users, profiles, initiatives, members, amendments, runs, deferred, clawbacks, outcomes, curveAdjustments, summaries, disputes, projectUpdates, tickets, activities, deals, pipelines, quotes, issues, issueLinks, issueHistory },
+        { userId, users, profiles, initiatives, members, amendments, runs, deferred, clawbacks, outcomes, curveAdjustments, summaries, disputes, projectUpdates, tickets, activities, deals, pipelines, quotes, issues, issueLinks, issueHistory, projects, changeOrders, closeOutReports, coiDeclarations, accountPlans, quoteSettings, products, companies },
         Date.now(),
       ).filter((a) => access.seeAllPay || !PAY_ROLE_KINDS.has(a.kind)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [userId, users, profiles, initiatives, members, amendments, runs, deferred, clawbacks, outcomes, curveAdjustments, summaries, disputes, projectUpdates, tickets, activities, deals, pipelines, quotes, issues, issueLinks, issueHistory, access.seeAllPay, tick],
+    [userId, users, profiles, initiatives, members, amendments, runs, deferred, clawbacks, outcomes, curveAdjustments, summaries, disputes, projectUpdates, tickets, activities, deals, pipelines, quotes, issues, issueLinks, issueHistory, projects, changeOrders, closeOutReports, coiDeclarations, accountPlans, quoteSettings, products, companies, access.seeAllPay, tick],
   );
 }
 

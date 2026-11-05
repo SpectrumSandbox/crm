@@ -5,8 +5,11 @@ import { useMemo, useState } from "react";
 import { useCrm, useUi } from "@/lib/store";
 import { PROJECT_TYPE_META, POLICY, ORIGINATION_META } from "@/lib/initiatives/policy";
 import type { Initiative, ProjectType } from "@/lib/initiatives/types";
-import { contractedMonths } from "@/lib/initiatives/engine";
-import { ledgerDate, sixMonthsFrom, todayWib } from "@/lib/initiatives/team-rules";
+import { contractedMonths, endDateForMonths } from "@/lib/initiatives/engine";
+import { lastDayEnd, ledgerDate, todayWib, wibDay } from "@/lib/initiatives/team-rules";
+
+/** six contracted months from a yyyy-mm-dd start (§5.1) — engine.endDateForMonths */
+const sixMonthsFrom = (day: string) => wibDay(endDateForMonths(ledgerDate(day), 6));
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/overlays";
@@ -33,7 +36,7 @@ export function RegisterProjectDialog({ open, onOpenChange }: { open: boolean; o
   const [jira, setJira] = useState("");
 
   const valid = title.trim().length >= 2 && start && end && end > start;
-  const months = start && end && end > start ? contractedMonths({ startDate: ledgerDate(start), endDate: ledgerDate(end) }) : null;
+  const months = start && end && end > start ? contractedMonths({ startDate: ledgerDate(start), endDate: lastDayEnd(end) }) : null;
   const initiatorName = users.find((u) => u.id === initiatorId)?.name ?? "the initiator";
   const leadRoles = origination === "company" ? (["project_lead"] as const) : (["initiator", "project_lead"] as const);
   const submit = () => {
@@ -45,7 +48,7 @@ export function RegisterProjectDialog({ open, onOpenChange }: { open: boolean; o
       initiatorId,
       origination,
       startDate: ledgerDate(start),
-      endDate: ledgerDate(end),
+      endDate: lastDayEnd(end), // contracted final delivery, end of that day in WIB (as engine.endDateForMonths)
       demo: false,
       registeredRetroactively: true,
       policyVersion: "4.0",

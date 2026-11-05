@@ -28,12 +28,6 @@ export const ledgerDate = (day: string) => new Date(`${day}T00:00:00+07:00`).toI
 export const lastDayEnd = (day: string) => new Date(`${day}T23:59:59.999+07:00`).toISOString();
 /** yyyy-mm-dd plus n calendar days */
 export const addDays = (day: string, n: number) => new Date(Date.parse(`${day}T00:00:00Z`) + n * DAY).toISOString().slice(0, 10);
-/** Six-month contract: start + 6 months − 1 day, so contractedMonths() counts 6 (§5.1). */
-export function sixMonthsFrom(day: string) {
-  const [y, m, d] = day.split("-").map(Number);
-  const end = new Date(Date.UTC(y, m - 1 + 6, d));
-  return new Date(end.getTime() - DAY).toISOString().slice(0, 10);
-}
 /** Is a yyyy-mm-dd date before today (WIB)? */
 export const isPastDay = (day: string) => !!day && day < todayWib();
 

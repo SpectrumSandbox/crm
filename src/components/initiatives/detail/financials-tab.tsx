@@ -440,6 +440,7 @@ function PaymentsCard({ ini }: { ini: Initiative }) {
         Rate <Rate value={review.rate} /> · a payment counts once it is earned (milestone accepted or period billed) and collected. Each payment&apos;s pool = y × cumulative net revenue − pool already allocated, never negative (early losses are recovered first)<Cite s="8.1" />. Collected by the {POLICY.cycle.cutoffDay}th → paid with that month&apos;s salary on the {POLICY.cycle.salaryDay}th; after the {POLICY.cycle.cutoffDay}th → the following month<Cite s="8.2" />. The pool is shared by effective weight-days in the payment&apos;s work period<Cite s="6.5" />.
         {costRatio > 0 ? ` Milestone prefill uses the proposal's cost ratio (${(costRatio * 100).toFixed(1)}% of revenue).` : ""}
       </p>
+      <CorrectionDialog entry={correcting} onClose={() => setCorrecting(null)} />
     </Card>
   );
 }

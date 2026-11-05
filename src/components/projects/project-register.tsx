@@ -46,6 +46,12 @@ function Register({ reg }: { reg: ProjectRegister }) {
   const [adding, setAdding] = useState(false);
   const [ending, setEnding] = useState<InitiativeMember | null>(null);
   const [ratifying, setRatifying] = useState(false);
+  const closeOverdueAmendments = useCrm((s) => s.closeOverdueAmendments);
+  // §6.8.2 resolve amendments whose 5-business-day vote has ended before showing the panel
+  useEffect(() => {
+    const n = closeOverdueAmendments();
+    if (n) useUi.getState().notify(`${n} amendment${n === 1 ? "" : "s"} closed — the 5-business-day vote ended (§6.8)`);
+  }, [closeOverdueAmendments]);
   const jira = projects.find((p) => p.id === ini.jiraProjectId);
   const userName = (uid: string) => users.find((u) => u.id === uid)?.name ?? uid;
   const othersE = (m: InitiativeMember | null) => reg.rows.filter((r) => r.member.id !== m?.id).reduce((s, r) => s + r.E, 0);

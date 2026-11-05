@@ -13,7 +13,7 @@ import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
 import type { Activity, Deal, LineItem, Pipeline, Product, Quote } from "@/lib/types";
 import type { ContractStatus, Initiative, InitiativeMember, Milestone, ProjectType, RiskCategory, RiskItem } from "@/lib/initiatives/types";
-import { addMonths, approvalTier, contractedMonths, deferralTriggers, directCostTotal, effectiveWeight, participationEligibility, projectedAnnualNet, proposalEconomics, proposalGaps, splitBonus } from "@/lib/initiatives/engine";
+import { addMonths, approvalTier, endDateForMonths, contractedMonths, deferralTriggers, directCostTotal, effectiveWeight, participationEligibility, projectedAnnualNet, proposalEconomics, proposalGaps, splitBonus } from "@/lib/initiatives/engine";
 import { ORIGINATION_META, POLICY, PROJECT_TYPE_META, RISK_CATEGORIES, TIER_META } from "@/lib/initiatives/policy";
 import { cn, formatDate, formatIDR, fromDateInput, toDateInput, uid } from "@/lib/utils";
 import { PageHeader } from "@/components/shell/page-header";
@@ -66,7 +66,7 @@ function blankForm(): FormState {
     exclusions: "",
     successCriteria: "",
     startDate: start,
-    endDate: addMonths(start, 3),
+    endDate: endDateForMonths(start, 6), // six contracted months (§5.1)
     milestones: [],
     companyId: null,
     dealId: null,
@@ -151,7 +151,7 @@ function formFromDeal(dealId: string, ctx: DealContext): { form: FormState; deal
   const base = blankForm();
   const close = Date.parse(deal.closeDate);
   const start = !won && close > Date.now() ? fromDateInput(toDateInput(deal.closeDate)) : base.startDate;
-  const end = addMonths(start, 6);
+  const end = endDateForMonths(start, 6);
   const name = (productId: string) => ctx.products.find((p) => p.id === productId)?.name ?? "Deliverable";
   const amount = (l: Pick<LineItem, "quantity" | "unitPrice" | "discountPct">) => Math.round(l.quantity * l.unitPrice * (1 - l.discountPct / 100));
   // a signed / sent quote is the best record of what was sold; otherwise the deal's line items

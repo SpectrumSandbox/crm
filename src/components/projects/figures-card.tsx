@@ -7,7 +7,7 @@ import type { Initiative, ProjectType } from "@/lib/initiatives/types";
 import { contractedMonths, deferralTriggers, directCostTotal, netRevenue, nextProjectCode, projectRate, projectedAnnualNet, revenueShareRate } from "@/lib/initiatives/engine";
 import { ORIGINATION_META, POLICY, PROJECT_TYPE_META } from "@/lib/initiatives/policy";
 import { formatIDR } from "@/lib/utils";
-import { formatMillionsInput, ledgerDate, parseAmount, wibDay } from "@/lib/initiatives/team-rules";
+import { formatMillionsInput, lastDayEnd, ledgerDate, parseAmount, wibDay } from "@/lib/initiatives/team-rules";
 import { Lock } from "lucide-react";
 import { useAccess } from "@/lib/access-control";
 import { Button } from "@/components/ui/button";
@@ -70,7 +70,7 @@ export function FiguresCard({ reg }: { reg: ProjectRegister }) {
       ...ini,
       type: locked ? ini.type : (f.type as ProjectType),
       startDate: locked ? ini.startDate : ledgerDate(f.start),
-      endDate: locked ? ini.endDate : ledgerDate(f.end),
+      endDate: locked ? ini.endDate : lastDayEnd(f.end),
       revenue: { expected: num(f.expected) * M, best: Math.max(num(f.best), num(f.expected)) * M, worst: Math.min(num(f.worst) || num(f.expected), num(f.expected)) * M },
       costs: { materials: base, subcontractors: 0, equipment: 0, travel: 0, other: 0, contingencyPct: num(f.contingency) },
       paymentTermsDays: num(f.terms),
@@ -284,7 +284,7 @@ export function RatifyDialog({ reg, open, onOpenChange }: { reg: ProjectRegister
     if (!valid || finalRate == null) return;
     // one numbering scheme for PRC approvals and ratifications: per year, max(seq) + 1 (shared with actions.approve)
     const code = ini.code ?? nextProjectCode(initiatives);
-    if (termsChanged) recordInitiativeChange(ini.id, { type, startDate: ledgerDate(start), endDate: ledgerDate(end) }, `PRC changed the type / contract dates after approval: ${changeReason.trim()}`);
+    if (termsChanged) recordInitiativeChange(ini.id, { type, startDate: ledgerDate(start), endDate: lastDayEnd(end) }, `PRC changed the type / contract dates after approval: ${changeReason.trim()}`);
     saveInitiative({ id: ini.id, code, approvedAt: ini.approvedAt ?? new Date().toISOString(), lockedSharePct: finalRate, shareNote: reason.trim(), pilot, policyVersion: "4.0" });
     approveMembers(ini.id);
     notify(`${ini.title} brought under Policy v4.0 — ${code}`);
