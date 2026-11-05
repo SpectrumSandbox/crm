@@ -137,22 +137,28 @@ function isTyping(target: EventTarget | null) {
   return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
 }
 
-/** Mount once (the app shell does). Bridges useUi().notify and renders the toast stack. */
+/*
+ * Bridge the store's notify() as soon as this module loads in the browser. Not in ToastViewport's effect: effects run
+ * child-first and the shell renders the page before the viewport, so a toast raised by a page's mount effect (a deep
+ * link like /initiatives/new?fromDeal=…) fired before the subscription existed and was silently dropped.
+ */
+let notifyBridged = false;
+function bridgeNotify() {
+  if (notifyBridged || typeof window === "undefined") return;
+  notifyBridged = true;
+  useUi.subscribe((s, prev) => {
+    if (s.toast && s.toast !== prev.toast) {
+      useToasts.getState().push({ message: s.toast.message, tone: inferTone(s.toast.message, !!s.toast.action), action: s.toast.action });
+    }
+  });
+}
+bridgeNotify();
+
+/** Mount once (the app shell does). Renders the toast stack (useUi().notify is bridged at module load, above). */
 export function ToastViewport() {
   const items = useToasts((s) => s.items);
   const dismiss = useToasts((s) => s.dismiss);
   const [paused, setPaused] = React.useState(false);
-
-  // bridge the store's notify()
-  React.useEffect(
-    () =>
-      useUi.subscribe((s, prev) => {
-        if (s.toast && s.toast !== prev.toast) {
-          useToasts.getState().push({ message: s.toast.message, tone: inferTone(s.toast.message, !!s.toast.action), action: s.toast.action });
-        }
-      }),
-    [],
-  );
 
   // ⌘Z / Ctrl+Z: run the newest visible Undo (text fields keep their own undo)
   React.useEffect(() => {

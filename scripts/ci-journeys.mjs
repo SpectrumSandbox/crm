@@ -55,7 +55,8 @@ function field(scope, label) {
 const dialog = (page, name) => (name ? page.getByRole("dialog", { name }) : page.getByRole("dialog")).last();
 // The visible toast card (src/components/ui/toast.tsx). By test id, not role: while a modal/sheet is open the toast stack
 // sits under aria-hidden by design — screen readers hear it through the live region instead (see announced()).
-const toast = (page, re) => page.getByTestId("toast").filter({ hasText: re }).first();
+// Toasts queue (up to 3 visible), so take the newest match: an older toast with the same wording may still be up.
+const toast = (page, re) => page.getByTestId("toast").filter({ hasText: re }).last();
 /** first line of a toast card: its message (the action button and dismiss icon follow it) */
 const toastMessage = async (t) => (await t.innerText()).split("\n")[0].trim();
 /** the screen-reader live region (role=status / alert) a toast was announced through */
@@ -71,7 +72,7 @@ const amountOf = async (loc) => Number((await loc.inputValue()).replace(/[^\d-]/
 /**
  * Pick from a searchable picker (ui/combobox or the initiatives PersonCombobox): open it, then click the first enabled
  * option containing `text` (or the first enabled option). Options live in a popover portal, so they are found by CSS
- * on the page rather than inside the dialog. Returns the picked option's first line.
+ * on the page rather than inside the dialog. Returns the picked option's name (first line that isn't avatar initials).
  */
 async function pickOption(page, trigger, text) {
   await trigger.click();
@@ -82,7 +83,7 @@ async function pickOption(page, trigger, text) {
     const hit = opts.filter({ hasText: text }).first();
     if (await hit.count()) target = hit;
   }
-  const label = (await target.innerText()).split("\n")[0].trim();
+  const label = (await target.innerText()).split("\n").map((l) => l.trim()).find((l) => l.length > 3) ?? "";
   await target.click();
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
   return label;
@@ -671,11 +672,22 @@ journey("Backlog — create a sprint, complete the active one, start the new one
     await button(dlg, /Complete sprint/).click();
     await expect(toast(page, /completed/)).toBeVisible();
   });
-  await step("start the new sprint", async () => {
+  await step("start the next sprint — the new one, or the one planned before it", async () => {
     // innermost card that holds the sprint heading (ancestors come first in document order)
-    const card = page.locator("div.rounded-xl", { has: page.getByRole("heading", { name: sprintName, exact: true }) }).last();
+    const cardOf = (name) => page.locator("div.rounded-xl", { has: page.getByRole("heading", { name, exact: true }) }).last();
+    let target = sprintName;
+    const own = button(cardOf(sprintName), /Start sprint/);
+    if (await own.isDisabled()) {
+      // future sprints start in planned order; the disabled button says which one goes first
+      const why = (await own.getAttribute("title")) ?? "";
+      note(`${sprintName} can't start yet: ${why}`);
+      const m = why.match(/^Start (.+?) first — it is planned before /);
+      expect(m, `unexpected start blocker: "${why}"`).toBeTruthy();
+      target = m[1];
+    }
+    const card = cardOf(target);
     await button(card, /Start sprint/).click();
-    const dlg = dialog(page, `Start ${sprintName}`);
+    const dlg = dialog(page, `Start ${target}`);
     await expect(dlg).toBeVisible();
     await button(dlg, /Start sprint/).click();
     await expect(toast(page, /started/)).toBeVisible();
@@ -711,7 +723,7 @@ journey("Issues — bulk-select two issues and set status Done, then Undo", asyn
   await step("Status → Done", async () => {
     await button(page, /^Status/).click();
     await page.getByRole("menuitem", { name: "Done" }).click();
-    const t = toast(page, /Status → Done — 2 of 2 selected/);
+    const t = toast(page, /Status → Done — 2 of 2 issues selected/);
     await expect(t).toBeVisible();
     note(await toastMessage(t));
   });
@@ -736,6 +748,8 @@ journey("Projects register — register a project, add people, figures, payment,
     const dlg = dialog(page, "Register an ongoing project");
     await field(dlg, "Project name").fill(title);
     await field(dlg, "Jira project (optional)").selectOption({ index: 1 });
+    // by default the initiator (the CEO here) is seeded as Project Lead (§4.9); this journey appoints Dimas instead
+    await dlg.getByRole("checkbox", { name: /to the team as .*Project Lead/ }).uncheck();
     await button(dlg, "Register project", true).click();
     await expect(page).toHaveURL(/\/projects\/[^/]+$/);
     await expect(page.getByRole("heading", { name: title }).first()).toBeVisible();
@@ -821,7 +835,7 @@ journey("Initiatives — new proposal prefilled from a deal (?fromDeal=) and sav
   });
 });
 
-journey("Initiatives — propose a team amendment and record a vote", async ({ page, step, note }) => {
+journey("Initiatives — propose a team amendment and record a vote", async ({ page, step, note, context }) => {
   await step("open the SBS initiative → Team tab", async () => {
     await open(page, "/initiatives/ini-sbs-pdm");
     await page.getByRole("tab", { name: /Team/ }).first().click();
@@ -846,10 +860,14 @@ journey("Initiatives — propose a team amendment and record a vote", async ({ p
     await expect(t).toBeVisible();
     note(await toastMessage(t));
   });
-  await step("record a For vote on the open amendment", async () => {
+  await step("as a current member (Dimas Saputra), record a For vote on the open amendment", async () => {
+    // only current team members vote (§6.8) — the CEO who proposed it is not on this team
+    await actAs(context, "u-dimas");
+    await open(page, "/initiatives/ini-sbs-pdm");
+    await page.getByRole("tab", { name: /Team/ }).first().click();
     let forBtn = page.getByRole("button", { name: "For", exact: true }).first();
     if (!(await forBtn.isVisible().catch(() => false))) {
-      await page.getByRole("button", { name: /^Open\b|for \d+ · against/ }).first().click();
+      await page.getByRole("button", { name: /for \d+ · against \d+ · not voted/ }).first().click();
       forBtn = page.getByRole("button", { name: "For", exact: true }).first();
     }
     await forBtn.click();
