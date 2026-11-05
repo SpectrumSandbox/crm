@@ -1,5 +1,0 @@
-{ "compilerOptions": { "target": "ES2022", "lib": ["dom","dom.iterable","es2022"], "strict": true, "noImplicitAny": false, "noEmit": true, "skipLibCheck": true,
-  "module": "esnext", "moduleResolution": "bundler", "jsx": "preserve", "esModuleInterop": true, "isolatedModules": true, "types": [],
-  "paths": { "@/*": ["./src/*"], "clsx": ["../../../opt/npm-tools/node_modules/clsx"], "tailwind-merge": ["../../../opt/npm-tools/node_modules/tailwind-merge"], "class-variance-authority": ["../../../opt/npm-tools/node_modules/class-variance-authority"] } },
-  "files": ["/tmp/claude-0/-home-claude/c87ef1bf-3138-5399-bcb7-e5349eceb0bb/scratchpad/tc/stubs.d.ts", "/tmp/claude-0/-home-claude/c87ef1bf-3138-5399-bcb7-e5349eceb0bb/scratchpad/tc/lucide.d.ts", "./cloudflare-env.d.ts"],
-  "include": ["./src/**/*.ts", "./src/**/*.tsx"], "exclude": ["./src/db/schema.ts"] }
