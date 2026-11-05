@@ -758,11 +758,29 @@ journey("Projects register — register a project, add people, figures, payment,
     await button(page, /^Add person/).click();
     const dlg = dialog(page, "Add to the project team");
     await expect(dlg).toBeVisible();
-    const picked = await pickOption(page, dlg.getByLabel("Person", { exact: true }).first(), "Dimas Saputra");
-    note(`picked ${picked}`);
     await dlg.getByRole("button", { name: /^Engineer/ }).click(); // de-select default Engineer
     await dlg.getByRole("button", { name: /^Project Lead/ }).click();
-    await button(dlg, /Add to register|Circulate amendment/).click();
+    // the §7.3 leadership-capacity check blocks people who already lead enough live projects (seed: Dimas) —
+    // the dialog must say why and keep the button disabled; then try the next person
+    const add = button(dlg, /Add to register|Circulate amendment/);
+    const blocked = [];
+    let picked = "";
+    for (const who of ["Dimas Saputra", "Nadia Rahman", "Ayu Kartika", "Arif Nugroho", "Rafi Hidayat", "Yoga Pratama", "Kevin Tanoto"]) {
+      picked = await pickOption(page, dlg.getByLabel("Person", { exact: true }).first(), who);
+      const why = dlg.getByRole("alert").filter({ hasText: /Cannot take this role/ });
+      await page.waitForTimeout(150);
+      if (await why.count()) {
+        await expect(add, `${picked} is blocked by policy, but the add button is enabled`).toBeDisabled();
+        blocked.push(`${picked}: ${(await why.locator("li").allInnerTexts()).join("; ")}`);
+        continue;
+      }
+      if (await add.isEnabled()) break;
+      blocked.push(`${picked}: ${(await add.getAttribute("title")) ?? "not addable"}`);
+    }
+    if (blocked.length) note(`blocked by policy — ${blocked.join(" | ")}`);
+    note(`Project Lead: ${picked}`);
+    await expect(add).toBeEnabled();
+    await add.click();
     await expect(toast(page, /Added to the register|circulated/)).toBeVisible();
   });
   await step("add a new person (not yet in the system)", async () => {
