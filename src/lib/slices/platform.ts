@@ -2,7 +2,11 @@
 import type { SeedData } from "../seed";
 import type { GetFn, SetFn, Uid } from "./types";
 
-export type SyncStatus = "idle" | "syncing" | "synced" | "offline" | "conflict";
+/** "locked" = the server refused this browser (no Cloudflare Access sign-in / not configured): local-only, no polling. */
+export type SyncStatus = "idle" | "syncing" | "synced" | "offline" | "conflict" | "locked";
+
+/** Data scope the server granted: "full" = all pay data (pay roles), "own" = only the viewer's own pay lines (§13.4). */
+export type DataScope = "full" | "own";
 
 export interface SyncInfo {
   status: SyncStatus;
@@ -16,6 +20,16 @@ export interface SyncInfo {
   updatedAt: string | null;
   /** local changes not yet accepted by the server */
   dirty: boolean;
+  /** data scope of the last server response (null = not known yet / offline) */
+  scope?: DataScope | null;
+  /** collections the server redacted for this viewer */
+  restricted?: string[];
+  /** collections/fields the server kept from its own copy on the last write (protected data) */
+  protectedKeys?: string[];
+  /** when the engine will try the server again after errors / a lock (ISO) */
+  nextRetryAt?: string | null;
+  /** records merged on the last conflict (theirs kept where both sides changed the same record) */
+  lastMerge?: { at: string; merged: number; conflicts: number; version: number } | null;
 }
 
 export interface Identity {
@@ -26,6 +40,16 @@ export interface Identity {
   userId: string | null;
   /** false until /api/me has been asked */
   resolved: boolean;
+  /** how the server sees this browser: verified Access user, local dev, anonymous demo, locked, or no server at all */
+  mode?: "access" | "development" | "anonymous-allowed" | "locked" | "offline";
+  /** server-resolved governance roles (from the stored HR record) */
+  roles?: string[];
+  scope?: DataScope | null;
+  /** workspace admin according to the server (CEO/CFO or WORKSPACE_ADMINS) */
+  admin?: boolean;
+  /** why the server locked this browser out, and what fixes it */
+  lockReason?: string | null;
+  lockHint?: string | null;
 }
 
 export interface PlatformSlice {
@@ -39,7 +63,20 @@ export interface PlatformSlice {
   setCurrentUser: (userId: string) => void;
 }
 
-export const initialSyncInfo: SyncInfo = { status: "idle", lastSyncedAt: null, lastError: null, serverVersion: null, updatedBy: null, updatedAt: null, dirty: false };
+export const initialSyncInfo: SyncInfo = {
+  status: "idle",
+  lastSyncedAt: null,
+  lastError: null,
+  serverVersion: null,
+  updatedBy: null,
+  updatedAt: null,
+  dirty: false,
+  scope: null,
+  restricted: [],
+  protectedKeys: [],
+  nextRetryAt: null,
+  lastMerge: null,
+};
 
 export function createPlatformSlice<S extends PlatformSlice & { currentUserId: string }>(set: SetFn<S>, get: GetFn<S>, _uid: Uid): PlatformSlice {
   return {
@@ -48,10 +85,12 @@ export function createPlatformSlice<S extends PlatformSlice & { currentUserId: s
 
     setSyncInfo: (patch) => {
       const current = get().sync;
-      const changed = (Object.keys(patch) as (keyof SyncInfo)[]).some((k) => current[k] !== patch[k]);
+      const changed = (Object.keys(patch) as (keyof SyncInfo)[]).some((k) => JSON.stringify(current[k]) !== JSON.stringify(patch[k]));
       if (changed) set({ sync: { ...current, ...patch } } as Partial<S>);
     },
-    setIdentity: (identity) => set({ identity } as Partial<S>),
+    setIdentity: (identity) => {
+      if (JSON.stringify(get().identity) !== JSON.stringify(identity)) set({ identity } as Partial<S>);
+    },
     replaceWorkspaceData: (data) => set(data as unknown as Partial<S>),
     setCurrentUser: (userId) => {
       if (get().currentUserId !== userId) set({ currentUserId: userId } as Partial<S>);

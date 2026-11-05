@@ -42,10 +42,12 @@ export interface EmployeeProfile {
   resignationNoticeAt: ISODate | null; // notice stops new roles; earned bonuses still paid (§10)
   terminationNoticeAt: ISODate | null;
   /** effectiveAt = last working day / termination / contract end / event date. Retirement needs PRC confirmation (§10). */
-  separation: { kind: SeparationKind; effectiveAt: ISODate; recordedAt: ISODate; retirementNoticeDays?: number; prcConfirmed?: boolean } | null;
+  separation: { kind: SeparationKind; effectiveAt: ISODate; recordedAt: ISODate; retirementNoticeDays?: number; prcConfirmed?: boolean; prcConfirmedAt?: ISODate | null; prcConfirmedById?: ID | null; closedRowIds?: ID[] } | null;
   /** Project Participation Agreement (Annex B) signed as employment-agreement addendum; probationers also sign Annex C. */
   acknowledgmentSignedAt: ISODate | null;
   governanceRoles: GovernanceRole[];
+  /** W1: set by the server on a colleague's record sent to a viewer without a pay role (§13.4) — salary 0, disciplinary detail folded into goodStanding. Never written back. */
+  redacted?: boolean;
   /** Company employee number (NIK karyawan) — shown on Annex B/E and the payroll export (W8). */
   employeeNumber?: string;
   /** Tax ID (NPWP / NIK used as NPWP) for PPh 21 withholding in payroll (W8). */
@@ -200,6 +202,8 @@ export interface Initiative {
   shareNote?: string;
   /** §4.5 step 2 — incomplete proposals returned to the proposer; the completeness clock restarts on resubmission. */
   returns?: ProposalReturn[];
+  /** W7 §8.3 final reconciliation within 30 days of close. */
+  reconciliation?: FinalReconciliationRecord | null;
   createdAt: ISODate;
   updatedAt: ISODate;
 }
@@ -243,10 +247,13 @@ export interface TeamAmendment {
     | { kind: "add"; userId: ID; roles: ProjectRole[]; specialistWeight: number | null; weightOverride: number | null; allocationFactor: number; consent: boolean; managerApproved?: boolean; weightNote?: string; allocationPct?: number }
     | { kind: "remove"; memberId: ID }
     | { kind: "change"; memberId: ID; roles: ProjectRole[]; specialistWeight: number | null; weightOverride: number | null; allocationFactor: number };
-  votes: { userId: ID; vote: "for" | "against"; at: ISODate }[];
+  votes: { userId: ID; vote: "for" | "against"; at: ISODate; recordedById?: ID; evidence?: string }[];
   status: "open" | "passed" | "failed" | "tied" | "blocked";
   prcDecision: { outcome: "passed" | "failed" | "blocked"; note: string; at: ISODate; byId: ID } | null;
   recordedAt: ISODate | null; // PMO updated the ledger
+  /** Voting closed at the 5-business-day deadline (§6.8.2) without a majority (W7 closeOverdueAmendments). */
+  closedAt?: ISODate | null;
+  closedReason?: string;
 }
 
 /**
@@ -266,7 +273,38 @@ export interface RevenueEntry {
   workPeriodStart?: ISODate | null;
   workPeriodEnd?: ISODate | null;
   note: string;
+  /** §8.5 correction of an entry in a released cycle (W7 addRevenueCorrection) — lands in the next open cycle. */
+  correctionOf?: ID | null;
 }
+
+/** An amount brought forward into a later cycle with the dates §10 needs to re-check it (W7 engine). */
+export interface CarryItem {
+  kind: "carried" | "held";
+  amount: number;
+  /** collection date of the payment that generated it (§10 resignation / trail tests) */
+  collectedAt: ISODate | null;
+  /** start of the work period it pays for */
+  workStart: ISODate | null;
+  /** cycle it was first due in */
+  fromMonth: string;
+  reason?: string;
+}
+
+/** PPh 21 withholding estimate on a bonus line (PP 58/2023 TER, PMK 168/2023) — payroll computes the real figure (§8.5, Annex E). */
+export interface Pph21Estimate {
+  gross: number;
+  withheld: number;
+  net: number;
+  category: "A" | "B" | "C";
+  ptkp: string;
+  /** TER rate on salary + all bonuses paid this salary */
+  rate: number;
+  monthlySalary: number;
+  basis: "estimate";
+  note: string;
+}
+
+export type ExtraPaymentKind = "deferred_release" | "probation_completion" | "probation_final_pay" | "reconciliation_topup" | "underpayment_correction";
 
 export type LineStatus = "payable" | "withheld_probation" | "partially_deferred" | "carried_forward" | "forfeited" | "held" | "ineligible";
 
@@ -293,6 +331,25 @@ export interface BonusLine {
   held: number; // suspension, unpaid leave, missing Annex B, PRC confirmation
   status: LineStatus;
   notes: string[];
+  /** W7: held amounts still waiting for their condition to clear, with their original dates (§10, §15.1) */
+  heldItems?: CarryItem[];
+  /** W7: unpaid amounts carried forward (§9.2) with their original dates */
+  carriedItems?: CarryItem[];
+  /** W7: part of carriedIn that had been held earlier and is paid now that the condition cleared */
+  heldIn?: number;
+  /** W7: deferred releases, Probation Completion Bonus, reconciliation top-ups and corrections paid in this line */
+  extraIn?: number;
+  extras?: { kind: ExtraPaymentKind; refId: ID; amount: number; note: string }[];
+  /** W7: clawback recovered from this bonus (§9.4 order of recovery) */
+  recovered?: number;
+  recoveries?: { clawbackId: ID; amount: number }[];
+  /** W7: latest collection date / earliest work start among the payments in this line */
+  lastCollectedAt?: ISODate | null;
+  firstWorkStart?: ISODate | null;
+  /** W7: cycles whose late collections were rolled into this one (§8.5) */
+  rolledFrom?: string[];
+  /** W7: PPh 21 TER estimate on the payable amount */
+  pph21?: Pph21Estimate;
 }
 
 export interface BonusRun {
@@ -310,12 +367,24 @@ export interface BonusRun {
   cashAfter: number;
   /** Share of non-guaranteed bonuses released (1 = in full; < 1 = pro rata, rest carried forward §9.2). */
   payoutPct: number;
-  totals: { netRevenue: number; pool: number; topUps: number; topUpDeducted: number; carriedIn: number; payable: number; deferred: number; withheld: number; forfeited: number; held: number; carriedOver: number };
+  totals: { netRevenue: number; pool: number; topUps: number; topUpDeducted: number; carriedIn: number; payable: number; deferred: number; withheld: number; forfeited: number; held: number; carriedOver: number; extraIn?: number; heldIn?: number; recovered?: number; pph21Estimate?: number };
   lines: BonusLine[];
+  /** W1: set by the server when `lines` holds only the viewer's own lines (no pay role, §13.4); totals stay company-wide. */
+  redacted?: boolean;
   certifiedById: ID | null;
   certifiedAt: ISODate | null;
   releasedById: ID | null;
   releasedAt: ISODate | null;
+  /** W7 maker-checker: who saved the provisional figures and who entered the certification (on-behalf) */
+  preparedById?: ID | null;
+  recordedById?: ID | null;
+  /** W7 §13.1 PRC release decision: votes recorded, members recused (on the team) */
+  approvals?: { userId: ID; vote: "for" | "against"; at: ISODate }[];
+  recusedIds?: ID[];
+  /** W7 revenue entries paid in this cycle — later collections for it roll into the next open cycle (§8.5) */
+  entryIds?: ID[];
+  /** W7 recorded when the PRC releases after the salary date */
+  lateReleaseReason?: string | null;
 }
 
 export interface DeferredBonus {
@@ -328,6 +397,15 @@ export interface DeferredBonus {
   status: "pending" | "released" | "forfeited";
   releasedAmount: number;
   note: string;
+  /** W7: salary cycle the release is paid in (a payable line of that run, §9.1) */
+  payMonth?: string | null;
+  releasedAt?: ISODate | null;
+  releasedById?: ID | null;
+  /** W7: latest collection date / work start of the payments it came from (§10 checks at release) */
+  collectedAt?: ISODate | null;
+  workStart?: ISODate | null;
+  /** W7: warranty / rework costs deducted at release (§9.3) */
+  costDeduction?: number;
 }
 
 export interface ProbationOutcome {
@@ -336,6 +414,60 @@ export interface ProbationOutcome {
   outcome: "completed" | "paid_final_pay" | "forfeited";
   amount: number;
   decidedAt: ISODate;
+  /** W7 */
+  id?: ID;
+  /** W7: salary cycle the balance is paid in — within 30 days of the probation end (§11.4) */
+  payMonth?: string | null;
+  /** W7: held balance by project, so the payment lands on project lines */
+  byProject?: { initiativeId: ID; amount: number }[];
+  /** W7: probation end / last working day used */
+  endedAt?: ISODate | null;
+}
+
+/** W7 §8.3 final reconciliation top-ups and §8.5 underpayment corrections, paid as lines of `payMonth`. */
+export interface BonusAdjustment {
+  id: ID;
+  kind: "reconciliation_topup" | "underpayment_correction";
+  userId: ID;
+  initiativeId: ID;
+  amount: number;
+  payMonth: string;
+  note: string;
+  createdAt: ISODate;
+  createdById: ID;
+}
+
+/** W7 §5.4 company gross turnover by month (all revenue, incl. work outside the policy) for the UMKM Rp4.8bn limit. */
+export interface CompanyTurnover {
+  month: string;
+  revenue: number;
+  recordedAt: ISODate;
+  recordedById: ID;
+}
+
+/** W7 §5.4 dated switch from the UMKM final tax to corporate income tax, confirmed by Finance with the tax adviser. */
+export interface TaxRegimeChange {
+  id: ID;
+  regime: "umkm" | "corporate";
+  effectiveFrom: ISODate;
+  corporateEffectiveRate: number;
+  note: string;
+  recordedAt: ISODate;
+  recordedById: ID;
+}
+
+/** W7 §8.3 final reconciliation recorded on a closed project. */
+export interface FinalReconciliationRecord {
+  at: ISODate;
+  byId: ID;
+  finalRate: number;
+  finalPool: number;
+  allocated: number;
+  difference: number;
+  payMonth: string | null;
+  offsetFromDeferred: number;
+  absorbedOrClawback: number;
+  note: string;
 }
 
 /** §9.4 — cost overruns, rework, warranty, penalties and settlements are never clawback triggers. */
@@ -359,6 +491,13 @@ export interface Clawback {
   recovered: number;
   notes: string;
   createdAt: ISODate;
+  /** W7: date the trigger occurred / was identified (24-month window, §9.4); defaults to createdAt */
+  triggeredAt?: ISODate | null;
+  /** W7: recover from the employee's future project bonuses through the monthly run (§9.4 order of recovery) */
+  recoverFromBonuses?: boolean;
+  recoveries?: { month: string; amount: number; source: "bonus" | "deferred" | "carried" | "salary"; at: ISODate }[];
+  /** W8 §9.4 step 2 / §13.1 recorded PRC decisions on the case and on any dispute: per-member votes, quorum, casting vote, veto, reasons. */
+  prcDecisions?: { kind: "case" | "dispute"; at: ISODate; recordedById: ID; votes: PrcVote[]; castingVote: "for" | "against" | null; ceoVeto: boolean; quorumMet: boolean; carried: boolean; reasons: string }[];
 }
 
 /** §9.5 change to the revenue-share curve — applies only to projects approved after the effective date. */
@@ -501,6 +640,8 @@ export interface CoiDeclaration {
   signedAt: ISODate;
   /** recorded by someone other than the declarant (on their behalf from the signed form) */
   recordedById: ID;
+  /** reference of the signed Annex F form when recorded on someone's behalf */
+  formRef?: string;
   prc: { conflict: boolean; action: "none" | "team_change" | "price_check" | "rejected"; note: string; decidedById: ID; decidedAt: ISODate } | null;
 }
 

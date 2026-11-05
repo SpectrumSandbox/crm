@@ -1,19 +1,73 @@
 "use client";
 
 /*
- * Notification centre (programme workstream), mounted next to the sidebar search. Alerts are derived live from the
- * store for the current user (src/components/me/alerts.ts); read state is remembered per user in localStorage.
+ * Notification centre, mounted next to the sidebar search. Alerts are derived live from the store for the current
+ * user (src/components/me/alerts.ts): sales & service, delivery, programme and pay. Read state and muted categories
+ * are remembered per user in localStorage; pay alerts about other people only reach pay roles (useAccess, §13.4).
  */
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Banknote, Bell, BellDot, Check, ClipboardCheck, Clock, FileText, Gavel, Hourglass, Landmark, RotateCcw, Scale, Users, X } from "lucide-react";
+import {
+  Ban,
+  Banknote,
+  BarChart3,
+  Bell,
+  BellDot,
+  CalendarClock,
+  CalendarDays,
+  Check,
+  ClipboardCheck,
+  ClipboardList,
+  Clock,
+  Eye,
+  EyeOff,
+  FileText,
+  Gavel,
+  Hourglass,
+  Landmark,
+  Layers,
+  ListTodo,
+  Receipt,
+  RotateCcw,
+  Scale,
+  Settings,
+  ShieldAlert,
+  Ticket,
+  Timer,
+  TrendingDown,
+  UserCheck,
+  Users,
+  X,
+} from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
+import { useAccess } from "@/lib/access-control";
 import { cn, relativeTime } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
-import { deriveAlerts, type Alert, type AlertKind, type AlertTone } from "@/components/me/alerts";
+import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger, Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
+import { ALERT_CATEGORY, CATEGORY_LABEL, deriveAlerts, type Alert, type AlertCategory, type AlertKind, type AlertTone } from "@/components/me/alerts";
 
 const READ_KEY = (userId: string) => `sg-notifications-read:${userId}`;
+const MUTE_KEY = (userId: string) => `sg-notifications-muted:${userId}`;
+const CATEGORIES: AlertCategory[] = ["sales", "delivery", "programme", "pay"];
+/** pay alerts that carry other people's amounts — pay roles only */
+const PAY_ROLE_KINDS = new Set<AlertKind>(["break_even", "release"]);
+
+function loadMuted(userId: string): Set<AlertCategory> {
+  try {
+    const raw = window.localStorage.getItem(MUTE_KEY(userId));
+    const arr = raw ? (JSON.parse(raw) as unknown) : [];
+    return new Set(Array.isArray(arr) ? arr.filter((x): x is AlertCategory => CATEGORIES.includes(x as AlertCategory)) : []);
+  } catch {
+    return new Set();
+  }
+}
+function saveMuted(userId: string, muted: Set<AlertCategory>) {
+  try {
+    window.localStorage.setItem(MUTE_KEY(userId), JSON.stringify([...muted]));
+  } catch {
+    // storage blocked — the choice lasts for this session only
+  }
+}
 
 function loadRead(userId: string): Set<string> {
   try {
@@ -44,6 +98,22 @@ const KIND_ICON: Record<AlertKind, React.ComponentType<{ className?: string }>> 
   clawback: RotateCcw,
   appeal: Gavel,
   annex_b: ClipboardCheck,
+  ticket_sla: Ticket,
+  task_due: ListTodo,
+  deal_overdue: CalendarClock,
+  deal_stale: Timer,
+  quote_approval: Receipt,
+  issue_assigned: UserCheck,
+  issue_due: CalendarDays,
+  issue_blocked: Ban,
+  status_update: ClipboardList,
+  amendment_record: Layers,
+  hr: ShieldAlert,
+  statement: FileText,
+  probation: Hourglass,
+  curve: TrendingDown,
+  company_summary: BarChart3,
+  dispute: Scale,
 };
 const TONE_TEXT: Record<AlertTone, string> = {
   red: "text-soft-red",
@@ -73,6 +143,20 @@ export function useMyAlerts(): Alert[] {
   const runs = useCrm((s) => s.bonusRuns);
   const deferred = useCrm((s) => s.deferredBonuses);
   const clawbacks = useCrm((s) => s.clawbacks);
+  const outcomes = useCrm((s) => s.probationOutcomes);
+  const curveAdjustments = useCrm((s) => s.curveAdjustments);
+  const summaries = useCrm((s) => s.companySummaries);
+  const disputes = useCrm((s) => s.disputes);
+  const projectUpdates = useCrm((s) => s.projectUpdates);
+  const tickets = useCrm((s) => s.tickets);
+  const activities = useCrm((s) => s.activities);
+  const deals = useCrm((s) => s.deals);
+  const pipelines = useCrm((s) => s.pipelines);
+  const quotes = useCrm((s) => s.quotes);
+  const issues = useCrm((s) => s.issues);
+  const issueLinks = useCrm((s) => s.issueLinks);
+  const issueHistory = useCrm((s) => s.issueHistory);
+  const access = useAccess();
   // re-evaluate time-based alerts (SLA breaches, the 20th / 23rd) every few minutes
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -80,9 +164,13 @@ export function useMyAlerts(): Alert[] {
     return () => window.clearInterval(t);
   }, []);
   return useMemo(
-    () => deriveAlerts({ userId, users, profiles, initiatives, members, amendments, runs, deferred, clawbacks }, Date.now()),
+    () =>
+      deriveAlerts(
+        { userId, users, profiles, initiatives, members, amendments, runs, deferred, clawbacks, outcomes, curveAdjustments, summaries, disputes, projectUpdates, tickets, activities, deals, pipelines, quotes, issues, issueLinks, issueHistory },
+        Date.now(),
+      ).filter((a) => access.seeAllPay || !PAY_ROLE_KINDS.has(a.kind)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [userId, users, profiles, initiatives, members, amendments, runs, deferred, clawbacks, tick],
+    [userId, users, profiles, initiatives, members, amendments, runs, deferred, clawbacks, outcomes, curveAdjustments, summaries, disputes, projectUpdates, tickets, activities, deals, pipelines, quotes, issues, issueLinks, issueHistory, access.seeAllPay, tick],
   );
 }
 
@@ -91,15 +179,35 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
   const setConsent = useCrm((s) => s.setConsent);
   const voteAmendment = useCrm((s) => s.voteAmendment);
   const notify = useUi((s) => s.notify);
-  const alerts = useMyAlerts();
+  const all = useMyAlerts();
   const [open, setOpen] = useState(false);
   const [read, setRead] = useState<Set<string>>(() => new Set());
+  const [muted, setMuted] = useState<Set<AlertCategory>>(() => new Set());
+  const [tab, setTab] = useState<AlertCategory | "all">("all");
 
-  useEffect(() => setRead(loadRead(userId)), [userId]);
+  useEffect(() => {
+    setRead(loadRead(userId));
+    setMuted(loadMuted(userId));
+  }, [userId]);
 
-  const unread = alerts.filter((a) => !read.has(a.id)).length;
+  const live = useMemo(() => all.filter((a) => !muted.has(ALERT_CATEGORY[a.kind])), [all, muted]);
+  const alerts = useMemo(() => (tab === "all" ? live : all.filter((a) => ALERT_CATEGORY[a.kind] === tab)), [tab, live, all]);
+  const unreadBy = useMemo(() => {
+    const m: Record<AlertCategory, number> = { sales: 0, delivery: 0, programme: 0, pay: 0 };
+    for (const a of all) if (!read.has(a.id)) m[ALERT_CATEGORY[a.kind]]++;
+    return m;
+  }, [all, read]);
+  const unread = live.filter((a) => !read.has(a.id)).length;
+  const toggleMute = (c: AlertCategory) => {
+    const next = new Set(muted);
+    if (next.has(c)) next.delete(c);
+    else next.add(c);
+    setMuted(next);
+    saveMuted(userId, next);
+    notify(next.has(c) ? `${CATEGORY_LABEL[c]} notifications muted — still listed under their tab` : `${CATEGORY_LABEL[c]} notifications back on`);
+  };
   const markRead = (ids: string[]) => {
-    const current = new Set(alerts.map((a) => a.id));
+    const current = new Set(all.map((a) => a.id));
     // keep only ids that still exist, so the stored list does not grow forever
     const next = new Set([...read].filter((id) => current.has(id)));
     ids.forEach((id) => next.add(id));
@@ -143,16 +251,53 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
         <div className="flex items-center gap-2 border-b border-sg-line px-3 py-2">
           <span className="font-display text-sm font-bold text-sg-white">Notifications</span>
           {unread > 0 && <span className="rounded-sm bg-soft-red/15 px-1.5 text-2xs font-semibold text-soft-red">{unread} unread</span>}
-          <Button variant="ghost" size="xs" className="ml-auto" disabled={!unread} onClick={() => markRead(alerts.map((a) => a.id))}>
+          <Button variant="ghost" size="xs" className="ml-auto" disabled={!alerts.some((a) => !read.has(a.id))} onClick={() => markRead(alerts.map((a) => a.id))}>
             <Check /> Mark all read
           </Button>
+          <Menu>
+            <MenuTrigger asChild>
+              <button type="button" aria-label="Notification settings" className="rounded p-1 text-sg-dim hover:bg-sg-card-3 hover:text-sg-white">
+                <Settings className="size-3.5" />
+              </button>
+            </MenuTrigger>
+            <MenuContent align="end">
+              <MenuLabel>Show in the badge</MenuLabel>
+              {CATEGORIES.map((c) => (
+                <MenuItem key={c} onSelect={() => toggleMute(c)}>
+                  {muted.has(c) ? <EyeOff className="size-3.5 text-sg-dim" /> : <Eye className="size-3.5 text-soft-green" />} {CATEGORY_LABEL[c]}
+                  <span className="ml-auto pl-3 text-2xs text-sg-dim">{muted.has(c) ? "muted" : "on"}</span>
+                </MenuItem>
+              ))}
+            </MenuContent>
+          </Menu>
+        </div>
+        <div role="tablist" aria-label="Notification categories" className="flex gap-1 overflow-x-auto border-b border-sg-line px-2 py-1.5">
+          {(["all", ...CATEGORIES] as const).map((c) => {
+            const n = c === "all" ? unread : unreadBy[c];
+            return (
+              <button
+                key={c}
+                type="button"
+                role="tab"
+                aria-selected={tab === c}
+                onClick={() => setTab(c)}
+                className={cn("flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-2xs font-semibold transition-colors", tab === c ? "bg-sg-card-3 text-sg-white" : "text-sg-dim hover:text-sg-white", c !== "all" && muted.has(c) && "line-through decoration-sg-dim")}
+              >
+                {c === "all" ? "All" : CATEGORY_LABEL[c]}
+                {n > 0 && <span className="sg-num rounded-sm bg-soft-red/15 px-1 text-soft-red">{n}</span>}
+              </button>
+            );
+          })}
         </div>
         <div className="max-h-[min(520px,70vh)] overflow-y-auto">
           {alerts.length === 0 ? (
             <div className="px-4 py-8 text-center">
               <Bell className="mx-auto size-5 text-sg-dim" />
               <p className="mt-2 font-display text-sm font-bold text-sg-white">You&apos;re all caught up</p>
-              <p className="mt-0.5 text-2xs text-sg-muted">Sign requests, votes, PRC queues and payment deadlines for you appear here.</p>
+              <p className="mt-0.5 text-2xs text-sg-muted">
+                {tab === "all" ? "Tickets, tasks, deals, issues, sign requests, votes, disputes, PRC queues and payment deadlines for you appear here." : `Nothing in ${CATEGORY_LABEL[tab]}.`}
+                {tab === "all" && muted.size > 0 ? ` ${[...muted].map((c) => CATEGORY_LABEL[c]).join(", ")} muted — open the tab to see them.` : ""}
+              </p>
             </div>
           ) : (
             <ul>
@@ -181,7 +326,8 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
                         </Link>
                         <p className="mt-0.5 text-2xs leading-snug text-sg-muted">{a.detail}</p>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-sg-dim">
-                          <span className="rounded-sm border border-sg-line px-1 font-semibold">§{a.cite}</span>
+                          <span className="rounded-sm border border-sg-line px-1 font-semibold">{/^[\dA-Z]/.test(a.cite) && /\d/.test(a.cite) ? `§${a.cite}` : a.cite}</span>
+                          <span>{CATEGORY_LABEL[ALERT_CATEGORY[a.kind]]}</span>
                           {a.at && <span>{Date.parse(a.at) >= Date.now() ? `due ${relativeTime(a.at)}` : relativeTime(a.at)}</span>}
                           {!isRead && (
                             <button type="button" onClick={() => markRead([a.id])} className="ml-auto rounded px-1 hover:bg-sg-card-3 hover:text-sg-white">
@@ -220,6 +366,9 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
         <div className="flex items-center justify-between border-t border-sg-line px-3 py-1.5 text-2xs">
           <Link href="/me" onClick={() => setOpen(false)} className="font-semibold text-sg-muted hover:text-sg-white">
             My compensation →
+          </Link>
+          <Link href="/disputes" onClick={() => setOpen(false)} className="text-sg-dim hover:text-sg-white">
+            Disputes
           </Link>
           <Link href="/policy" onClick={() => setOpen(false)} className="text-sg-dim hover:text-sg-white">
             Policy v4.0

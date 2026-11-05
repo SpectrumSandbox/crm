@@ -1,21 +1,26 @@
 "use client";
 
 /*
- * Monthly bonus cycle (Policy v4.0 §8.2, §9.1–9.2): collection window, provisional bonuses, the CFO's break-even
- * test and cash check on a rolling three months, PRC release with the salary, §9.2 pro rata and carry-forward,
- * and payroll / accrual exports for certified runs.
+ * Monthly bonus cycle (Policy v4.0 §8.2, §9.1–9.2): collection window, provisional bonuses, Project Lead ledger
+ * confirmations, Finance's exception review, the CFO's break-even test and cash check on a rolling three months,
+ * maker-checker PRC release with the salary (§13.1 recusal and quorum), §9.2 pro rata and carry-forward, held lines,
+ * and payroll / accrual exports.
  */
 import { Fragment, useMemo, useState } from "react";
-import { BadgeCheck, Calculator, CalendarClock, ChevronDown, ChevronRight, CircleCheck, CircleX, Coins, Download, Hourglass, Info, Landmark, Lock, RotateCcw, Scale, Send, SlidersHorizontal, Users, Wallet } from "lucide-react";
+import { BadgeCheck, Calculator, CalendarClock, ChevronDown, ChevronRight, CircleCheck, CircleX, ClipboardCheck, Coins, Download, Gavel, Hourglass, Info, Landmark, ListChecks, Lock, RotateCcw, Scale, Send, ShieldCheck, SlidersHorizontal, TriangleAlert, UserCheck, Users, Wallet } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
-import type { BonusLine, BonusRun, Initiative, LineStatus } from "@/lib/initiatives/types";
+import { can, useAccess } from "@/lib/access-control";
+import type { AuditEntry, BonusLine, BonusRun, Initiative, LineStatus } from "@/lib/initiatives/types";
+import type { ExceptionReview } from "@/lib/slices/comp-extras";
 import {
   breakEvenDeadline,
   carriedForward,
   collectionWindow,
   computeRun,
   deferralVestDate,
+  monthEnd,
+  monthStart,
   nextMonth,
   paymentDate,
   probationBalance,
@@ -28,18 +33,23 @@ import { POLICY } from "@/lib/initiatives/policy";
 import { csvDate, downloadCsv, type CsvColumn } from "@/lib/csv";
 import { cn, formatDate, formatIDR } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Field, Input } from "@/components/ui/input";
+import { Field, Input, Textarea } from "@/components/ui/input";
 import { Chip, EmptyState } from "@/components/ui/misc";
+import { Modal } from "@/components/ui/overlays";
 import { Cite, Money, TypeChip } from "@/components/initiatives/shared";
 import {
+  AmountInput,
   Callout,
   EMPTY_INPUTS,
+  ExactMoney,
   InitiativeLink,
   LineStatusChip,
   Panel,
   RateCell,
+  RoleNote,
   UserCell,
   dueText,
+  exactIdr,
   lineStatusMeta,
   monthLabel,
   pctLabel,
@@ -49,12 +59,12 @@ import {
   tdNum,
   thCls,
   thRight,
+  useCfoId,
   useInitiativeMap,
-  useMyRoles,
   type RunInputValues,
 } from "./common";
+import { heldCondition, holdReasons, payrollExtras, pph21Of, releaseState, runExceptions, type CycleException } from "./run-controls";
 
-const CFO_ID = "u-maria";
 const INPUT_KEYS: (keyof RunInputValues)[] = ["companyRevenue", "directCosts", "overheads", "cash", "fixedCostsMonthly"];
 const sameInputs = (a: RunInputValues, b: RunInputValues) => INPUT_KEYS.every((k) => Math.round(a[k]) === Math.round(b[k]));
 const pickInputs = (r: RunInputValues): RunInputValues => ({ companyRevenue: r.companyRevenue, directCosts: r.directCosts, overheads: r.overheads, cash: r.cash, fixedCostsMonthly: r.fixedCostsMonthly });
@@ -67,11 +77,16 @@ export function MonthlyRunTab({ month }: { month: string }) {
   const profiles = useCrm((s) => s.employeeProfiles);
   const adjustments = useCrm((s) => s.curveAdjustments);
   const bonusRuns = useCrm((s) => s.bonusRuns);
+  const auditLog = useCrm((s) => s.auditLog);
+  const ledgerConfirmations = useCrm((s) => s.ledgerConfirmations);
+  const exceptionReviews = useCrm((s) => s.exceptionReviews);
+  const cycleNotes = useCrm((s) => s.cycleNotes);
   const recordRun = useCrm((s) => s.recordRun);
-  const releaseRun = useCrm((s) => s.releaseRun);
+  const addCycleNote = useCrm((s) => s.addCycleNote);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
-  const me = useMyRoles();
+  const access = useAccess();
+  const cfoId = useCfoId();
 
   const run = bonusRuns.find((r) => r.month === month);
   const released = run?.status === "released";
@@ -80,7 +95,7 @@ export function MonthlyRunTab({ month }: { month: string }) {
   const prior = useMemo(() => [...bonusRuns].filter((r) => r.month < month).sort((a, b) => b.month.localeCompare(a.month))[0], [bonusRuns, month]);
   const [draft, setDraft] = useState<RunInputValues>(() => (run ? pickInputs(run) : prior ? pickInputs(prior) : EMPTY_INPUTS));
   const [showIndividual, setShowIndividual] = useState(false);
-  const [onBehalf, setOnBehalf] = useState(false);
+  const [reference, setReference] = useState("");
   const inp: RunInputValues = released && run ? pickInputs(run) : draft;
 
   const carriedIn = useMemo(() => carriedForward(bonusRuns, month), [bonusRuns, month]);
@@ -109,24 +124,61 @@ export function MonthlyRunTab({ month }: { month: string }) {
     return n;
   }, [bonusRuns, month, released, run, result.passed]);
 
+  /* §8.2 controls before certification */
+  const confirmations = useMemo(() => ledgerConfirmations.filter((c) => c.month === month), [ledgerConfirmations, month]);
+  const unconfirmed = result.projects.filter((p) => !confirmations.some((c) => c.initiativeId === p.initiativeId));
+  const exceptions = useMemo(() => runExceptions({ month, lines: result.lines, members, profiles, initiativeIds: result.projects.map((p) => p.initiativeId) }), [month, result.lines, result.projects, members, profiles]);
+  const reviews = useMemo(() => exceptionReviews.filter((r) => r.month === month), [exceptionReviews, month]);
+  const unreviewed = exceptions.filter((e) => !reviews.some((r) => r.key === e.key));
+  const notes = useMemo(() => cycleNotes.filter((n) => n.month === month), [cycleNotes, month]);
+
+  const now = Date.now();
+  const windowCloses = collectionWindow(month).to;
+  const windowOpen = now < Date.parse(windowCloses);
+  const certifyLate = now > Date.parse(breakEvenDeadline(month));
+  const salaryPassed = now > Date.parse(paymentDate(month));
+
   const rollingLabel = `${shortMonthLabel(nextMonth(month, -3))} – ${shortMonthLabel(nextMonth(month, -1))}`;
   const status = run?.status ?? "none";
-  const canCertifyDirect = me.roles.includes("cfo") || me.roles.includes("finance");
-  const canRelease = me.roles.includes("prc");
+  const isCfo = access.roles.includes("cfo");
+  const onBehalf = access.certify && !isCfo;
   const missingInputs = inp.companyRevenue <= 0 || inp.fixedCostsMonthly <= 0;
-  const certifyBlock = missingInputs ? "Enter the rolling three-month company revenue and the monthly fixed operating costs first (§9.1)" : !canCertifyDirect && !onBehalf ? "Only the CFO or Finance certifies — tick “recording the CFO’s certification” to record it on her behalf" : null;
-  const releaseBlock = run?.status !== "certified" ? "The CFO must certify the checks first (§8.2)" : dirty ? "Figures changed since certification — re-certify first" : !canRelease ? "Only the PRC authorises release (§8.2, §13.2)" : null;
+  const certifyBlock = !access.certify
+    ? "Only the CFO, or Finance recording the CFO's written certification, certifies the checks (§9.1, §13.2)"
+    : onBehalf && !cfoId
+      ? "No HR record holds the CFO role — HR assigns it on /people before a certification can be recorded"
+      : missingInputs
+        ? "Enter the rolling three-month company revenue and the monthly fixed operating costs first (§9.1)"
+        : windowOpen
+          ? `Collections for ${monthLabel(month)} stay open until ${formatDate(windowCloses, "datetime")} — certify after the cut-off (§8.2)`
+          : unconfirmed.length
+            ? `${unconfirmed.length} project${unconfirmed.length === 1 ? "" : "s"} still need the Project Lead's ledger confirmation (§8.2)`
+            : unreviewed.length
+              ? `${unreviewed.length} exception${unreviewed.length === 1 ? "" : "s"} still to review`
+              : onBehalf && reference.trim().length < 5
+                ? `Enter the reference of ${userMap.get(cfoId ?? "")?.name ?? "the CFO"}'s written certification`
+                : null;
 
   const save = (st: "draft" | "certified") => {
-    const id = recordRun(result as RunResult, draft, st);
+    if (!access.certify) return;
+    if (st === "certified" && certifyBlock) return;
+    const opts = st === "certified" && onBehalf && cfoId ? { certifiedById: cfoId } : {};
+    const id = recordRun(result as RunResult, draft, st, opts);
     if (!id) return;
-    notify(st === "certified" ? `${monthLabel(month)} checks certified${result.passed ? " — passed" : ` — ${pctLabel(result.payoutPct)} pro rata (§9.2)`}; awaiting PRC release` : `Provisional bonuses saved for ${monthLabel(month)}`);
-    setOnBehalf(false);
+    if (st === "certified" && onBehalf) addCycleNote(month, "certification_reference", `${userMap.get(cfoId ?? "")?.name ?? "CFO"}'s written certification: ${reference.trim()}`);
+    notify(st === "certified" ? `${monthLabel(month)} checks certified${onBehalf ? ` for ${userMap.get(cfoId ?? "")?.name ?? "the CFO"}` : ""}${result.passed ? " — passed" : ` — ${pctLabel(result.payoutPct)} pro rata (§9.2)`}; awaiting PRC release` : `Provisional bonuses saved for ${monthLabel(month)}`);
+    setReference("");
   };
 
   return (
     <div className="space-y-4">
       <CycleTimeline month={month} run={run} />
+
+      {!released && certifyLate && status !== "certified" ? (
+        <Callout tone="warn">
+          <span className="font-semibold">Certification overdue.</span> The CFO certifies the break-even test and cash check by {formatDate(breakEvenDeadline(month), "datetime")} (§8.2). {salaryPassed ? `The ${formatDate(paymentDate(month), "medium")} salary date has passed — a late release needs a recorded reason.` : ""}
+        </Callout>
+      ) : null}
 
       {released && run ? (
         <Callout tone="ok">
@@ -139,20 +191,21 @@ export function MonthlyRunTab({ month }: { month: string }) {
           <div
             className="space-y-3"
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !released) save("draft");
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !released && access.certify) save("draft");
             }}
           >
-            <AmountField label="Company revenue (3 months)" hint="Accrual basis, excl. VAT, incl. work outside this policy" value={inp.companyRevenue} disabled={released} onChange={(v) => setDraft((d) => ({ ...d, companyRevenue: v }))} />
-            <AmountField label="Direct project costs (3 months)" hint="§5.3 direct costs of all projects" value={inp.directCosts} disabled={released} onChange={(v) => setDraft((d) => ({ ...d, directCosts: v }))} />
-            <AmountField label="Operating overheads (3 months)" hint="All other operating costs incl. every salary, rent, depreciation, interest" value={inp.overheads} disabled={released} onChange={(v) => setDraft((d) => ({ ...d, overheads: v }))} />
-            <AmountField label="Cash before bonuses" value={inp.cash} disabled={released} onChange={(v) => setDraft((d) => ({ ...d, cash: v }))} />
-            <AmountField label="Fixed operating costs per month" hint={`Cash floor = ${POLICY.breakEven.cashFloorMonths} × = ${formatIDR(POLICY.breakEven.cashFloorMonths * inp.fixedCostsMonthly, "full")}`} value={inp.fixedCostsMonthly} disabled={released} onChange={(v) => setDraft((d) => ({ ...d, fixedCostsMonthly: v }))} />
+            <AmountField label="Company revenue (3 months)" hint="Accrual basis, excl. VAT, incl. work outside this policy" value={inp.companyRevenue} disabled={released || !access.certify} onChange={(v) => setDraft((d) => ({ ...d, companyRevenue: v }))} />
+            <AmountField label="Direct project costs (3 months)" hint="§5.3 direct costs of all projects" value={inp.directCosts} disabled={released || !access.certify} onChange={(v) => setDraft((d) => ({ ...d, directCosts: v }))} />
+            <AmountField label="Operating overheads (3 months)" hint="All other operating costs incl. every salary, rent, depreciation, interest" value={inp.overheads} disabled={released || !access.certify} onChange={(v) => setDraft((d) => ({ ...d, overheads: v }))} />
+            <AmountField label="Cash before bonuses" value={inp.cash} disabled={released || !access.certify} onChange={(v) => setDraft((d) => ({ ...d, cash: v }))} />
+            <AmountField label="Fixed operating costs per month" hint={`Cash floor = ${POLICY.breakEven.cashFloorMonths} × = ${formatIDR(POLICY.breakEven.cashFloorMonths * inp.fixedCostsMonthly, "full")}`} value={inp.fixedCostsMonthly} disabled={released || !access.certify} onChange={(v) => setDraft((d) => ({ ...d, fixedCostsMonthly: v }))} />
+            {!access.certify && !released ? <RoleNote>Finance enters these figures (§13.2) — shown read-only.</RoleNote> : null}
             {!run && prior ? (
               <p className="flex items-start gap-1.5 text-2xs text-sg-dim">
                 <Info className="mt-0.5 size-3 shrink-0" /> Prefilled from the {monthLabel(prior.month)} run — overwrite with the latest three closed months before certifying.
               </p>
             ) : null}
-            {run && !released && !sameInputs(pickInputs(run), draft) ? (
+            {run && !released && access.certify && !sameInputs(pickInputs(run), draft) ? (
               <button type="button" onClick={() => setDraft(pickInputs(run))} className="flex items-center gap-1 text-2xs text-sg-muted hover:text-sg-white">
                 <RotateCcw className="size-3" /> Revert to the saved figures
               </button>
@@ -170,18 +223,18 @@ export function MonthlyRunTab({ month }: { month: string }) {
               </div>
               <ul className="mt-1 list-disc space-y-0.5 pl-4">
                 <li>
-                  Type C standard bonuses are paid in full first: <span className="sg-num font-semibold">{formatIDR(result.guaranteed, "full")}</span> <Cite s="8.6" />
+                  Type C standard bonuses are paid in full first: <span className="sg-num font-semibold">{exactIdr(result.guaranteed)}</span> <Cite s="8.6" />
                 </li>
                 {carriedIn.length ? (
                   <li>
-                    Amounts carried forward from earlier months are paid next: <span className="sg-num font-semibold">{pctLabel(result.carriedPaidPct)}</span> of {formatIDR(carriedIn.reduce((s, c) => s + c.amount, 0), "full")}
+                    Amounts carried forward from earlier months are paid next: <span className="sg-num font-semibold">{pctLabel(result.carriedPaidPct)}</span> of {exactIdr(carriedIn.reduce((s, c) => s + c.amount, 0))}
                   </li>
                 ) : null}
                 <li>
                   Every employee receives the same <span className="sg-num font-semibold">{(view.payoutPct * 100).toFixed(2)}%</span> of their new bonus — the largest share that still passes both checks.
                 </li>
                 <li>
-                  <span className="sg-num font-semibold">{formatIDR(totals.carriedOver, "full")}</span> is carried forward and paid first in the next month both checks pass. It is not forfeited (§10 still applies on a status change).
+                  <span className="sg-num font-semibold">{exactIdr(totals.carriedOver)}</span> is carried forward and paid first in the next month both checks pass. It is not forfeited (§10 still applies on a status change).
                 </li>
                 <li>The revenue-share curve is never cut retroactively or without notice in response to a failed test.</li>
               </ul>
@@ -202,24 +255,11 @@ export function MonthlyRunTab({ month }: { month: string }) {
             ) : (
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => save("draft")} title="Finance calculates provisional bonuses by the 22nd; Project Leads confirm the Team Allocation Ledger (§8.2) · ⌘/Ctrl+Enter">
+                  <Button variant="outline" size="sm" disabled={!access.certify} onClick={() => save("draft")} title="Finance calculates provisional bonuses by the 22nd; Project Leads confirm the Team Allocation Ledger (§8.2) · ⌘/Ctrl+Enter">
                     {run?.status === "certified" ? "Reopen as provisional" : "Save provisional"}
                   </Button>
-                  <Button variant="primary" size="sm" disabled={!!certifyBlock} title={certifyBlock ?? (canCertifyDirect ? "Certify the break-even test and cash check" : `Recorded by ${userMap.get(me.userId)?.name ?? "you"} on behalf of ${userMap.get(CFO_ID)?.name ?? "the CFO"}`)} onClick={() => save("certified")}>
-                    <BadgeCheck /> {canCertifyDirect ? "Certify as CFO" : "Record CFO certification"}
-                  </Button>
-                  <Button
-                    variant="pill"
-                    size="sm"
-                    disabled={!!releaseBlock}
-                    title={releaseBlock ?? "Authorise release with the salary"}
-                    onClick={() => {
-                      if (!run) return;
-                      releaseRun(run.id);
-                      notify(`PRC authorised release for ${monthLabel(month)} — paid with the ${formatDate(paymentDate(month), "medium")} salary`);
-                    }}
-                  >
-                    <Send /> Authorise release (PRC)
+                  <Button variant="primary" size="sm" disabled={!!certifyBlock} onClick={() => save("certified")}>
+                    <BadgeCheck /> {isCfo ? "Certify as CFO" : `Record ${userMap.get(cfoId ?? "")?.name ?? "CFO"}'s certification`}
                   </Button>
                   <span className="ml-auto">
                     <Chip color={runStatusMeta[status].color} dot>
@@ -227,20 +267,16 @@ export function MonthlyRunTab({ month }: { month: string }) {
                     </Chip>
                   </span>
                 </div>
-                {!canCertifyDirect ? (
-                  <label className="flex cursor-pointer items-start gap-2 text-2xs text-sg-muted">
-                    <input type="checkbox" className="mt-0.5 accent-sg-white" checked={onBehalf} onChange={(e) => setOnBehalf(e.target.checked)} />
-                    <span>
-                      I am recording {userMap.get(CFO_ID)?.name ?? "the CFO"}&apos;s written certification of these results (CFO or Finance role required, §9.1). The audit log records {userMap.get(me.userId)?.name ?? "you"} as the person who entered it.
-                    </span>
-                  </label>
+                {onBehalf && cfoId && !certifyBlock?.startsWith("Only") ? (
+                  <Field label={`Reference of ${userMap.get(cfoId)?.name ?? "the CFO"}'s written certification`} hint={`Recorded by ${userMap.get(access.userId)?.name ?? "you"} for the CFO; the audit log names both (§9.1, §13.3)`}>
+                    <Input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="e.g. signed memo FIN-2026-11-23, or e-mail of 23 Nov 16:02" />
+                  </Field>
                 ) : null}
-                {certifyBlock && missingInputs ? <p className="text-2xs text-soft-yellow">{certifyBlock}</p> : null}
+                {certifyBlock ? <RoleNote>{certifyBlock}</RoleNote> : null}
                 {run?.status === "certified" && dirty ? <Callout tone="warn">Figures changed since the CFO certified on {formatDate(run.certifiedAt, "datetime")}. Re-certify before the PRC can authorise release.</Callout> : null}
                 {run?.status === "certified" && !dirty ? (
                   <p className="text-2xs text-sg-muted">
                     Certified by {userMap.get(run.certifiedById ?? "")?.name ?? "—"} on {formatDate(run.certifiedAt, "datetime")}. Release creates the §9.3 deferred entries; carried-forward amounts are fed into the next run and paid first.
-                    {!canRelease ? " Release needs a PRC member." : ""}
                   </p>
                 ) : null}
               </div>
@@ -249,13 +285,35 @@ export function MonthlyRunTab({ month }: { month: string }) {
         </Panel>
       </div>
 
+      {run && (run.status === "certified" || run.status === "released") ? <ReleasePanel run={run} dirty={dirty} lateReason={notes.find((n) => n.kind === "late_release")?.text ?? null} salaryPassed={salaryPassed} auditLog={auditLog} /> : null}
+
+      {!released ? <ControlsPanel month={month} exceptions={exceptions} reviews={reviews} unconfirmed={unconfirmed.length} projects={result.projects.length} /> : null}
+
       {carriedIn.length ? <CarriedInPanel carriedIn={carriedIn} paidPct={result.carriedPaidPct} /> : null}
 
-      <ProjectsTable result={result} month={month} />
+      <HeldPanel lines={lines} month={month} />
 
-      <LinesPanel lines={lines} totals={totals} showIndividual={showIndividual} setShowIndividual={setShowIndividual} />
+      <ProjectsTable result={result} month={month} released={released} />
+
+      <LinesPanel lines={lines} totals={totals} showIndividual={showIndividual && access.seeAllPay} setShowIndividual={setShowIndividual} canSeeIndividual={access.seeAllPay} />
 
       <ExportsPanel run={run} />
+
+      {notes.length ? (
+        <Panel title="Cycle notes" icon={ClipboardCheck} cite="13.3" bodyClassName="p-0">
+          <ul className="divide-y divide-sg-line">
+            {notes.map((n) => (
+              <li key={n.id} className="flex flex-wrap items-baseline gap-x-3 px-4 py-2 text-xs">
+                <span className="font-semibold text-sg-white">{n.kind === "late_release" ? "Late release" : n.kind === "early_certification" ? "Early certification" : "Certification reference"}</span>
+                <span className="min-w-0 flex-1 text-sg-muted">{n.text}</span>
+                <span className="text-2xs text-sg-dim">
+                  {userMap.get(n.byId)?.name ?? n.byId} · {formatDate(n.at, "datetime")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      ) : null}
     </div>
   );
 }
@@ -263,7 +321,7 @@ export function MonthlyRunTab({ month }: { month: string }) {
 function AmountField({ label, hint, value, onChange, disabled }: { label: string; hint?: string; value: number; onChange: (v: number) => void; disabled?: boolean }) {
   return (
     <Field label={label} hint={hint ? `${hint} · ${formatIDR(value, "full")}` : formatIDR(value, "full")}>
-      <Input type="number" min={0} step={1_000_000} value={value} disabled={disabled} onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0))} className="sg-num" />
+      <AmountInput value={value} disabled={disabled} onChange={onChange} aria-label={label} />
     </Field>
   );
 }
@@ -359,8 +417,8 @@ function FormulaRow({ label, value, strong, cite, sub }: { label: string; value:
         {label}
         {cite ? <Cite s={cite} /> : null}
       </td>
-      <td className={cn("sg-num py-1 text-right", sub ? "text-2xs text-sg-dim" : "text-xs", strong ? "font-semibold text-sg-white" : !sub ? "text-sg-text" : "")} title={formatIDR(value, "full")}>
-        {formatIDR(value)}
+      <td className={cn("sg-num py-1 text-right", sub ? "text-2xs text-sg-dim" : "text-xs", strong ? "font-semibold text-sg-white" : !sub ? "text-sg-text" : "")} title={exactIdr(value)}>
+        {formatIDR(Math.abs(value) < 0.5 ? 0 : value)}
       </td>
     </tr>
   );
@@ -370,8 +428,8 @@ function VerdictRow({ label, value, passed }: { label: string; value: number; pa
   return (
     <tr className="border-t border-sg-line-2">
       <td className="py-2 font-display font-extrabold text-sg-white">{label}</td>
-      <td className={cn("sg-num py-2 text-right font-display text-base font-extrabold", passed ? "text-soft-green" : "text-soft-red")} title={formatIDR(value, "full")}>
-        {formatIDR(value)}
+      <td className={cn("sg-num py-2 text-right font-display text-base font-extrabold", passed ? "text-soft-green" : "text-soft-red")} title={exactIdr(value)}>
+        {formatIDR(Math.abs(value) < 0.5 ? 0 : value)}
       </td>
     </tr>
   );
@@ -394,7 +452,7 @@ function Verdict({ label, passed }: { label: string; passed: boolean }) {
 function CarriedInPanel({ carriedIn, paidPct }: { carriedIn: { initiativeId: string; userId: string; amount: number }[]; paidPct: number }) {
   const total = carriedIn.reduce((s, c) => s + c.amount, 0);
   return (
-    <Panel title="Carried forward from earlier months" icon={Hourglass} cite="9.2" subtitle={`${carriedIn.length} line${carriedIn.length === 1 ? "" : "s"} · ${formatIDR(total, "full")} · paid first, before new bonuses`} bodyClassName="p-0">
+    <Panel title="Carried forward from earlier months" icon={Hourglass} cite="9.2" subtitle={`${carriedIn.length} line${carriedIn.length === 1 ? "" : "s"} · ${exactIdr(total)} · paid first, before new bonuses`} bodyClassName="p-0">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[640px] text-sm">
           <thead>
@@ -418,13 +476,13 @@ function CarriedInPanel({ carriedIn, paidPct }: { carriedIn: { initiativeId: str
                     <InitiativeLink id={c.initiativeId} />
                   </td>
                   <td className={tdNum}>
-                    <Money value={c.amount} />
+                    <ExactMoney value={c.amount} />
                   </td>
                   <td className={cn(tdNum, "text-soft-green")}>
-                    <Money value={paid} />
+                    <ExactMoney value={paid} />
                   </td>
                   <td className={cn(tdNum, c.amount - paid > 0 ? "text-soft-yellow" : "text-sg-dim")}>
-                    <Money value={c.amount - paid} />
+                    <ExactMoney value={c.amount - paid} />
                   </td>
                 </tr>
               );
@@ -436,9 +494,264 @@ function CarriedInPanel({ carriedIn, paidPct }: { carriedIn: { initiativeId: str
   );
 }
 
+/* ───────────── §8.2 / §13.1 maker-checker release ───────────── */
+
+function ReleasePanel({ run, dirty, lateReason, salaryPassed, auditLog }: { run: BonusRun; dirty: boolean; lateReason: string | null; salaryPassed: boolean; auditLog: AuditEntry[] }) {
+  const profiles = useCrm((s) => s.employeeProfiles);
+  const approvalsAll = useCrm((s) => s.releaseApprovals);
+  const approveRelease = useCrm((s) => s.approveRelease);
+  const withdrawReleaseApproval = useCrm((s) => s.withdrawReleaseApproval);
+  const releaseRun = useCrm((s) => s.releaseRun);
+  const addCycleNote = useCrm((s) => s.addCycleNote);
+  const notify = useUi((s) => s.notify);
+  const userMap = useUserMap();
+  const access = useAccess();
+  const [reason, setReason] = useState("");
+
+  const st = useMemo(() => releaseState({ run, profiles, approvals: approvalsAll, auditLog }), [run, profiles, approvalsAll, auditLog]);
+  const released = run.status === "released";
+  const me = access.userId;
+  const myRecusal = st.recused.find((r) => r.userId === me);
+  const isMaker = me === run.certifiedById || me === st.recordedById;
+  const conflicted = run.lines.some((l) => l.userId === me);
+  const approved = st.approvals.some((a) => a.userId === me);
+  const releaseBlock = released
+    ? null
+    : dirty
+      ? "Figures changed since certification — re-certify first"
+      : !access.prc
+        ? "Only the PRC authorises release (§8.2, §13.2)"
+        : isMaker
+          ? "You certified or recorded this certification — a different PRC member authorises release (maker-checker, §8.2)"
+          : conflicted && !st.quorumMet
+            ? `You have bonus lines in this run and are recused (§13.1) — release needs a quorum: approvals recorded by ${st.quorumNeeded} PRC members present including the CFO or a Finance delegate`
+            : salaryPassed && !lateReason
+              ? "The salary date has passed — record the reason for the late release first"
+              : null;
+
+  const release = () => {
+    if (releaseBlock) return;
+    if (!conflicted && !approved) approveRelease(run.id);
+    releaseRun(run.id);
+    const after = useCrm.getState().bonusRuns.find((r) => r.id === run.id);
+    if (after?.status === "released") notify(`PRC authorised release for ${monthLabel(run.month)} — paid with the ${formatDate(paymentDate(run.month), "medium")} salary`);
+    else notify("Release was refused by the policy checks — see the maker-checker panel");
+  };
+
+  return (
+    <Panel title="PRC release · maker-checker" icon={Gavel} cite="13.1" subtitle={released ? `released by ${userMap.get(run.releasedById ?? "")?.name ?? "—"}` : "certifier ≠ releaser · recusal · quorum"}>
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+          <Step label="Prepared (provisional)" who={st.preparedById} />
+          <Step label="Certified by" who={run.certifiedById} at={run.certifiedAt} />
+          <Step label="Entered by" who={st.recordedById} sub={st.recordedById && st.recordedById !== run.certifiedById ? "on the CFO's behalf" : undefined} />
+          <Step label="Released by" who={run.releasedById} at={run.releasedAt} />
+          <div className="col-span-2">
+            <dt className="text-2xs text-sg-dim">Quorum (§13.1)</dt>
+            <dd className={cn("font-semibold", st.quorumMet ? "text-soft-green" : "text-sg-text")}>
+              {st.present.length} of {st.roster.length} present · {st.quorumNeeded} needed · {st.financePresent ? "CFO / Finance present" : "CFO or a Finance delegate must be present"}
+            </dd>
+          </div>
+        </dl>
+        <div>
+          <div className="sg-eyebrow mb-1">PRC members</div>
+          <ul className="divide-y divide-sg-line rounded-lg border border-sg-line">
+            {st.roster.map((u) => {
+              const a = st.approvals.find((x) => x.userId === u);
+              const rec = st.recused.find((r) => r.userId === u);
+              const canRecord = !released && !rec && !a && access.prc && !dirty && (u === me || !isMaker);
+              return (
+                <li key={u} className="flex flex-wrap items-center gap-2 px-3 py-1.5 text-xs">
+                  <span className="min-w-0 flex-1">
+                    <UserCell userId={u} sub={rec ? `Recused — ${rec.reason}` : a ? `Approved ${formatDate(a.at, "datetime")}${a.recordedById !== a.userId ? ` · recorded by ${userMap.get(a.recordedById)?.name ?? a.recordedById}` : ""}` : "No approval recorded"} />
+                  </span>
+                  {a ? (
+                    <>
+                      <Chip color="green" dot>
+                        Approved
+                      </Chip>
+                      {!released && (a.userId === me || a.recordedById === me) ? (
+                        <Button size="xs" variant="ghost" onClick={() => withdrawReleaseApproval(a.id)}>
+                          Withdraw
+                        </Button>
+                      ) : null}
+                    </>
+                  ) : rec ? (
+                    <Chip color="blue">Recused</Chip>
+                  ) : canRecord ? (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => {
+                        const id = approveRelease(run.id, u === me ? undefined : u);
+                        notify(id ? `${u === me ? "Your" : `${userMap.get(u)?.name ?? "Member"}'s`} approval recorded` : "Approval not recorded — check recusal and the certification");
+                      }}
+                    >
+                      <UserCheck /> {u === me ? "Approve release" : "Record written approval"}
+                    </Button>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      </div>
+
+      {!released ? (
+        <div className="mt-4 space-y-2 border-t border-sg-line pt-3">
+          {salaryPassed && !lateReason && access.prc ? (
+            <div className="flex flex-wrap items-end gap-2">
+              <Field label="Reason for releasing after the salary date (§8.2)" className="min-w-[260px] flex-1">
+                <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. PRC quorum only reached on the 26th; paid in an off-cycle payroll run" />
+              </Field>
+              <Button size="sm" variant="outline" disabled={reason.trim().length < 5} onClick={() => addCycleNote(run.month, "late_release", reason)}>
+                Record reason
+              </Button>
+            </div>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="pill" size="sm" disabled={!!releaseBlock} onClick={release}>
+              <Send /> Authorise release (PRC)
+            </Button>
+            {myRecusal && !isMaker ? <span className="text-2xs text-sg-dim">You are recused: {myRecusal.reason}</span> : null}
+            {lateReason ? <span className="text-2xs text-soft-yellow">Late release · {lateReason}</span> : null}
+          </div>
+          {releaseBlock ? <RoleNote>{releaseBlock}</RoleNote> : <RoleNote>Your release is recorded as the PRC authorisation together with the approvals above (§13.3).</RoleNote>}
+        </div>
+      ) : null}
+    </Panel>
+  );
+}
+
+function Step({ label, who, at, sub }: { label: string; who: string | null | undefined; at?: string | null; sub?: string }) {
+  const userMap = useUserMap();
+  return (
+    <div>
+      <dt className="text-2xs text-sg-dim">{label}</dt>
+      <dd className="font-semibold text-sg-white">{who ? userMap.get(who)?.name ?? who : "—"}</dd>
+      {at || sub ? <dd className="text-2xs text-sg-dim">{[at ? formatDate(at, "datetime") : "", sub ?? ""].filter(Boolean).join(" · ")}</dd> : null}
+    </div>
+  );
+}
+
+/* ───────────── §8.2 ledger confirmations & exception review ───────────── */
+
+function ControlsPanel({ month, exceptions, reviews, unconfirmed, projects }: { month: string; exceptions: CycleException[]; reviews: ExceptionReview[]; unconfirmed: number; projects: number }) {
+  const reviewException = useCrm((s) => s.reviewException);
+  const unreviewException = useCrm((s) => s.unreviewException);
+  const userMap = useUserMap();
+  const access = useAccess();
+  const done = exceptions.filter((e) => reviews.some((r) => r.key === e.key)).length;
+  return (
+    <Panel title="Before certification" icon={ListChecks} cite="8.2" subtitle={`${projects - unconfirmed}/${projects} ledgers confirmed · ${done}/${exceptions.length} exceptions reviewed`} bodyClassName="p-0">
+      <p className="border-b border-sg-line px-4 py-2 text-2xs text-sg-dim">
+        Each Project Lead confirms the Team Allocation Ledger by the 22nd (in &ldquo;Projects this cycle&rdquo; below). Finance re-checks employment status before each payment (§3.5) and reviews the exception population — joiners and leavers, large lines, non-standard weights, held and forfeited amounts, probations ending and status changes. The CFO certifies once both are complete.
+      </p>
+      {exceptions.length ? (
+        <ul className="divide-y divide-sg-line">
+          {exceptions.map((e) => {
+            const r = reviews.find((x) => x.key === e.key);
+            return (
+              <li key={e.key} className="flex flex-wrap items-center gap-3 px-4 py-2 text-xs">
+                <span className="w-44 shrink-0">{e.userId ? <UserCell userId={e.userId} /> : null}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="font-semibold text-sg-white">{e.label}</span>
+                  <span className="text-sg-muted"> · {e.detail}</span>
+                  {e.initiativeId ? (
+                    <span className="block max-w-[320px]">
+                      <InitiativeLink id={e.initiativeId} compact />
+                    </span>
+                  ) : null}
+                </span>
+                {r ? (
+                  <span className="flex items-center gap-2">
+                    <span className="text-2xs text-soft-green">
+                      <CircleCheck className="mr-1 inline size-3" />
+                      Reviewed by {userMap.get(r.reviewedById)?.name ?? r.reviewedById} · {formatDate(r.at, "short")}
+                    </span>
+                    {access.certify ? (
+                      <Button size="xs" variant="ghost" onClick={() => unreviewException(r.id)}>
+                        Undo
+                      </Button>
+                    ) : null}
+                  </span>
+                ) : access.certify ? (
+                  <Button size="xs" variant="outline" onClick={() => reviewException(month, e.key, `${userMap.get(e.userId ?? "")?.name ?? ""} — ${e.label}`)}>
+                    <ClipboardCheck /> Mark reviewed
+                  </Button>
+                ) : (
+                  <span className="text-2xs text-sg-dim">Finance to review</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="px-4 py-3 text-xs text-sg-muted">No exceptions in this cycle.</p>
+      )}
+    </Panel>
+  );
+}
+
+/* ───────────── held lines (§10, §15.1) ───────────── */
+
+function HeldPanel({ lines, month }: { lines: BonusLine[]; month: string }) {
+  const held = lines.filter((l) => l.held > 0);
+  if (!held.length) return null;
+  const total = held.reduce((s, l) => s + l.held, 0);
+  return (
+    <Panel title="Held — paid when the condition clears" icon={Hourglass} cite="10" subtitle={`${held.length} line${held.length === 1 ? "" : "s"} · ${exactIdr(total)}`} bodyClassName="p-0">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[820px] text-sm">
+          <thead>
+            <tr className="border-b border-sg-line">
+              <th className={thCls}>Employee</th>
+              <th className={thCls}>Project</th>
+              <th className={thRight}>Held</th>
+              <th className={thCls}>Why</th>
+              <th className={thCls}>Paid when</th>
+            </tr>
+          </thead>
+          <tbody>
+            {held.map((l) => {
+              const reason = holdReasons(l)[0] ?? "Held (§10)";
+              const c = heldCondition(reason);
+              return (
+                <tr key={`${l.userId}-${l.initiativeId}`} className="border-b border-sg-line align-top">
+                  <td className={tdCls}>
+                    <UserCell userId={l.userId} />
+                  </td>
+                  <td className={cn(tdCls, "max-w-[240px]")}>
+                    <InitiativeLink id={l.initiativeId} />
+                  </td>
+                  <td className={cn(tdNum, "font-semibold text-soft-orange")}>
+                    <ExactMoney value={l.held} />
+                  </td>
+                  <td className={cn(tdCls, "max-w-[280px] text-2xs text-sg-muted")}>{reason}</td>
+                  <td className={cn(tdCls, "max-w-[280px] text-2xs")}>
+                    <span className="text-sg-text">{c.when}</span>
+                    {c.where ? (
+                      <a href={c.where} className="ml-1 text-sg-muted underline-offset-2 hover:text-sg-white hover:underline">
+                        HR record
+                      </a>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="px-4 py-2 text-2xs text-sg-dim">
+        Held amounts are not forfeited. They stay on the {monthLabel(month)} run, are re-checked against §10 every cycle and are paid with the first salary after the hold clears; a confirmed serious violation forfeits them.
+      </p>
+    </Panel>
+  );
+}
+
 /* ───────────── projects ───────────── */
 
-function ProjectsTable({ result, month }: { result: RunResult; month: string }) {
+function ProjectsTable({ result, month, released }: { result: RunResult; month: string; released: boolean }) {
   const iniMap = useInitiativeMap();
   const initiatives = useCrm((s) => s.initiatives);
   const members = useCrm((s) => s.initiativeMembers);
@@ -446,6 +759,7 @@ function ProjectsTable({ result, month }: { result: RunResult; month: string }) 
   const profiles = useCrm((s) => s.employeeProfiles);
   const adjustments = useCrm((s) => s.curveAdjustments);
   const [open, setOpen] = useState<string | null>(null);
+  const [overrideFor, setOverrideFor] = useState<string | null>(null);
 
   const payments = useMemo(() => {
     const m = new Map<string, ReturnType<typeof projectPayments>>();
@@ -472,7 +786,7 @@ function ProjectsTable({ result, month }: { result: RunResult; month: string }) 
     <Panel title="Projects this cycle" icon={Landmark} cite="8.1" subtitle="pool = y × cumulative net revenue − pool already allocated" bodyClassName="p-0">
       {result.projects.length ? (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1240px] text-sm">
+          <table className="w-full min-w-[1420px] text-sm">
             <thead>
               <tr className="border-b border-sg-line">
                 <th className={thCls}>Project</th>
@@ -484,6 +798,7 @@ function ProjectsTable({ result, month }: { result: RunResult; month: string }) 
                 <th className={thRight}>Pool §8.1</th>
                 <th className={thCls}>Type C minimum §8.6</th>
                 <th className={thCls}>Deferral §9.3</th>
+                <th className={thCls}>Ledger §8.2</th>
               </tr>
             </thead>
             <tbody>
@@ -565,10 +880,13 @@ function ProjectsTable({ result, month }: { result: RunResult; month: string }) 
                           <span className="text-sg-dim">None</span>
                         )}
                       </td>
+                      <td className={cn(tdCls, "min-w-[190px] text-2xs")}>
+                        <LedgerCell month={month} initiativeId={p.initiativeId} released={released} onOverride={() => setOverrideFor(p.initiativeId)} />
+                      </td>
                     </tr>
                     {expanded ? (
                       <tr className="border-b border-sg-line bg-sg-bg/40">
-                        <td colSpan={9} className="px-10 py-2">
+                        <td colSpan={10} className="px-10 py-2">
                           <table className="w-full text-xs">
                             <thead>
                               <tr className="text-2xs uppercase tracking-[0.1em] text-sg-dim">
@@ -634,6 +952,7 @@ function ProjectsTable({ result, month }: { result: RunResult; month: string }) 
                 </td>
                 <td className={cn(tdCls, "text-2xs text-soft-magenta")}>{sum("topUp") > 0 ? <>Top-ups {formatIDR(sum("topUp"))}</> : null}</td>
                 <td className={tdCls} />
+                <td className={tdCls} />
               </tr>
             </tbody>
           </table>
@@ -681,7 +1000,107 @@ function ProjectsTable({ result, month }: { result: RunResult; month: string }) 
           </ul>
         </div>
       ) : null}
+      {overrideFor ? <LedgerOverrideModal month={month} initiativeId={overrideFor} onClose={() => setOverrideFor(null)} /> : null}
     </Panel>
+  );
+}
+
+/** §8.2 the Project Lead confirms the Team Allocation Ledger by the 22nd; Finance may record it with a reason. */
+function LedgerCell({ month, initiativeId, released, onOverride }: { month: string; initiativeId: string; released: boolean; onOverride: () => void }) {
+  const confirmations = useCrm((s) => s.ledgerConfirmations);
+  const members = useCrm((s) => s.initiativeMembers);
+  const confirmLedger = useCrm((s) => s.confirmLedger);
+  const unconfirmLedger = useCrm((s) => s.unconfirmLedger);
+  const notify = useUi((s) => s.notify);
+  const userMap = useUserMap();
+  const access = useAccess();
+  const c = confirmations.find((x) => x.month === month && x.initiativeId === initiativeId);
+  const leads = Array.from(new Set(members.filter((m) => m.initiativeId === initiativeId && m.roles.includes("project_lead") && !m.leftAt).map((m) => m.userId)));
+  const isLead = leads.includes(access.userId);
+  if (c)
+    return (
+      <div>
+        <span className="flex items-center gap-1 text-soft-green">
+          <CircleCheck className="size-3" /> {c.override ? "Recorded by Finance" : "Confirmed"} · {userMap.get(c.confirmedById)?.name ?? c.confirmedById}
+        </span>
+        <span className="block text-sg-dim">{formatDate(c.at, "datetime")}</span>
+        {c.override ? <span className="block text-sg-muted">{c.override}</span> : null}
+        {!released && (c.confirmedById === access.userId || access.certify) ? (
+          <button type="button" className="text-sg-dim hover:text-sg-white" onClick={() => unconfirmLedger(c.id)}>
+            Withdraw
+          </button>
+        ) : null}
+      </div>
+    );
+  const overdue = Date.now() > Date.parse(provisionalDeadline(month));
+  return (
+    <div className="space-y-1">
+      <span className={overdue ? "text-soft-orange" : "text-sg-muted"}>
+        {overdue ? "Not confirmed — due " : "Due "}
+        {formatDate(provisionalDeadline(month), "short")} · PL {leads.map((u) => userMap.get(u)?.name ?? u).join(", ") || "—"}
+      </span>
+      {!released && isLead ? (
+        <Button
+          size="xs"
+          variant="outline"
+          onClick={() => {
+            confirmLedger(month, initiativeId);
+            notify("Team Allocation Ledger confirmed for this cycle (§8.2)");
+          }}
+        >
+          <UserCheck /> Confirm ledger
+        </Button>
+      ) : !released && access.certify ? (
+        <Button size="xs" variant="ghost" onClick={onOverride}>
+          Record for the PL…
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function LedgerOverrideModal({ month, initiativeId, onClose }: { month: string; initiativeId: string; onClose: () => void }) {
+  const confirmLedger = useCrm((s) => s.confirmLedger);
+  const notify = useUi((s) => s.notify);
+  const [reason, setReason] = useState("");
+  const submit = () => {
+    if (reason.trim().length < 5) return;
+    confirmLedger(month, initiativeId, reason);
+    notify("Ledger confirmation recorded by Finance");
+    onClose();
+  };
+  return (
+    <Modal
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title="Record the ledger confirmation"
+      description={`${monthLabel(month)} · the Project Lead normally confirms the Team Allocation Ledger by the 22nd (§8.2)`}
+      footer={
+        <>
+          <Button size="sm" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="sm" variant="primary" disabled={reason.trim().length < 5} onClick={submit}>
+            Record confirmation
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-2">
+        <InitiativeLink id={initiativeId} />
+        <Field label="Reason and evidence" hint="e.g. confirmed by e-mail on the 22nd while the PL was on site; the audit log records you as the person who entered it">
+          <Textarea
+            autoFocus
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
+            }}
+            className="min-h-[64px]"
+          />
+        </Field>
+      </div>
+    </Modal>
   );
 }
 
@@ -690,7 +1109,7 @@ function ProjectsTable({ result, month }: { result: RunResult; month: string }) 
 const STATUS_ORDER: LineStatus[] = ["payable", "partially_deferred", "carried_forward", "withheld_probation", "held", "forfeited", "ineligible"];
 type SumKey = "gross" | "topUp" | "topUpDeducted" | "guaranteed" | "carriedIn" | "payable" | "deferred" | "withheld" | "held" | "forfeited" | "carriedOver";
 
-function LinesPanel({ lines, totals, showIndividual, setShowIndividual }: { lines: BonusLine[]; totals: BonusRun["totals"]; showIndividual: boolean; setShowIndividual: (v: boolean) => void }) {
+function LinesPanel({ lines, totals, showIndividual, setShowIndividual, canSeeIndividual }: { lines: BonusLine[]; totals: BonusRun["totals"]; showIndividual: boolean; setShowIndividual: (v: boolean) => void; canSeeIndividual: boolean }) {
   const userMap = useUserMap();
   const groups = useMemo(() => {
     const m = new Map<string, BonusLine[]>();
@@ -717,6 +1136,7 @@ function LinesPanel({ lines, totals, showIndividual, setShowIndividual }: { line
       subtitle={`${lines.length} line${lines.length === 1 ? "" : "s"} · ${groups.length} employee${groups.length === 1 ? "" : "s"} · B = E ÷ ΣE × pool`}
       bodyClassName="p-0"
       actions={
+        !canSeeIndividual ? null : (
         <label className="flex cursor-pointer items-center gap-2 text-xs text-sg-muted">
           <input type="checkbox" checked={showIndividual} onChange={(e) => setShowIndividual(e.target.checked)} className="accent-sg-white" />
           Show individual amounts
@@ -724,6 +1144,7 @@ function LinesPanel({ lines, totals, showIndividual, setShowIndividual }: { line
             <Lock className="size-3.5" />
           </span>
         </label>
+        )
       }
     >
       {!lines.length ? (
@@ -799,7 +1220,7 @@ function LinesPanel({ lines, totals, showIndividual, setShowIndividual }: { line
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1640px] text-sm">
+          <table className="w-full min-w-[1880px] text-sm">
             <thead>
               <tr className="border-b border-sg-line">
                 <th className={thCls}>Employee / project</th>
@@ -897,15 +1318,15 @@ function LinesPanel({ lines, totals, showIndividual, setShowIndividual }: { line
 function Sum({ ls, k }: { ls: BonusLine[]; k: SumKey }) {
   const raw = ls.reduce((s, l) => s + l[k], 0);
   const v = k === "topUpDeducted" ? -raw : raw;
-  return <td className={cn(tdNum, "font-semibold", v ? "text-sg-white" : "text-sg-dim")}>{v ? <Money value={v} /> : "—"}</td>;
+  return <td className={cn(tdNum, "font-semibold", v ? "text-sg-white" : "text-sg-dim")}>{v ? <ExactMoney value={v} /> : "—"}</td>;
 }
 
 function Cell({ v, strong }: { v: number; strong?: boolean }) {
-  return <td className={cn(tdNum, v ? (strong ? "font-semibold text-sg-white" : "text-sg-text") : "text-sg-dim")}>{v ? <Money value={v} /> : "—"}</td>;
+  return <td className={cn(tdNum, v ? (strong ? "font-semibold text-sg-white" : "text-sg-text") : "text-sg-dim")}>{v ? <ExactMoney value={v} /> : "—"}</td>;
 }
 
 function TotalCell({ v }: { v: number }) {
-  return <td className={tdNum}>{v ? <Money value={v} /> : "—"}</td>;
+  return <td className={tdNum}>{v ? <ExactMoney value={v} /> : "—"}</td>;
 }
 
 /* ───────────── payroll & accrual exports ───────────── */
@@ -917,15 +1338,36 @@ interface ExportRow {
   code: string;
 }
 
+/** One payroll row per employee for the cycle (§8.5): project lines plus deferred releases, probation bonuses and recoveries. */
+interface PayrollRow {
+  userId: string;
+  name: string;
+  email: string;
+  employeeNumber: string;
+  npwp: string;
+  ptkp: string;
+  projectBonus: number;
+  deferredRelease: number;
+  probationBonus: number;
+  recovery: number; // ≤ 0
+  gross: number;
+  pph: { withheld: number; net: number } | null;
+  split: string;
+  notes: string[];
+}
+
 function ExportsPanel({ run }: { run: BonusRun | undefined }) {
   const users = useCrm((s) => s.users);
   const initiatives = useCrm((s) => s.initiatives);
   const profiles = useCrm((s) => s.employeeProfiles);
   const bonusRuns = useCrm((s) => s.bonusRuns);
   const outcomes = useCrm((s) => s.probationOutcomes);
+  const deferredBonuses = useCrm((s) => s.deferredBonuses);
+  const recoveryDeductions = useCrm((s) => s.recoveryDeductions);
+  const auditLog = useCrm((s) => s.auditLog);
   const notify = useUi((s) => s.notify);
+  const access = useAccess();
 
-  const ready = run && (run.status === "certified" || run.status === "released");
   const rows = useMemo<ExportRow[]>(() => {
     if (!run) return [];
     return run.lines
@@ -937,21 +1379,69 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
       .sort((a, b) => a.name.localeCompare(b.name) || a.code.localeCompare(b.code));
   }, [run, users, initiatives]);
 
+  const payroll = useMemo<PayrollRow[]>(() => {
+    if (!run) return [];
+    const extras = payrollExtras(run.month, { deferredBonuses, probationOutcomes: outcomes, recoveryDeductions, auditLog });
+    const ids = Array.from(new Set([...run.lines.filter((l) => l.payable > 0).map((l) => l.userId), ...extras.map((e) => e.userId)]));
+    return ids
+      .map((userId) => {
+        const u = users.find((x) => x.id === userId);
+        const p = profiles.find((x) => x.userId === userId);
+        const mine = run.lines.filter((l) => l.userId === userId && l.payable > 0);
+        const ex = extras.filter((e) => e.userId === userId);
+        const projectBonus = mine.reduce((s, l) => s + Math.floor(l.payable), 0);
+        const deferredRelease = ex.filter((e) => e.kind === "deferred_release").reduce((s, e) => s + e.amount, 0);
+        const probationBonus = ex.filter((e) => e.kind === "probation_completion" || e.kind === "probation_final_pay").reduce((s, e) => s + e.amount, 0);
+        const due = projectBonus + deferredRelease + probationBonus;
+        const wanted = -ex.filter((e) => e.kind === "clawback_recovery").reduce((s, e) => s + e.amount, 0);
+        const recovery = -Math.min(due, wanted);
+        const pphs = mine.map(pph21Of);
+        const pph = pphs.length && pphs.every((x) => x) ? { withheld: pphs.reduce((s, x) => s + x!.withheld, 0), net: due + recovery - pphs.reduce((s, x) => s + x!.withheld, 0) } : null;
+        const split = [
+          ...mine.map((l) => `${codeOf(initiatives.find((i) => i.id === l.initiativeId), l.initiativeId)}:${Math.floor(l.payable)}`),
+          ...ex.filter((e) => e.kind === "deferred_release").map((e) => `${codeOf(initiatives.find((i) => i.id === e.initiativeId), e.initiativeId ?? "")}/deferred:${e.amount}`),
+        ].join("; ");
+        const notes = [...ex.map((e) => e.label), ...(wanted > -recovery ? [`Recovery capped at the bonus due — ${wanted + recovery} carried to a later cycle`] : [])];
+        return { userId, name: u?.name ?? userId, email: u?.email ?? "", employeeNumber: p?.employeeNumber ?? "", npwp: p?.npwp ?? "", ptkp: p?.ptkpStatus ?? "", projectBonus, deferredRelease, probationBonus, recovery, gross: due + recovery, pph, split, notes };
+      })
+      .filter((r) => r.gross > 0 || r.recovery < 0)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [run, users, profiles, deferredBonuses, outcomes, recoveryDeductions, auditLog, initiatives]);
+
   if (!run) return null;
+  const ready = run.status === "certified" || run.status === "released";
+  const final = run.status === "released";
   const salaryDate = csvDate(paymentDate(run.month));
-  const payroll = rows.filter((r) => r.line.payable > 0);
   const probation = rows.filter((r) => r.line.withheld > 0);
   const deferred = rows.filter((r) => r.line.deferred > 0);
   const counted = bonusRuns.filter((r) => r.month <= run.month);
   const settled = (userId: string) => outcomes.filter((o) => o.userId === userId).reduce((s, o) => s + o.amount, 0);
+  const hasPph = payroll.some((r) => r.pph);
+  const missingIds = payroll.filter((r) => !r.employeeNumber || !r.npwp).length;
 
-  const payrollCols: CsvColumn<ExportRow>[] = [
+  const payrollCols: CsvColumn<PayrollRow>[] = [
+    { header: "Status", value: () => (final ? "FINAL — released by PRC" : "DRAFT — certified, not yet released") },
+    { header: "Employee number", value: (r) => r.employeeNumber },
     { header: "Employee", value: (r) => r.name },
     { header: "Email", value: (r) => r.email },
-    { header: "Month", value: () => run.month },
+    { header: "NPWP", value: (r) => r.npwp },
+    { header: "PTKP", value: (r) => r.ptkp },
+    { header: "Cycle", value: () => run.month },
     { header: "Salary date", value: () => salaryDate },
-    { header: "Project code", value: (r) => r.code },
-    { header: "Payable (IDR)", value: (r) => Math.floor(r.line.payable) },
+    { header: "Component", value: () => "PROJECT_BONUS (irregular income, PPh 21)" },
+    { header: "Project bonus (IDR)", value: (r) => r.projectBonus },
+    { header: "Deferred release (IDR)", value: (r) => r.deferredRelease },
+    { header: "Probation bonus (IDR)", value: (r) => r.probationBonus },
+    { header: "Clawback recovery (IDR)", value: (r) => r.recovery },
+    { header: "Gross bonus payable (IDR)", value: (r) => r.gross },
+    ...(hasPph
+      ? ([
+          { header: "PPh 21 withheld — estimate (IDR)", value: (r) => (r.pph ? r.pph.withheld : "") },
+          { header: "Net bonus — estimate (IDR)", value: (r) => (r.pph ? r.pph.net : "") },
+        ] as CsvColumn<PayrollRow>[])
+      : []),
+    { header: "Cost centres (project:amount)", value: (r) => r.split },
+    { header: "Notes", value: (r) => r.notes.join(" · ") },
   ];
   const probationCols: CsvColumn<ExportRow>[] = [
     { header: "Employee", value: (r) => r.name },
@@ -978,36 +1468,79 @@ function ExportsPanel({ run }: { run: BonusRun | undefined }) {
     { header: "Project closed", value: (r) => (initiatives.find((i) => i.id === r.line.initiativeId)?.completedAt ? "yes" : "no — estimated from the contracted end") },
   ];
 
-  const exp = (kind: string, list: ExportRow[], cols: CsvColumn<ExportRow>[]) => {
-    downloadCsv(`${kind}-${run.month}-${run.status}.csv`, list, cols);
-    notify(`${list.length} row${list.length === 1 ? "" : "s"} exported · ${kind}-${run.month}.csv`);
+  const tag = final ? "released" : "DRAFT";
+  const exp = <T,>(kind: string, list: T[], cols: CsvColumn<T>[]) => {
+    const file = `${kind}-${run.month}-${tag}.csv`;
+    downloadCsv(file, list, cols);
+    notify(`${list.length} row${list.length === 1 ? "" : "s"} exported · ${file}`);
   };
 
   return (
     <Panel title="Payroll & accrual exports" icon={Wallet} cite="8.5" subtitle={ready ? `${runStatusMeta[run.status].label} · salary ${formatDate(paymentDate(run.month), "medium")}` : "available once certified"}>
-      {ready ? (
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" variant="primary" disabled={!payroll.length} onClick={() => exp("payroll", payroll, payrollCols)} title={payroll.length ? "One row per line with a payable amount" : "No payable lines"}>
-              <Download /> Export payroll CSV <span className="sg-num text-2xs opacity-70">{payroll.length}</span>
-            </Button>
-            <Button size="sm" variant="outline" disabled={!probation.length} onClick={() => exp("probation-accrual", probation, probationCols)} title={probation.length ? "Probationary Bonus Accrual account (§11.3)" : "No probation amounts held this cycle"}>
-              <Download /> Probation accrual <span className="sg-num text-2xs opacity-70">{probation.length}</span>
-            </Button>
-            <Button size="sm" variant="outline" disabled={!deferred.length} onClick={() => exp("deferred", deferred, deferredCols)} title={deferred.length ? "High-risk deferrals (§9.3)" : "Nothing deferred this cycle"}>
-              <Download /> Deferred <span className="sg-num text-2xs opacity-70">{deferred.length}</span>
-            </Button>
-          </div>
+      {!ready ? (
+        <p className="flex items-center gap-1.5 text-xs text-sg-muted">
+          <CalendarClock className="size-3.5" /> Payroll, probation-accrual and deferred exports unlock once the CFO certifies this month&apos;s checks; the payroll file is final once the PRC releases the run.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {payroll.length ? (
+            <div className="overflow-x-auto rounded-lg border border-sg-line">
+              <table className="w-full min-w-[980px] text-xs">
+                <thead>
+                  <tr className="border-b border-sg-line">
+                    <th className={thCls}>Employee</th>
+                    <th className={thRight}>Project bonus</th>
+                    <th className={thRight}>Deferred release</th>
+                    <th className={thRight}>Probation bonus</th>
+                    <th className={thRight}>Recovery</th>
+                    <th className={thRight}>Gross payable</th>
+                    {hasPph ? <th className={thRight}>PPh 21 est.</th> : null}
+                    {hasPph ? <th className={thRight}>Net est.</th> : null}
+                  </tr>
+                </thead>
+                <tbody>
+                  {payroll.map((r) => (
+                    <tr key={r.userId} className="border-b border-sg-line last:border-b-0">
+                      <td className={tdCls}>
+                        <UserCell userId={r.userId} sub={[r.employeeNumber || "no employee no.", r.npwp ? `NPWP ${r.npwp}` : "no NPWP"].join(" · ")} />
+                      </td>
+                      <td className={tdNum}>{r.projectBonus ? exactIdr(r.projectBonus) : "—"}</td>
+                      <td className={tdNum}>{r.deferredRelease ? exactIdr(r.deferredRelease) : "—"}</td>
+                      <td className={tdNum}>{r.probationBonus ? exactIdr(r.probationBonus) : "—"}</td>
+                      <td className={cn(tdNum, r.recovery ? "text-soft-red" : "")}>{r.recovery ? exactIdr(r.recovery) : "—"}</td>
+                      <td className={cn(tdNum, "font-semibold text-sg-white")}>{exactIdr(r.gross)}</td>
+                      {hasPph ? <td className={tdNum}>{r.pph ? exactIdr(r.pph.withheld) : "—"}</td> : null}
+                      {hasPph ? <td className={cn(tdNum, "text-soft-green")}>{r.pph ? exactIdr(r.pph.net) : "—"}</td> : null}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-xs text-sg-muted">Nothing payable with this salary.</p>
+          )}
+          {access.certify ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" variant={final ? "primary" : "outline"} disabled={!payroll.length} onClick={() => exp("payroll", payroll, payrollCols)}>
+                <Download /> {final ? "Export payroll CSV" : "Export DRAFT payroll"} <span className="sg-num text-2xs opacity-70">{payroll.length}</span>
+              </Button>
+              <Button size="sm" variant="outline" disabled={!probation.length} onClick={() => exp("probation-accrual", probation, probationCols)}>
+                <Download /> Probation accrual <span className="sg-num text-2xs opacity-70">{probation.length}</span>
+              </Button>
+              <Button size="sm" variant="outline" disabled={!deferred.length} onClick={() => exp("deferred", deferred, deferredCols)}>
+                <Download /> Deferred <span className="sg-num text-2xs opacity-70">{deferred.length}</span>
+              </Button>
+            </div>
+          ) : (
+            <RoleNote>Finance exports the payroll files (§13.2).</RoleNote>
+          )}
           <p className="text-2xs text-sg-dim">
-            Amounts are gross and rounded down to whole rupiah; payroll withholds PPh 21 <Cite s="8.5" />.{run.status === "certified" ? " The run is certified but not yet released — export again after PRC release if figures change." : ""} The files contain confidential individual amounts.
+            One row per employee: project lines, deferred releases and Probation Completion Bonuses paid with this salary, less any §9.4 recovery netted in payroll. Amounts are gross, rounded down to whole rupiah; payroll withholds PPh 21 <Cite s="8.5" />
+            {hasPph ? " — the PPh 21 and net columns are estimates (TER), payroll's figure is final" : ""}.{!final ? " The run is certified but not released — the file is marked DRAFT and must not be paid." : ""}
+            {missingIds ? ` ${missingIds} employee${missingIds === 1 ? "" : "s"} without an employee number or NPWP — HR completes the record on /people.` : ""} The files contain confidential individual amounts (§13.4).
           </p>
         </div>
-      ) : (
-        <p className="flex items-center gap-1.5 text-xs text-sg-muted">
-          <CalendarClock className="size-3.5" /> Payroll, probation-accrual and deferred exports unlock once the CFO certifies this month&apos;s checks.
-        </p>
       )}
     </Panel>
   );
 }
-

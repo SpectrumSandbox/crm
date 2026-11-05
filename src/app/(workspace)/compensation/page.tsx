@@ -11,17 +11,31 @@ import { PageHeader } from "@/components/shell/page-header";
 import { Select } from "@/components/ui/input";
 import { Chip } from "@/components/ui/misc";
 import { Tabs } from "@/components/ui/overlays";
-import { monthLabel, runStatusMeta } from "@/components/compensation/common";
+import { useAccess } from "@/lib/access-control";
+import { NoAccess, monthLabel, runStatusMeta } from "@/components/compensation/common";
+import { LiabilitiesTab } from "@/components/compensation/liabilities";
 import { MonthlyRunTab } from "@/components/compensation/monthly-run";
 import { DeferredTab } from "@/components/compensation/deferred";
 import { ProbationTab } from "@/components/compensation/probation";
 import { ClawbacksTab } from "@/components/compensation/clawbacks";
 import { PolicyTab } from "@/components/compensation/policy-tab";
 
-type Tab = "run" | "deferred" | "probation" | "clawbacks" | "policy";
-const TABS: Tab[] = ["run", "deferred", "probation", "clawbacks", "policy"];
+type Tab = "run" | "deferred" | "probation" | "clawbacks" | "liabilities" | "policy";
+const TABS: Tab[] = ["run", "deferred", "probation", "clawbacks", "liabilities", "policy"];
 
 export default function CompensationPage() {
+  const access = useAccess();
+  if (!access.seeAllPay)
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <PageHeader title="Compensation" meta={<span className="hidden text-2xs text-sg-dim md:inline">Finance &amp; PRC workspace · Policy v{POLICY_VERSION}</span>} />
+        <NoAccess what="The compensation workspace">The monthly company financial summary and break-even result are published to everyone in aggregate (§9.6).</NoAccess>
+      </div>
+    );
+  return <CompensationWorkspace />;
+}
+
+function CompensationWorkspace() {
   const router = useRouter();
   const params = useSearchParams();
   const revenueEntries = useCrm((s) => s.revenueEntries);
@@ -100,6 +114,7 @@ export default function CompensationPage() {
             { value: "deferred", label: "Deferred", count: counts.deferred },
             { value: "probation", label: "Probation", count: counts.probation },
             { value: "clawbacks", label: "Clawbacks", count: counts.clawbacks },
+            { value: "liabilities", label: "Liabilities" },
             { value: "policy", label: "Policy" },
           ]}
         />
@@ -110,6 +125,7 @@ export default function CompensationPage() {
         {tab === "deferred" ? <DeferredTab /> : null}
         {tab === "probation" ? <ProbationTab /> : null}
         {tab === "clawbacks" ? <ClawbacksTab /> : null}
+        {tab === "liabilities" ? <LiabilitiesTab month={month} /> : null}
         {tab === "policy" ? <PolicyTab /> : null}
       </div>
     </div>

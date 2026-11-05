@@ -14,7 +14,8 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/input";
 import { Chip, EmptyState } from "@/components/ui/misc";
 import { Cite, Metric, TypeChip } from "@/components/initiatives/shared";
-import { Callout, Panel, monthLabel, parseAmount, ratePct, tdCls, tdNum, thCls, thRight, useMyRoles } from "./common";
+import { AmountInput, Callout, Panel, monthLabel, ratePct, tdCls, tdNum, thCls, thRight } from "./common";
+import { useAccess } from "@/lib/access-control";
 
 const DAY = 86_400_000;
 /** §5.1 table rows. */
@@ -40,8 +41,8 @@ export function PolicyTab() {
     return { count: active.length, amount: active.reduce((s, c) => s + clawbackAmount(c), 0), recovered: active.reduce((s, c) => s + c.recovered, 0), deferred: deferred.filter((d) => d.status === "pending").reduce((s, d) => s + d.amount, 0) };
   }, [clawbacks, deferred]);
 
-  const [tryX, setTryX] = useState("600000000");
-  const x = Math.max(0, parseAmount(tryX));
+  const [tryX, setTryX] = useState(600_000_000);
+  const x = Math.max(0, tryX);
   const y = revenueShareRate(x, curve);
 
   return (
@@ -82,7 +83,9 @@ export function PolicyTab() {
                 })}
                 <tr className="bg-sg-card-2/40">
                   <td className={tdCls}>
-                    <Input type="number" min={0} step={10_000_000} value={tryX} onChange={(e) => setTryX(e.target.value)} className="sg-num h-7 w-48" aria-label="Try a projected annual net revenue" />
+                    <span className="block w-48">
+                      <AmountInput value={tryX} onChange={setTryX} aria-label="Try a projected annual net revenue" />
+                    </span>
                   </td>
                   <td className={cn(tdNum, "font-semibold text-soft-cyan")}>{ratePct(y)}</td>
                   <td className={cn(tdNum, "text-soft-cyan")}>{formatIDR(floorRp(x * y), "full")}</td>
@@ -237,17 +240,17 @@ function CurveChangeForm({ curve }: { curve: Curve }) {
   const scheduleCurveAdjustment = useCrm((s) => s.scheduleCurveAdjustment);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
-  const me = useMyRoles();
+  const access = useAccess();
   const minDate = toDateInput(new Date(Date.now() + (POLICY.curveNoticeDays + 1) * DAY).toISOString());
 
   const [start, setStart] = useState(String(Math.round(curve.start * 1000) / 10));
   const [floor, setFloor] = useState(String(Math.round(curve.floor * 1000) / 10));
-  const [decay, setDecay] = useState(String(curve.decay));
+  const [decay, setDecay] = useState(curve.decay);
   const [effective, setEffective] = useState(minDate);
   const [grounds, setGrounds] = useState<string[]>([]);
   const [rationale, setRationale] = useState("");
 
-  const next: Curve = { start: Number(start) / 100, floor: Number(floor) / 100, decay: parseAmount(decay) };
+  const next: Curve = { start: Number(start) / 100, floor: Number(floor) / 100, decay };
   const inRange = (v: number, [lo, hi]: readonly [number, number]) => Number.isFinite(v) && v >= lo - 1e-9 && v <= hi + 1e-9;
   const errors: string[] = [];
   if (!inRange(next.start, CURVE_LIMITS.start)) errors.push(`Starting rate must be ${CURVE_LIMITS.start[0] * 100}–${CURVE_LIMITS.start[1] * 100}%`);
@@ -258,7 +261,7 @@ function CurveChangeForm({ curve }: { curve: Curve }) {
   if (!effective || effective < minDate) errors.push(`At least ${POLICY.curveNoticeDays} days' written notice — effective on or after ${formatDate(fromDateInput(minDate), "medium")}`);
   if (!grounds.length) errors.push("Select the ground(s) for the change");
   if (rationale.trim().length < 20) errors.push("Give the reasons and financial context for the notice (20+ characters)");
-  if (!me.roles.includes("prc")) errors.push("Only the PRC approves a curve change");
+  if (!access.prc) errors.push("Only the PRC approves a curve change (§9.5, §13.2)");
 
   const submit = () => {
     if (errors.length) return;
@@ -287,8 +290,8 @@ function CurveChangeForm({ curve }: { curve: Curve }) {
           <Field label="Floor F (%)" hint={`${CURVE_LIMITS.floor[0] * 100}–${CURVE_LIMITS.floor[1] * 100}`}>
             <Input type="number" step={0.5} value={floor} onChange={(e) => setFloor(e.target.value)} className="sg-num" />
           </Field>
-          <Field label="Decay D (Rp)" hint={`${CURVE_LIMITS.decay[0] / 1e9}–${CURVE_LIMITS.decay[1] / 1e9} bn`}>
-            <Input type="number" step={100_000_000} value={decay} onChange={(e) => setDecay(e.target.value)} className="sg-num" />
+          <Field label="Decay D (Rp)" hint={`${CURVE_LIMITS.decay[0] / 1e9}–${CURVE_LIMITS.decay[1] / 1e9} M (miliar)`}>
+            <AmountInput value={decay} onChange={setDecay} aria-label="Decay point" />
           </Field>
         </div>
         {errors.some((e) => e.startsWith("Starting") || e.startsWith("Floor") || e.startsWith("Decay") || e.startsWith("The starting")) ? null : (
@@ -334,7 +337,7 @@ function CurveChangeForm({ curve }: { curve: Curve }) {
           </ul>
         ) : null}
         <div className="flex items-center gap-2">
-          <span className="text-2xs text-sg-dim">Approved by {userMap.get(me.userId)?.name ?? "you"} for the PRC · changes outside these limits need a Company Regulations amendment · ⌘/Ctrl+Enter</span>
+          <span className="text-2xs text-sg-dim">Approved by {userMap.get(access.userId)?.name ?? "you"} for the PRC · changes outside these limits need a Company Regulations amendment · ⌘/Ctrl+Enter</span>
           <Button variant="primary" size="sm" className="ml-auto shrink-0" disabled={errors.length > 0} onClick={submit} title={errors.join("\n")}>
             Announce change
           </Button>

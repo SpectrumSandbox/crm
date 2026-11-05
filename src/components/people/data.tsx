@@ -33,7 +33,8 @@ export type AnnexBState = "missing" | "pre_v4" | "signed";
 export function annexBState(p: EmployeeProfile | undefined): AnnexBState | null {
   if (!p) return null;
   if (!p.acknowledgmentSignedAt) return "missing";
-  return Date.parse(p.acknowledgmentSignedAt) < Date.parse(POLICY_DATED) ? "pre_v4" : "signed";
+  // WIB midnight of the policy date — the same instant the engine (§15.1 hold) and /me use
+  return Date.parse(p.acknowledgmentSignedAt) < Date.parse(`${POLICY_DATED}T00:00:00+07:00`) ? "pre_v4" : "signed";
 }
 
 export interface PersonRow {

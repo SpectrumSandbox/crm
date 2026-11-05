@@ -1,9 +1,9 @@
 "use client";
 
 /* Shared building blocks for the /compensation workspace (Policy v4.0 §8–§11). */
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { CircleAlert, Info, TriangleAlert, CircleCheck } from "lucide-react";
+import { CircleAlert, Info, Lock, TriangleAlert, CircleCheck } from "lucide-react";
 import { useCrm } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
 import type { BonusRun, ClawbackTrigger, GovernanceRole, LineStatus } from "@/lib/initiatives/types";
@@ -212,8 +212,172 @@ export function dueText(iso: string, now = Date.now()) {
   return `${-days} day${days === -1 ? "" : "s"} overdue`;
 }
 
-/** Numeric input that keeps IDR whole numbers. */
+/** Plain numeric input (counts, percentages). For rupiah use parseIdr / AmountInput. */
 export function parseAmount(v: string) {
   const n = Number(String(v).replace(/[^\d.-]/g, ""));
   return Number.isFinite(n) ? n : 0;
+}
+
+const SUFFIX: [RegExp, number][] = [
+  [/(juta|jt)$/i, 1e6],
+  [/(ribu|rb|k)$/i, 1e3],
+  [/(miliar|milyar|bn|b|m)$/i, 1e9],
+  [/(triliun|t)$/i, 1e12],
+];
+
+/**
+ * Rupiah typed the way Finance writes it: "7.200.000.000", "7,200,000,000", "Rp 7.2 M", "7,2 M" (miliar), "720 jt",
+ * "720jt", "15 rb". Indonesian "M" is miliar (10⁹). Returns whole rupiah (rounded down, §8.5), or NaN when unreadable.
+ */
+export function parseIdr(text: string): number {
+  let t = String(text).trim().replace(/^rp\.?/i, "").replace(/\s+/g, "");
+  if (!t) return 0;
+  const neg = t.startsWith("-") || t.startsWith("−");
+  if (neg) t = t.slice(1);
+  let mult = 1;
+  for (const [re, m] of SUFFIX) {
+    if (re.test(t)) {
+      mult = m;
+      t = t.replace(re, "");
+      break;
+    }
+  }
+  if (!/^\d[\d.,]*$/.test(t) && !/^[.,]\d+$/.test(t)) return Number.NaN;
+  const last = Math.max(t.lastIndexOf(","), t.lastIndexOf("."));
+  const tail = last >= 0 ? t.length - last - 1 : 0;
+  const mark = last >= 0 ? t[last] : "";
+  const other = mark === "," ? "." : ",";
+  const single = last >= 0 && t.indexOf(mark) === last;
+  // the last mark is a decimal point when the other mark groups thousands before it ("1.500.000,50"), or it is the
+  // only mark and not followed by exactly three digits ("7,2 M", "12,5") — with a unit, "7.2 M" too
+  const decimal = last >= 0 && single && (t.includes(other) || tail !== 3 || (mult > 1 && !t.includes(other) && mark === ","));
+  const intPart = decimal ? t.slice(0, last) : t;
+  const fracPart = decimal ? t.slice(last + 1) : "";
+  const num = Number(`${intPart.replace(/[.,]/g, "") || "0"}${fracPart ? `.${fracPart}` : ""}`);
+  if (!Number.isFinite(num)) return Number.NaN;
+  const v = Math.floor(num * mult + 1e-6);
+  return neg ? -v : v;
+}
+
+const groupFmt = new Intl.NumberFormat("id-ID", { maximumFractionDigits: 0 });
+/** "7.200.000.000" — the id-ID grouping shown in money inputs. */
+export const groupIdr = (n: number) => groupFmt.format(Math.round(n) === 0 ? 0 : Math.round(n));
+
+/**
+ * Rupiah input with thousand separators (id-ID) that also reads "7,2 M" (miliar), "720 jt" or "15 rb".
+ * Emits whole rupiah on every keystroke that parses; the text is regrouped on blur.
+ */
+export function AmountInput({
+  value,
+  onChange,
+  disabled,
+  className,
+  placeholder = "0",
+  autoFocus,
+  min = 0,
+  "aria-label": ariaLabel,
+  id,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  disabled?: boolean;
+  className?: string;
+  placeholder?: string;
+  autoFocus?: boolean;
+  min?: number | null;
+  "aria-label"?: string;
+  id?: string;
+}) {
+  const [text, setText] = useState(() => (value ? groupIdr(value) : ""));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setText(value ? groupIdr(value) : "");
+  }, [value, focused]);
+  const parsed = parseIdr(text);
+  const invalid = text.trim() !== "" && Number.isNaN(parsed);
+  return (
+    <span className="relative block">
+      <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-2xs font-semibold text-sg-dim">Rp</span>
+      <input
+        id={id}
+        inputMode="decimal"
+        autoComplete="off"
+        aria-label={ariaLabel}
+        aria-invalid={invalid || undefined}
+        autoFocus={autoFocus}
+        disabled={disabled}
+        placeholder={placeholder}
+        value={text}
+        onFocus={() => setFocused(true)}
+        onBlur={() => {
+          setFocused(false);
+          const n = parseIdr(text);
+          if (!Number.isNaN(n)) setText(n ? groupIdr(min != null ? Math.max(min, n) : n) : "");
+        }}
+        onChange={(e) => {
+          setText(e.target.value);
+          const n = parseIdr(e.target.value);
+          if (!Number.isNaN(n)) onChange(min != null ? Math.max(min, n) : n);
+        }}
+        title="Type 7.200.000.000, 7,2 M (miliar), 720 jt or 15 rb"
+        className={cn(
+          "sg-num h-8 w-full rounded border border-sg-line bg-sg-bg/60 pl-8 pr-2.5 text-sm text-sg-text placeholder:text-sg-dim transition-colors duration-150 hover:border-sg-line-2 focus:border-sg-white/60 focus:outline-none focus-visible:ring-1 focus-visible:ring-sg-white/40 disabled:opacity-50",
+          invalid && "border-soft-red/60 text-soft-red",
+          className,
+        )}
+      />
+    </span>
+  );
+}
+
+/** Exact whole rupiah ("Rp 4.137.512"), never "Rp -0" (§8.4–8.5 statements show exact amounts). */
+export function exactIdr(n: number) {
+  const v = Math.abs(n) < 0.5 ? 0 : n;
+  return formatIDR(v, "full");
+}
+
+export function ExactMoney({ value, className }: { value: number; className?: string }) {
+  return <span className={cn("sg-num", className)}>{exactIdr(value)}</span>;
+}
+
+/** The profile holding the CFO role (§9.1) — the certifier the Finance team records on behalf of. */
+export function useCfoId(): string | null {
+  const profiles = useCrm((s) => s.employeeProfiles);
+  return useMemo(() => profiles.find((p) => p.governanceRoles.includes("cfo"))?.userId ?? null, [profiles]);
+}
+
+/** §13.4 restricted screen for viewers without a Finance, HR or PRC role. */
+export function NoAccess({ what, children }: { what: string; children?: React.ReactNode }) {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center p-8">
+      <div className="max-w-lg rounded-xl border border-sg-line bg-sg-card p-6 text-center">
+        <span className="mx-auto mb-3 flex size-10 items-center justify-center rounded-full bg-sg-card-3 text-sg-muted">
+          <Lock className="size-5" />
+        </span>
+        <h2 className="font-display text-lg font-extrabold text-sg-white">{what} is restricted</h2>
+        <p className="mt-2 text-sm leading-relaxed text-sg-muted">
+          Individual bonus amounts and employment status are personal data. Access is limited to Finance, HR, the PRC and the employee concerned <Cite s="13.4" />. Your own statements, deferred and held balances are on your page.
+        </p>
+        {children ? <div className="mt-3 text-xs text-sg-dim">{children}</div> : null}
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          <Link href="/me" className="inline-flex h-8 items-center rounded-pill bg-sg-white px-4 text-sm font-semibold text-sg-bg hover:bg-sg-white/90">
+            Go to my compensation
+          </Link>
+          <Link href="/policy#s-13-4" className="inline-flex h-8 items-center rounded-pill border border-sg-line px-4 text-sm font-semibold text-sg-text hover:border-sg-line-2">
+            Read §13.4
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Inline explanation shown under a disabled governance action (§13.2). */
+export function RoleNote({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="flex items-start gap-1 text-2xs text-sg-dim">
+      <Lock className="mt-px size-3 shrink-0" />
+      <span>{children}</span>
+    </p>
+  );
 }

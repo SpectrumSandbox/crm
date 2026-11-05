@@ -1,5 +1,5 @@
 /* Pure helpers shared by /me and the notification centre (Policy v4.0). */
-import { addBusinessDays, isLiveMember, type ProjectRate } from "@/lib/initiatives/engine";
+import { addBusinessDays, cycleMonth, isLiveMember, type ProjectRate } from "@/lib/initiatives/engine";
 import { POLICY, POLICY_DATED, ROLE_META } from "@/lib/initiatives/policy";
 import type { EmployeeProfile, InitiativeMember, ProjectRole, TeamAmendment } from "@/lib/initiatives/types";
 import type { User } from "@/lib/types";
@@ -65,6 +65,16 @@ export function annexBState(p: EmployeeProfile | undefined): "none" | "missing" 
 /** Members on my side: every ledger row of mine, newest first. */
 export function myRows(members: InitiativeMember[], userId: string) {
   return members.filter((m) => m.userId === userId).sort((a, b) => b.joinedAt.localeCompare(a.joinedAt));
+}
+
+/** Salary cycle open today (§8.2): collections from the 21st belong to next month's cycle. */
+export const currentCycle = (now = Date.now()) => cycleMonth(new Date(now).toISOString());
+
+/** "2026-12" → "December 2026" */
+export function cycleLabel(month: string, short = false) {
+  const [y, m] = month.split("-").map(Number);
+  if (!y || !m) return month;
+  return new Date(Date.UTC(y, m - 1, 15)).toLocaleDateString("en-GB", { month: short ? "short" : "long", year: "numeric", timeZone: "UTC" });
 }
 
 export { isLiveMember };

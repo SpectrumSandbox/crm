@@ -8,12 +8,14 @@ import { useUserMap } from "@/lib/selectors";
 import type { BonusRun, EmployeeProfile, ProbationOutcome } from "@/lib/initiatives/types";
 import { addMonths, probationBalance } from "@/lib/initiatives/engine";
 import { EMPLOYMENT_META, POLICY } from "@/lib/initiatives/policy";
-import { cn, formatDate, formatIDR } from "@/lib/utils";
+import { cn, formatDate, formatIDR, fromDateInput, toDateInput } from "@/lib/utils";
+import { useAccess } from "@/lib/access-control";
+import { Field, Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Chip, EmptyState } from "@/components/ui/misc";
 import { Modal } from "@/components/ui/overlays";
 import { Cite, Metric, Money } from "@/components/initiatives/shared";
-import { Callout, InitiativeLink, Panel, UserCell, dueText, monthLabel, tdCls, tdNum, thCls, thRight } from "./common";
+import { Callout, ExactMoney, InitiativeLink, Panel, RoleNote, UserCell, dueText, exactIdr, monthLabel, tdCls, tdNum, thCls, thRight } from "./common";
 
 const DAY = 86_400_000;
 
@@ -43,6 +45,7 @@ export function ProbationTab() {
   const outcomes = useCrm((s) => s.probationOutcomes);
   const members = useCrm((s) => s.initiativeMembers);
   const userMap = useUserMap();
+  const access = useAccess();
   const [statementFor, setStatementFor] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "complete" | "fail" | "dismiss"; userId: string } | null>(null);
 
@@ -166,7 +169,8 @@ export function ProbationTab() {
                           <Button size="xs" variant="outline" onClick={() => setStatementFor(p.userId)}>
                             <FileText /> Statement
                           </Button>
-                          {r.open ? (
+                          {r.open && !access.manageHr ? <RoleNote>HR records the §11.4 outcome</RoleNote> : null}
+                          {r.open && access.manageHr ? (
                             <>
                               <Button size="xs" variant="primary" onClick={() => setConfirm({ kind: "complete", userId: p.userId })}>
                                 <UserCheck /> Confirmed → completion bonus
@@ -194,7 +198,7 @@ export function ProbationTab() {
         <Modal open onOpenChange={(o) => !o && setStatementFor(null)} title={`Probation statement · ${userMap.get(selected.profile.userId)?.name ?? ""}`} description="Projects, amounts calculated, cumulative balance held and expected probation end date (§11.3)" className="w-[min(720px,calc(100vw-32px))]">
           <div className="space-y-3">
             <div className="flex flex-wrap gap-x-8 gap-y-2">
-              <Metric label="Cumulative balance held" value={formatIDR(selected.balance)} tone={selected.balance ? "orange" : undefined} />
+              <Metric label="Cumulative balance held" value={exactIdr(selected.balance)} tone={selected.balance ? "orange" : undefined} />
               <Metric label="Expected probation end" value={formatDate(selected.profile.probationEndDate, "medium")} hint={selected.open && selected.profile.probationEndDate ? dueText(selected.profile.probationEndDate) : undefined} />
               <Metric label="Completion bonus due by" value={selected.profile.probationEndDate ? formatDate(new Date(Date.parse(selected.profile.probationEndDate) + POLICY.probationPayoutDays * DAY).toISOString(), "medium") : "—"} hint="within 30 days of the end date if confirmed (§11.4)" />
             </div>
@@ -219,15 +223,15 @@ export function ProbationTab() {
                         {m.items.map((i) => (
                           <div key={i.initiativeId} className="flex items-center justify-between gap-3 text-xs">
                             <InitiativeLink id={i.initiativeId} compact />
-                            {i.paidTopUpMonth ? <span className="text-2xs text-soft-magenta">Type C top-up month — paid with salary (§8.6)</span> : <Money value={i.amount} className="text-sg-muted" />}
+                            {i.paidTopUpMonth ? <span className="text-2xs text-soft-magenta">Type C top-up month — paid with salary (§8.6)</span> : <ExactMoney value={i.amount} className="text-sg-muted" />}
                           </div>
                         ))}
                       </td>
                       <td className={cn(tdNum, "text-sg-white")}>
-                        <Money value={m.total} />
+                        <ExactMoney value={m.total} />
                       </td>
                       <td className={cn(tdNum, "font-semibold text-soft-orange")}>
-                        <Money value={m.cumulative} />
+                        <ExactMoney value={m.cumulative} />
                       </td>
                     </tr>
                   ))}
@@ -243,33 +247,47 @@ export function ProbationTab() {
         </Modal>
       ) : null}
 
-      {confirm ? <ConfirmProbation kind={confirm.kind} row={rows.find((r) => r.profile.userId === confirm.userId)} onClose={() => setConfirm(null)} /> : null}
+      {confirm ? <ProbationOutcomeModal kind={confirm.kind} userId={confirm.userId} onClose={() => setConfirm(null)} /> : null}
     </div>
   );
 }
 
-function ConfirmProbation({ kind, row, onClose }: { kind: "complete" | "fail" | "dismiss"; row: Row | undefined; onClose: () => void }) {
+/**
+ * §11.4 probation outcome — used from the Probation tab and from the HR record when the employment status leaves
+ * probation, so the held balance is always settled (never stranded by a status change).
+ */
+export function ProbationOutcomeModal({ kind, userId, onClose, onDone }: { kind: "complete" | "fail" | "dismiss"; userId: string; onClose: () => void; onDone?: () => void }) {
   const completeProbation = useCrm((s) => s.completeProbation);
-  const failProbation = useCrm((s) => s.failProbation);
   const recordSeparation = useCrm((s) => s.recordSeparation);
+  const profiles = useCrm((s) => s.employeeProfiles);
+  const bonusRuns = useCrm((s) => s.bonusRuns);
+  const outcomes = useCrm((s) => s.probationOutcomes);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
-  if (!row) return null;
-  const name = userMap.get(row.profile.userId)?.name ?? "employee";
-  const end = row.profile.probationEndDate ?? new Date().toISOString();
+  const access = useAccess();
+  const profile = profiles.find((p) => p.userId === userId);
+  const balance = Math.max(0, probationBalance(userId, bonusRuns) - outcomes.filter((o) => o.userId === userId).reduce((s, o) => s + o.amount, 0));
+  const [lastDay, setLastDay] = useState(toDateInput(new Date().toISOString()));
+  if (!profile) return null;
+  const name = userMap.get(userId)?.name ?? "employee";
+  const end = kind === "complete" ? profile.probationEndDate ?? new Date().toISOString() : lastDay ? fromDateInput(lastDay) : new Date().toISOString();
   const payBy = new Date(Math.max(Date.parse(end), Date.now()) + POLICY.probationPayoutDays * DAY).toISOString();
+  const valid = access.manageHr && (kind === "complete" || !!lastDay);
 
   const submit = () => {
+    if (!valid) return;
     if (kind === "complete") {
-      completeProbation(row.profile.userId);
-      notify(`${name}: confirmed — ${formatIDR(row.balance)} Probation Completion Bonus due by ${formatDate(payBy, "medium")}`);
+      completeProbation(userId);
+      notify(`${name}: confirmed — ${formatIDR(balance)} Probation Completion Bonus due by ${formatDate(payBy, "medium")}`);
     } else if (kind === "fail") {
-      failProbation(row.profile.userId);
-      notify(`${name}: probation ended — ${formatIDR(row.balance)} paid with final pay`);
+      // §11.4 / §10: end of employment during probation on the last working day — ledger rows close that day
+      recordSeparation(userId, "probation_failed", end, { noticeAt: new Date().toISOString() });
+      notify(`${name}: employment ends ${formatDate(end, "medium")} — ${formatIDR(balance)} held balance paid with final pay`);
     } else {
-      recordSeparation(row.profile.userId, "termination_for_cause", new Date().toISOString(), { noticeAt: new Date().toISOString() });
-      notify(`${name}: dismissal for a serious violation recorded — ${formatIDR(row.balance)} held balance forfeited`);
+      recordSeparation(userId, "termination_for_cause", end, { noticeAt: new Date().toISOString() });
+      notify(`${name}: dismissal for a serious violation recorded — ${formatIDR(balance)} held balance forfeited`);
     }
+    onDone?.();
     onClose();
   };
 
@@ -279,37 +297,39 @@ function ConfirmProbation({ kind, row, onClose }: { kind: "complete" | "fail" | 
       open
       onOpenChange={(o) => !o && onClose()}
       title={title}
-      description={`${name} · held balance ${formatIDR(row.balance, "full")} (§11.4)`}
+      description={`${name} · held balance ${exactIdr(balance)} (§11.4) · recorded by ${userMap.get(access.userId)?.name ?? "you"} for HR`}
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant={kind === "dismiss" ? "danger" : "primary"} size="sm" onClick={submit}>
+          <Button variant={kind === "dismiss" ? "danger" : "primary"} size="sm" disabled={!valid} onClick={submit}>
             {kind === "complete" ? "Confirm — pay completion bonus" : kind === "fail" ? "Confirm — pay with final pay" : "Confirm dismissal — forfeit"}
           </Button>
         </>
       }
     >
-      {kind === "complete" ? (
-        <Callout tone="ok">
-          The full held balance of {formatIDR(row.balance, "full")} is paid as a lump sum labelled &ldquo;Probation Completion Bonus&rdquo; within {POLICY.probationPayoutDays} days of the probation end date (by {formatDate(payBy, "medium")}), taxed as normal. From then on bonuses are paid with salary. The HR record moves to permanent (PKWTT). <Cite s="11.4" />
-        </Callout>
-      ) : kind === "fail" ? (
-        <div className="space-y-2">
+      <div className="space-y-3">
+        {kind === "complete" ? (
+          <Callout tone="ok">
+            The full held balance of {exactIdr(balance)} is paid as a lump sum labelled &ldquo;Probation Completion Bonus&rdquo; within {POLICY.probationPayoutDays} days of the probation end date (by {formatDate(payBy, "medium")}), taxed as normal. From then on bonuses are paid with salary. The HR record moves to permanent (PKWTT). <Cite s="11.4" />
+          </Callout>
+        ) : kind === "fail" ? (
           <Callout tone="info">
-            The full held balance of {formatIDR(row.balance, "full")} is paid with final pay, less income tax, because it was earned for work already done. Bonuses on revenue collected after the last working day follow the resignation rules in §10. <Cite s="11.4" />
+            The full held balance of {exactIdr(balance)} is paid with final pay, less income tax, because it was earned for work already done. Bonuses on revenue collected after the last working day follow the resignation rules in §10. <Cite s="11.4" />
           </Callout>
-          <p className="text-2xs text-sg-dim">Records the end of employment during probation today on the HR record; ledger rows close on the same date.</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
+        ) : (
           <Callout tone="danger">
-            Only dismissal for a serious violation defined in the Company Regulations, after the procedure required by law, forfeits the held balance ({formatIDR(row.balance, "full")}). Forfeited amounts return to the company and are not redistributed. <Cite s="10" />
+            Only dismissal for a serious violation defined in the Company Regulations, after the procedure required by law, forfeits the held balance ({exactIdr(balance)}). Forfeited amounts return to the company and are not redistributed; pending deferred amounts are forfeited too. <Cite s="10" />
           </Callout>
-          <p className="text-2xs text-sg-dim">Records a dismissal for a serious violation effective today; pending deferred amounts are forfeited too.</p>
-        </div>
-      )}
+        )}
+        {kind !== "complete" ? (
+          <Field label={kind === "fail" ? "Last working day" : "Dismissal date"} hint="Team Allocation Ledger rows close on this date (§6.5)">
+            <Input type="date" value={lastDay} onChange={(e) => setLastDay(e.target.value)} className="w-44" />
+          </Field>
+        ) : null}
+        {!access.manageHr ? <RoleNote>HR records probation outcomes (§13.2).</RoleNote> : null}
+      </div>
     </Modal>
   );
 }

@@ -5,8 +5,8 @@ import { useMemo, useState } from "react";
 import { useCrm, useUi } from "@/lib/store";
 import { PROJECT_TYPE_META, POLICY, ORIGINATION_META } from "@/lib/initiatives/policy";
 import type { Initiative, ProjectType } from "@/lib/initiatives/types";
-import { addMonths } from "@/lib/initiatives/engine";
-import { fromDateInput, toDateInput } from "@/lib/utils";
+import { contractedMonths } from "@/lib/initiatives/engine";
+import { ledgerDate, sixMonthsFrom, todayWib } from "@/lib/initiatives/team-rules";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/overlays";
@@ -18,17 +18,24 @@ export function RegisterProjectDialog({ open, onOpenChange }: { open: boolean; o
   const projects = useCrm((s) => s.projects);
   const currentUserId = useCrm((s) => s.currentUserId);
   const saveInitiative = useCrm((s) => s.saveInitiative);
+  const addMember = useCrm((s) => s.addMember);
   const notify = useUi((s) => s.notify);
-  const today = useMemo(() => new Date().toISOString(), []);
+  const today = useMemo(() => todayWib(), []);
   const [title, setTitle] = useState("");
   const [type, setType] = useState<ProjectType>("B");
-  const [start, setStart] = useState(toDateInput(today));
-  const [end, setEnd] = useState(toDateInput(addMonths(today, 6)));
+  const [start, setStart] = useState(today);
+  // six-month contract by default: start + 6 months − 1 day, counted as 6 contracted months (§5.1)
+  const [end, setEnd] = useState(sixMonthsFrom(today));
+  const [endTouched, setEndTouched] = useState(false);
+  const [seedLead, setSeedLead] = useState(true);
   const [initiatorId, setInitiatorId] = useState(currentUserId);
   const [origination, setOrigination] = useState<NonNullable<Initiative["origination"]>>("personal");
   const [jira, setJira] = useState("");
 
   const valid = title.trim().length >= 2 && start && end && end > start;
+  const months = start && end && end > start ? contractedMonths({ startDate: ledgerDate(start), endDate: ledgerDate(end) }) : null;
+  const initiatorName = users.find((u) => u.id === initiatorId)?.name ?? "the initiator";
+  const leadRoles = origination === "company" ? (["project_lead"] as const) : (["initiator", "project_lead"] as const);
   const submit = () => {
     if (!valid) return;
     const id = saveInitiative({
@@ -37,15 +44,20 @@ export function RegisterProjectDialog({ open, onOpenChange }: { open: boolean; o
       status: "active",
       initiatorId,
       origination,
-      startDate: fromDateInput(start),
-      endDate: fromDateInput(end),
+      startDate: ledgerDate(start),
+      endDate: ledgerDate(end),
       demo: false,
       registeredRetroactively: true,
       policyVersion: "4.0",
       jiraProjectId: jira || null,
       standardBonus: type === "C" ? POLICY.typeCMinimum.standardBonus : undefined,
     });
-    notify(`${title.trim()} added to the register`);
+    // §4.9 the Initiator leads unless they delegate; company channels carry no Initiator weight (§4.1). Consent and line
+    // manager agreement stay pending until they are actually given (§6.7, §3.1).
+    if (seedLead && !useCrm.getState().initiativeMembers.some((m) => m.initiativeId === id && m.userId === initiatorId)) {
+      addMember(id, initiatorId, [...leadRoles], { consent: "pending", managerApproved: false, prcApproved: false, allocationPct: 30, joinedAt: ledgerDate(start), authority: "Ledger built from existing team records (§15.1)" });
+    }
+    notify(`${title.trim()} added to the register${seedLead ? ` — ${initiatorName} added as Project Lead, signature pending` : ""}`);
     onOpenChange(false);
     setTitle("");
     router.push(`/projects/${id}`);
@@ -92,10 +104,26 @@ export function RegisterProjectDialog({ open, onOpenChange }: { open: boolean; o
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Work start">
-            <Input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
+            <Input
+              type="date"
+              lang="en-GB"
+              value={start}
+              onChange={(e) => {
+                setStart(e.target.value);
+                if (!endTouched && e.target.value) setEnd(sixMonthsFrom(e.target.value));
+              }}
+            />
           </Field>
-          <Field label="Contracted final delivery" hint="Sets the contracted duration (§5.1)">
-            <Input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+          <Field label="Contracted final delivery" hint={months ? `${months} contracted month${months === 1 ? "" : "s"} (§5.1)` : "Sets the contracted duration (§5.1)"}>
+            <Input
+              type="date"
+              lang="en-GB"
+              value={end}
+              onChange={(e) => {
+                setEnd(e.target.value);
+                setEndTouched(true);
+              }}
+            />
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -118,6 +146,12 @@ export function RegisterProjectDialog({ open, onOpenChange }: { open: boolean; o
             </Select>
           </Field>
         </div>
+        <label className="flex items-start gap-2 text-xs text-sg-muted">
+          <input type="checkbox" className="mt-0.5 size-3.5 accent-white" checked={seedLead} onChange={(e) => setSeedLead(e.target.checked)} />
+          <span>
+            Add {initiatorName} to the team as {origination === "company" ? "Project Lead" : "Project Initiator + Project Lead"} — signature and line manager agreement stay pending until given (§4.9, §6.7)
+          </span>
+        </label>
         <Field label="Jira project (optional)">
           <Select value={jira} onChange={(e) => setJira(e.target.value)}>
             <option value="">None yet</option>

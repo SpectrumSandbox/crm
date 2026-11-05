@@ -1,13 +1,17 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Briefcase, Building2, ChevronDown, ChevronRight, FileText, Handshake, Kanban, Minus, Package, Plus, Ticket, Unlink, User, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Briefcase, Building2, ChevronDown, ChevronRight, FileText, Handshake, History, Kanban, Minus, Package, Plus, Ticket, Unlink, User, Users, X } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useAssociations, useStageMap, useUserMap } from "@/lib/selectors";
-import type { CrmObjectType, QuoteStatus } from "@/lib/types";
-import { issueStatusMeta, issueTypeMeta, lifecycleMeta, linkTypeMeta, priorityMeta, quoteStatusMeta, ticketPriorityMeta } from "@/lib/meta";
+import type { CrmObjectType } from "@/lib/types";
+import { issueStatusMeta, issueTypeMeta, lifecycleMeta, linkTypeMeta, priorityMeta, ticketPriorityMeta } from "@/lib/meta";
 import { cn, formatDate, formatIDR, softText } from "@/lib/utils";
+import { QuoteRow } from "@/components/crm/quote-panels";
+import { DealHistoryList, useDealHistory } from "@/components/crm/deal-panels";
+import { applyDealChange } from "@/components/crm/deal-close";
 import { Avatar, Chip, RecordAvatar } from "@/components/ui/misc";
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger, Popover, PopoverContent, PopoverTrigger } from "@/components/ui/overlays";
 import { Button } from "@/components/ui/button";
@@ -21,7 +25,11 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
   const userMap = useUserMap();
   const openDialog = useUi((s) => s.openDialog);
   const openIssue = useUi((s) => s.openIssue);
+  const router = useRouter();
   const unlink = useCrm((s) => s.unlink);
+  const restoreCrossLink = useCrm((s) => s.restoreCrossLink);
+  const expireQuotes = useCrm((s) => s.expireQuotes);
+  const colleagues = useCrm((s) => s.contacts);
   const deals = useCrm((s) => s.deals);
   const setDealContacts = useCrm((s) => s.setDealContacts);
   const updateContact = useCrm((s) => s.updateContact);
@@ -29,6 +37,12 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
   const deal = type === "deal" ? deals.find((d) => d.id === id) : undefined;
   const selfParentId = useCrm((s) => (type === "company" ? s.companies.find((c) => c.id === id)?.parentId ?? null : null));
   const openLinks = a.links.filter((l) => (l.issue ? l.issue.status !== "done" : l.epic?.status !== "done"));
+  // quotes past their validity are marked expired (and logged) whenever a record with quotes opens
+  useEffect(() => {
+    if (a.quotes.length) expireQuotes();
+  }, [a.quotes.length, expireQuotes]);
+  const selfCompanyId = type === "contact" ? (a.companies[0]?.id ?? null) : null;
+  const sameCompany = useMemo(() => (selfCompanyId ? colleagues.filter((c) => c.companyId === selfCompanyId && c.id !== id) : []), [colleagues, selfCompanyId, id]);
 
   return (
     <div className="space-y-3 p-4">
@@ -62,17 +76,20 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
                 <button
                   type="button"
                   onClick={() => {
+                    const all = useCrm.getState().crossLinks;
+                    const index = all.findIndex((x) => x.id === l.id);
+                    const { issue: _i, epic: _e, ...link } = l;
                     unlink(l.id);
-                    notify(`${key} unlinked`);
+                    notify(`${key} unlinked`, { label: "Undo", run: () => restoreCrossLink(link, index) });
                   }}
-                  className="ml-auto rounded p-0.5 text-sg-dim opacity-0 hover:text-soft-red group-hover:opacity-100"
-                  aria-label="Unlink"
+                  className="ml-auto rounded p-0.5 text-sg-dim opacity-0 hover:text-soft-red focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                  aria-label={`Unlink ${key}`}
                   title="Unlink"
                 >
                   <Unlink className="size-3" />
                 </button>
               </div>
-              <button type="button" onClick={() => (l.issue ? openIssue(l.issue.id) : undefined)} className="flex w-full items-start gap-2 text-left">
+              <button type="button" onClick={() => (l.issue ? openIssue(l.issue.id) : l.epic ? router.push(`/backlog?epic=${encodeURIComponent(l.epic.id)}`) : undefined)} className="flex w-full items-start gap-2 text-left" title={l.epic ? "Open the epic on the backlog" : "Open the issue"}>
                 <TypeIcon className={cn("mt-0.5 size-3.5 shrink-0", l.issue ? softText[issueTypeMeta[l.issue.type].color] : "text-soft-magenta")} />
                 <span className="min-w-0 flex-1">
                   <span className="mr-1.5 font-semibold text-sg-muted">{key}</span>
@@ -92,6 +109,8 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
 
       {type === "deal" && deal && <LineItemsCard dealId={deal.id} />}
 
+      {type === "deal" && deal && <HistoryCard dealId={deal.id} />}
+
       {(type === "deal" || type === "company") && <InitiativesCard type={type} id={id} />}
 
       {(type === "deal" || type === "company") && (
@@ -107,13 +126,15 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
             ) : undefined
           }
         >
-          {a.quotes.map((q) => <QuoteRow key={q.id} quoteId={q.id} />)}
+          {[...a.quotes].sort((x, y) => y.createdAt.localeCompare(x.createdAt)).map((q) => (
+            <QuoteRow key={q.id} quoteId={q.id} />
+          ))}
         </Card>
       )}
 
       {type !== "deal" && (
         <Card
-          title="Deals"
+          title={type === "ticket" ? "Deals at this account" : "Deals"}
           icon={Handshake}
           count={a.deals.length}
           action={
@@ -150,7 +171,28 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
         </Card>
       )}
 
-      <Card
+      {type === "contact" && (
+        <Card title={a.companies[0] ? `Colleagues at ${a.companies[0].name}` : "Colleagues"} icon={Users} count={sameCompany.length}>
+          {sameCompany.slice(0, 8).map((c) => (
+            <Link key={c.id} href={`/contacts/${c.id}`} className="flex items-center gap-2.5 rounded-md px-1 py-1.5 hover:bg-sg-card-2">
+              <RecordAvatar label={`${c.firstName} ${c.lastName}`} color={lifecycleMeta[c.lifecycleStage].color} size="sm" />
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-sg-white">
+                  {c.firstName} {c.lastName}
+                </div>
+                <div className="truncate text-2xs text-sg-dim">{c.jobTitle}</div>
+              </div>
+            </Link>
+          ))}
+          {sameCompany.length > 8 && a.companies[0] && (
+            <Link href={`/companies/${a.companies[0].id}`} className="block px-1 text-2xs text-sg-dim hover:text-sg-white">
+              + {sameCompany.length - 8} more on the company record
+            </Link>
+          )}
+        </Card>
+      )}
+
+      {type !== "contact" && <Card
         title="Contacts"
         icon={User}
         count={a.contacts.length}
@@ -187,13 +229,22 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
               <div className="truncate text-2xs text-sg-dim">{c.jobTitle}</div>
             </Link>
             {type === "deal" && deal && (
-              <button type="button" onClick={() => setDealContacts(deal.id, deal.contactIds.filter((x) => x !== c.id))} className="rounded p-1 text-sg-dim opacity-0 hover:text-soft-red group-hover:opacity-100" aria-label="Remove association">
+              <button
+                type="button"
+                onClick={() => {
+                  const prev = deal.contactIds;
+                  setDealContacts(deal.id, prev.filter((x) => x !== c.id));
+                  notify(`${c.firstName} ${c.lastName} removed from the deal`, { label: "Undo", run: () => setDealContacts(deal.id, prev) });
+                }}
+                className="rounded p-1 text-sg-dim opacity-0 hover:text-soft-red focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                aria-label={`Remove ${c.firstName} ${c.lastName} from this deal`}
+              >
                 <X className="size-3" />
               </button>
             )}
           </div>
         ))}
-      </Card>
+      </Card>}
 
       <Card title={type === "company" ? "Related companies" : "Company"} icon={Building2} count={a.companies.length}>
         {a.companies.map((c) => (
@@ -223,15 +274,6 @@ export function AssociationsPane({ type, id }: { type: CrmObjectType; id: string
               </Link>
             );
           })}
-        </Card>
-      )}
-      {type === "ticket" && a.deals.length > 0 && (
-        <Card title="Deals at this account" icon={Handshake} count={a.deals.length}>
-          {a.deals.map((d) => (
-            <Link key={d.id} href={`/deals/${d.id}`} className="block truncate rounded-md px-1 py-1.5 text-sm text-sg-text hover:bg-sg-card-2 hover:text-sg-white">
-              {d.name}
-            </Link>
-          ))}
         </Card>
       )}
     </div>
@@ -315,46 +357,13 @@ function InitiativesCard({ type, id }: { type: "deal" | "company"; id: string })
   );
 }
 
-function QuoteRow({ quoteId }: { quoteId: string }) {
-  const quote = useCrm((s) => s.quotes.find((q) => q.id === quoteId));
-  const setQuoteStatus = useCrm((s) => s.setQuoteStatus);
-  if (!quote) return null;
-  const sub = quote.lineItems.reduce((s, l) => s + l.quantity * l.unitPrice * (1 - l.discountPct / 100), 0);
-  const meta = quoteStatusMeta[quote.status];
-  const next: Partial<Record<QuoteStatus, QuoteStatus[]>> = {
-    draft: ["pending_approval"],
-    pending_approval: ["approved", "draft"],
-    approved: ["sent"],
-    sent: ["signed", "expired"],
-  };
+/** Tracked changes on the deal (amount, close date, stage, owner, forecast) — Pipeline Inspection style. */
+function HistoryCard({ dealId }: { dealId: string }) {
+  const rows = useDealHistory(dealId);
   return (
-    <div className="rounded-md border border-sg-line bg-sg-bg/40 p-2.5">
-      <div className="flex items-center gap-2">
-        <span className="text-2xs font-semibold text-sg-dim">{quote.number}</span>
-        <Menu>
-          <MenuTrigger asChild>
-            <button type="button" className="ml-auto" disabled={!next[quote.status]?.length}>
-              <Chip color={meta.color}>{meta.label}</Chip>
-            </button>
-          </MenuTrigger>
-          {next[quote.status]?.length ? (
-            <MenuContent align="end">
-              <MenuLabel>Move quote to</MenuLabel>
-              {next[quote.status]!.map((s) => (
-                <MenuItem key={s} onSelect={() => setQuoteStatus(quote.id, s)}>
-                  {quoteStatusMeta[s].label}
-                </MenuItem>
-              ))}
-            </MenuContent>
-          ) : null}
-        </Menu>
-      </div>
-      <div className="mt-1 truncate text-sm text-sg-white">{quote.title}</div>
-      <div className="mt-1 flex justify-between text-2xs text-sg-dim">
-        <span className="sg-num font-semibold text-sg-text">{formatIDR(sub * (1 + quote.taxPct / 100))} incl. VAT</span>
-        <span>expires {formatDate(quote.expiresAt, "short")}</span>
-      </div>
-    </div>
+    <Card title="History" icon={History} count={rows.length}>
+      <DealHistoryList dealId={dealId} />
+    </Card>
   );
 }
 
@@ -362,11 +371,26 @@ function QuoteRow({ quoteId }: { quoteId: string }) {
 function LineItemsCard({ dealId }: { dealId: string }) {
   const allItems = useCrm((s) => s.lineItems);
   const products = useCrm((s) => s.products);
+  const deal = useCrm((s) => s.deals.find((d) => d.id === dealId));
   const addLineItem = useCrm((s) => s.addLineItem);
   const updateLineItem = useCrm((s) => s.updateLineItem);
   const removeLineItem = useCrm((s) => s.removeLineItem);
-  const items = allItems.filter((l) => l.dealId === dealId);
-  const total = items.reduce((s, l) => s + l.quantity * l.unitPrice * (1 - l.discountPct / 100), 0);
+  const restoreLineItem = useCrm((s) => s.restoreLineItem);
+  const notify = useUi((s) => s.notify);
+  const items = useMemo(() => allItems.filter((l) => l.dealId === dealId), [allItems, dealId]);
+  const total = Math.round(items.reduce((s, l) => s + l.quantity * l.unitPrice * (1 - l.discountPct / 100), 0));
+  const delta = deal ? total - deal.amount : 0;
+  const driftPct = deal && deal.amount > 0 ? Math.abs(delta) / deal.amount : 0;
+
+  const remove = (id: string) => {
+    const all = useCrm.getState().lineItems;
+    const index = all.findIndex((l) => l.id === id);
+    const item = all[index];
+    if (!item) return;
+    removeLineItem(id);
+    const p = products.find((x) => x.id === item.productId);
+    notify(`${p?.name ?? "Line item"} removed`, { label: "Undo", run: () => restoreLineItem(item, index) });
+  };
 
   return (
     <Card
@@ -387,7 +411,7 @@ function LineItemsCard({ dealId }: { dealId: string }) {
                 <span className="min-w-0 flex-1">
                   <span className="block truncate">{p.name}</span>
                   <span className="text-2xs text-sg-dim">
-                    {p.sku} · {formatIDR(p.unitPrice)}
+                    {p.sku} · {formatIDR(p.unitPrice, "full")}
                     {p.billing !== "one_time" ? ` / ${p.billing === "monthly" ? "mo" : "yr"}` : ""}
                   </span>
                 </span>
@@ -404,11 +428,11 @@ function LineItemsCard({ dealId }: { dealId: string }) {
             <div className="flex items-start gap-2">
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm text-sg-white">{p?.name}</div>
-                <div className="text-2xs text-sg-dim">
-                  {p?.sku} · {formatIDR(l.unitPrice)} ea{l.discountPct ? ` · −${l.discountPct}%` : ""}
+                <div className="sg-num text-2xs text-sg-dim">
+                  {p?.sku} · {formatIDR(l.unitPrice, "full")} ea{l.discountPct ? ` · −${l.discountPct}%` : ""}
                 </div>
               </div>
-              <button type="button" onClick={() => removeLineItem(l.id)} className="rounded p-0.5 text-sg-dim opacity-0 hover:text-soft-red group-hover:opacity-100" aria-label="Remove line item">
+              <button type="button" onClick={() => remove(l.id)} className="rounded p-0.5 text-sg-dim opacity-0 hover:text-soft-red focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100" aria-label={`Remove ${p?.name ?? "line item"}`}>
                 <X className="size-3" />
               </button>
             </div>
@@ -417,29 +441,72 @@ function LineItemsCard({ dealId }: { dealId: string }) {
                 <button type="button" className="px-1.5 py-0.5 text-sg-dim hover:text-sg-white" onClick={() => updateLineItem(l.id, { quantity: Math.max(1, l.quantity - 1) })} aria-label="Decrease quantity">
                   <Minus className="size-3" />
                 </button>
-                <span className="sg-num min-w-[2ch] text-center text-xs text-sg-white">{l.quantity}</span>
+                <NumberCell key={`q-${l.quantity}`} value={l.quantity} min={1} step={1} label={`Quantity of ${p?.name ?? "item"}`} onCommit={(n) => updateLineItem(l.id, { quantity: Math.round(n) })} className="w-10" />
                 <button type="button" className="px-1.5 py-0.5 text-sg-dim hover:text-sg-white" onClick={() => updateLineItem(l.id, { quantity: l.quantity + 1 })} aria-label="Increase quantity">
                   <Plus className="size-3" />
                 </button>
               </div>
-              <select value={l.discountPct} onChange={(e) => updateLineItem(l.id, { discountPct: Number(e.target.value) })} className="h-6 rounded border border-sg-line bg-transparent px-1 text-2xs text-sg-muted [&>option]:bg-sg-card" aria-label="Discount">
-                {[0, 3, 5, 8, 10, 12, 15, 20].map((d) => (
-                  <option key={d} value={d}>
-                    {d}% off
-                  </option>
-                ))}
-              </select>
-              <span className="sg-num ml-auto text-xs font-semibold text-sg-white">{formatIDR(l.quantity * l.unitPrice * (1 - l.discountPct / 100))}</span>
+              <span className="flex items-center gap-0.5 rounded border border-sg-line pr-1 text-2xs text-sg-dim">
+                <NumberCell key={`d-${l.discountPct}`} value={l.discountPct} min={0} max={100} step={0.5} label={`Discount on ${p?.name ?? "item"} (%)`} onCommit={(n) => updateLineItem(l.id, { discountPct: Math.round(n * 2) / 2 })} className="w-9" />% off
+              </span>
+              <span className="sg-num ml-auto text-xs font-semibold text-sg-white">{formatIDR(l.quantity * l.unitPrice * (1 - l.discountPct / 100), "full")}</span>
             </div>
           </div>
         );
       })}
       {items.length > 0 && (
-        <div className="flex justify-between border-t border-sg-line px-1 pt-2 text-xs">
-          <span className="text-sg-muted">Subtotal (excl. VAT)</span>
-          <span className="sg-num font-bold text-sg-white">{formatIDR(total)}</span>
+        <div className="space-y-1 border-t border-sg-line px-1 pt-2 text-xs">
+          <div className="flex justify-between">
+            <span className="text-sg-muted">Subtotal (excl. PPN)</span>
+            <span className="sg-num font-bold text-sg-white">{formatIDR(total, "full")}</span>
+          </div>
+          {deal && delta !== 0 && (
+            <div className={cn("flex items-center justify-between gap-2 rounded px-1.5 py-1 text-2xs", driftPct > 0.05 ? "bg-soft-yellow/10 text-soft-yellow" : "text-sg-dim")}>
+              <span className="sg-num">
+                Δ vs deal amount {delta > 0 ? "+" : "−"}
+                {formatIDR(Math.abs(delta), "full")} ({Math.round(driftPct * 1000) / 10}%)
+              </span>
+              <button type="button" onClick={() => applyDealChange(dealId, { amount: total }, `Deal amount set to the line-item subtotal ${formatIDR(total, "full")}`)} className="shrink-0 font-semibold underline-offset-2 hover:underline">
+                Set deal amount
+              </button>
+            </div>
+          )}
         </div>
       )}
     </Card>
+  );
+}
+
+/** small numeric input: commits on blur / Enter, reverts on Esc or invalid input */
+function NumberCell({ value, min, max, step, label, onCommit, className }: { value: number; min?: number; max?: number; step: number; label: string; onCommit: (n: number) => void; className?: string }) {
+  const [draft, setDraft] = useState(String(value));
+  const commit = () => {
+    const n = Number(draft.replace(",", "."));
+    if (draft.trim() === "" || !Number.isFinite(n) || (min !== undefined && n < min) || (max !== undefined && n > max)) {
+      setDraft(String(value));
+      return;
+    }
+    if (n !== value) onCommit(n);
+  };
+  return (
+    <input
+      value={draft}
+      inputMode="decimal"
+      step={step}
+      aria-label={label}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          (e.target as HTMLInputElement).blur();
+        }
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          setDraft(String(value));
+        }
+      }}
+      className={cn("sg-num h-5 bg-transparent text-center text-xs text-sg-white focus:outline-none focus:ring-1 focus:ring-sg-white/50", className)}
+    />
   );
 }

@@ -1,17 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, UserPlus } from "lucide-react";
+import { UserPlus } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import type { Team } from "@/lib/types";
 import type { EmploymentType, Initiative, InitiativeMember, ProjectRole } from "@/lib/initiatives/types";
 import { EMPLOYMENT_TYPES, PROJECT_ROLES } from "@/lib/initiatives/types";
 import { ALLOCATION_FACTORS, EMPLOYMENT_META, ROLE_META, SPECIALIST_GUIDE } from "@/lib/initiatives/policy";
-import { capacityCheck, concurrentNonLeadRoles, maxAllocationFactor, memberWeight, participationEligibility } from "@/lib/initiatives/engine";
-import { cn, fromDateInput, toDateInput } from "@/lib/utils";
+import { memberWeight } from "@/lib/initiatives/engine";
+import { amendmentVoters, canProceed, currentVoters, isPastDay, ledgerDate, overrideRule, requiresAmendment, todayWib, wibDay } from "@/lib/initiatives/team-rules";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Modal } from "@/components/ui/overlays";
+import { CandidateNotices, useCandidateCheck } from "@/components/initiatives/candidate-notices";
+import { PersonCombobox } from "@/components/initiatives/person-combobox";
 import { PolicyRef } from "./shared";
 
 const TEAMS: Team[] = ["Engineering", "Sales", "Service", "Leadership", "Marketing", "Finance", "People"];
@@ -27,18 +30,22 @@ interface Props {
   rate: number;
 }
 
+/**
+ * Add or edit a register row. The rules are the same as the initiative Team tab (src/lib/initiatives/team-rules.ts):
+ * once the project has a Team Allocation Ledger every change is a §6.8 amendment; eligibility (§3), leadership capacity
+ * (§7.3) and part-time caps (§3.1) block; non-standard weights need every initial member's written agreement (§6.7).
+ */
 export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }: Props) {
   const users = useCrm((s) => s.users);
   const profiles = useCrm((s) => s.employeeProfiles);
-  const initiatives = useCrm((s) => s.initiatives);
   const members = useCrm((s) => s.initiativeMembers);
   const addMember = useCrm((s) => s.addMember);
   const updateMember = useCrm((s) => s.updateMember);
   const addPerson = useCrm((s) => s.addPerson);
   const proposeAmendment = useCrm((s) => s.proposeAmendment);
   const notify = useUi((s) => s.notify);
-  const approved = !!ini.code;
   const editing = !!member;
+  const amendmentMode = requiresAmendment(ini, members);
 
   const [mode, setMode] = useState<"existing" | "new">("existing");
   const [userId, setUserId] = useState("");
@@ -47,10 +54,13 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
   const [allocation, setAllocation] = useState(1);
   const [override, setOverride] = useState("");
   const [note, setNote] = useState("");
-  const [joined, setJoined] = useState(toDateInput(ini.startDate));
-  const [effective, setEffective] = useState(toDateInput(new Date().toISOString()));
-  const [signed, setSigned] = useState(true);
-  const [manager, setManager] = useState(true);
+  const [joined, setJoined] = useState(wibDay(ini.startDate));
+  const [effective, setEffective] = useState(todayWib());
+  // attestations are never pre-ticked: each is an explicit statement recorded on the agreement (§6.7, §3.1)
+  const [signed, setSigned] = useState(false);
+  const [manager, setManager] = useState(false);
+  const [allSigned, setAllSigned] = useState(false);
+  const [annexC, setAnnexC] = useState(false);
   const [allocationPct, setAllocationPct] = useState(20);
   // new person
   const [name, setName] = useState("");
@@ -66,6 +76,7 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
 
   useEffect(() => {
     if (!open) return;
+    const today = todayWib();
     if (member) {
       setMode("existing");
       setUserId(member.userId);
@@ -74,7 +85,7 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
       setAllocation(member.allocationFactor ?? 1);
       setOverride(member.weightOverride != null ? String(member.weightOverride) : "");
       setNote(member.weightNote ?? "");
-      setJoined(toDateInput(member.joinedAt));
+      setJoined(wibDay(member.joinedAt));
       setSigned(member.consent === "accepted");
       setManager(member.managerApproved);
       setAllocationPct(member.allocationPct);
@@ -86,9 +97,10 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
       setAllocation(1);
       setOverride("");
       setNote("");
-      setJoined(toDateInput(Date.parse(ini.startDate) > Date.now() ? ini.startDate : approved ? new Date().toISOString() : ini.startDate));
-      setSigned(true);
-      setManager(true);
+      const start = wibDay(ini.startDate);
+      setJoined(amendmentMode ? (start > today ? start : today) : start);
+      setSigned(false);
+      setManager(false);
       setAllocationPct(20);
       setName("");
       setEmail("");
@@ -97,37 +109,69 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
       setManagerId("");
       setAnnexB("");
     }
-    setEffective(toDateInput(new Date().toISOString()));
-  }, [open, member, ini.startDate, approved]);
+    setAllSigned(false);
+    setAnnexC(false);
+    setEffective(today);
+  }, [open, member, ini.startDate, amendmentMode]);
 
   const onTeam = useMemo(() => new Set(members.filter((m) => m.initiativeId === ini.id && m.consent !== "declined" && (!m.leftAt || Date.parse(m.leftAt) > Date.now())).map((m) => m.userId)), [members, ini.id]);
-  const candidates = useMemo(() => users.filter((u) => editing || !onTeam.has(u.id)).sort((a, b) => a.name.localeCompare(b.name)), [users, onTeam, editing]);
-  const profile = profiles.find((p) => p.userId === userId);
-  const maxA = mode === "new" ? (employmentType === "part_time" ? Math.max(0.25, Math.floor((hoursPct / 100) * 4) / 4) : 1) : maxAllocationFactor(profile);
-  const overrideNum = override.trim() === "" ? null : Number(override);
-  const W = memberWeight({ roles, specialistWeight: roles.includes("specialist") ? specialistWeight : null, weightOverride: overrideNum != null && Number.isFinite(overrideNum) ? overrideNum : null });
-  const standardW = memberWeight({ roles, specialistWeight: roles.includes("specialist") ? specialistWeight : null, weightOverride: null });
+  const candidates = useMemo(() => users.filter((u) => editing || !onTeam.has(u.id)), [users, onTeam, editing]);
+  const maxANew = employmentType === "part_time" ? Math.max(0.25, Math.floor((hoursPct / 100) * 4) / 4) : 1;
+  const overrideNum = override.trim() === "" ? null : Number(override.replace(",", "."));
+  const sw = roles.includes("specialist") ? specialistWeight : null;
+  const standardW = memberWeight({ roles, specialistWeight: sw, weightOverride: null });
+  const W = memberWeight({ roles, specialistWeight: sw, weightOverride: overrideNum != null && Number.isFinite(overrideNum) ? overrideNum : null });
   const E = W * allocation;
   const share = othersE + E > 0 ? E / (othersE + E) : 0;
-  const eligibility = mode === "existing" && userId ? participationEligibility(profile) : null;
-  const cap = mode === "existing" && userId ? capacityCheck(userId, ini, roles, initiatives, members) : null;
-  const nonLead = mode === "existing" && userId ? concurrentNonLeadRoles(userId, initiatives, members, ini.id) + (roles.some((r) => r === "engineer" || r === "secretary" || r === "specialist") ? 1 : 0) : 0;
-  const needsNote = (overrideNum != null && Math.abs((overrideNum ?? 0) - standardW) > 1e-9) || allocation < 1;
-  const newValid = mode === "new" ? name.trim().length > 1 && /.+@.+\..+/.test(email) && !!hireDate && EMPLOYMENT_META[employmentType].eligible : true;
-  const valid = (mode === "new" ? newValid : !!userId) && roles.length > 0 && (!needsNote || note.trim().length > 3) && allocation <= maxA && (overrideNum == null || (Number.isFinite(overrideNum) && overrideNum > 0));
+
+  const dateField = amendmentMode ? (editing ? effective : joined) : joined;
+  const effectiveIso = dateField ? ledgerDate(dateField) : undefined;
+  const check = useCandidateCheck(mode === "existing" ? userId : "", roles, allocation, ini, effectiveIso, member?.id);
+  const rule = overrideRule({ value: overrideNum, standard: standardW, reason: note, allSigned, viaAmendment: amendmentMode });
+
+  // §3.5 duplicates when adding a new person
+  const dupe = useMemo(() => {
+    if (mode !== "new") return undefined;
+    const e = email.trim().toLowerCase();
+    const n = name.trim().toLowerCase().replace(/\s+/g, " ");
+    return users.find((u) => (e && u.email.toLowerCase() === e) || (n.length > 3 && u.name.toLowerCase() === n));
+  }, [mode, email, name, users]);
+
+  const errors: string[] = [];
+  if (mode === "existing" && !userId) errors.push("Choose who joins");
+  if (mode === "new") {
+    if (name.trim().length < 2) errors.push("Full name");
+    if (!/.+@.+\..+/.test(email)) errors.push("A valid work email");
+    if (!hireDate) errors.push("Hire date");
+    if (!EMPLOYMENT_META[employmentType].eligible) errors.push(`${EMPLOYMENT_META[employmentType].label} may not take part (§3.2)`);
+    if (dupe) errors.push(`${dupe.name} (${dupe.email}) is already in the workspace — use the existing person`);
+    if (hireDate && dateField && hireDate > dateField) errors.push("Start on the team can't be before the hire date");
+    if (employmentType === "probationary" && !annexC) errors.push("Annex C probationary acknowledgment (§11)");
+    if (allocation > maxANew + 1e-9) errors.push(`Part-time — allocation factor may not exceed ${maxANew} (§3.1)`);
+  }
+  if (!roles.length) errors.push("Pick at least one role");
+  if (mode === "existing" && userId && !canProceed(check, annexC)) errors.push(check?.blockers.length ? "The policy blocks this role — see below" : "Annex C probationary acknowledgment (§11)");
+  errors.push(...rule.errors);
+  if (allocation < 1 && note.trim().length < 4) errors.push("Note the time committed when the allocation factor is below 1.0 (§6.4)");
+  if (!Number.isFinite(allocationPct) || allocationPct < 5 || allocationPct > 100) errors.push("Planned time must be 5–100%");
+  if (!dateField) errors.push(amendmentMode && editing ? "Effective date" : "Start on team");
+  if (amendmentMode && isPastDay(dateField)) errors.push("Amendments apply from their effective date forward — never to past work (§6.8 step 6)");
+  if (amendmentMode && !editing && !signed) errors.push("The joining member must consent to their role, weight and allocation factor (§6.8 step 4)");
+  if (amendmentMode && !editing && !manager) errors.push("Record the line manager's agreement to the time (§3.1)");
+  const valid = errors.length === 0;
 
   const toggleRole = (r: ProjectRole) => setRoles((cur) => (cur.includes(r) ? cur.filter((x) => x !== r) : [...cur, r]));
 
   const save = () => {
     if (!valid) return;
-    const sw = roles.includes("specialist") ? specialistWeight : null;
     const wo = overrideNum;
     if (editing && member) {
-      if (approved && Date.parse(member.joinedAt) < Date.now()) {
-        proposeAmendment(ini.id, { kind: "change", memberId: member.id, roles, specialistWeight: sw, weightOverride: wo, allocationFactor: allocation }, fromDateInput(effective), note || "Change of role, weight or allocation");
-        notify("Amendment circulated to the team — majority of current members decides (§6.8)");
+      if (amendmentMode) {
+        const id = proposeAmendment(ini.id, { kind: "change", memberId: member.id, roles, specialistWeight: sw, weightOverride: wo, allocationFactor: allocation }, ledgerDate(effective), note.trim() || "Change of role, weight or allocation");
+        const status = useCrm.getState().teamAmendments.find((a) => a.id === id)?.status;
+        notify(status === "passed" ? "Amendment passed — ledger updated (§6.8)" : status === "tied" ? "Amendment circulated — no voting members, the PRC decides (§6.8)" : "Amendment circulated to the team — more than half of current members decides (§6.8)");
       } else {
-        updateMember(member.id, { roles, specialistWeight: sw, weightOverride: wo, allocationFactor: allocation, weightNote: note, joinedAt: fromDateInput(joined), consent: signed ? "accepted" : "pending", managerApproved: manager, allocationPct });
+        updateMember(member.id, { roles, specialistWeight: sw, weightOverride: wo, allocationFactor: allocation, weightNote: note, joinedAt: ledgerDate(joined), consent: signed ? "accepted" : "pending", managerApproved: manager, allocationPct });
         notify("Register updated");
       }
       onOpenChange(false);
@@ -141,38 +185,43 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
         title: title || "Staff",
         team,
         employmentType,
-        hireDate: fromDateInput(hireDate),
+        hireDate: ledgerDate(hireDate),
         directManagerId: managerId || null,
         contractedHoursPct: employmentType === "part_time" ? hoursPct : undefined,
-        contractEndDate: employmentType === "fixed_term_contract" && contractEnd ? fromDateInput(contractEnd) : null,
-        acknowledgmentSignedAt: annexB ? fromDateInput(annexB) : null,
+        contractEndDate: employmentType === "fixed_term_contract" && contractEnd ? ledgerDate(contractEnd) : null,
+        acknowledgmentSignedAt: annexB ? ledgerDate(annexB) : null,
       });
     }
-    if (approved && Date.parse(fromDateInput(joined)) <= Date.now() && onTeam.size > 0) {
-      proposeAmendment(ini.id, { kind: "add", userId: uid, roles, specialistWeight: sw, weightOverride: wo, allocationFactor: allocation, consent: signed }, fromDateInput(joined), note || `Add ${mode === "new" ? name : users.find((u) => u.id === uid)?.name ?? "member"} to the team`);
-      notify("Admission circulated to the team — the new member doesn't vote on their own admission (§6.8)");
+    const who = mode === "new" ? name : users.find((u) => u.id === uid)?.name ?? "member";
+    if (amendmentMode) {
+      // §6.8: every admission to a project with a ledger is an amendment, whatever its start date
+      const id = proposeAmendment(ini.id, { kind: "add", userId: uid, roles, specialistWeight: sw, weightOverride: wo, allocationFactor: allocation, consent: signed, managerApproved: manager, weightNote: note.trim(), allocationPct }, ledgerDate(joined), note.trim() || `Add ${who} to the team`);
+      const status = useCrm.getState().teamAmendments.find((a) => a.id === id)?.status;
+      notify(status === "passed" ? `${who} admitted — ledger updated (§6.8)` : status === "tied" ? "Admission circulated — no voting members yet, the PRC decides (§6.8)" : "Admission circulated to the team — the new member doesn't vote on their own admission (§6.8)");
     } else {
-      addMember(ini.id, uid, roles, { specialistWeight: sw, weightOverride: wo, weightNote: note, allocationFactor: allocation, joinedAt: fromDateInput(joined), consent: signed ? "accepted" : "pending", managerApproved: manager, prcApproved: false, allocationPct, authority: "Role and Weight Agreement (Annex D Part 1)" });
-      notify("Added to the register");
+      addMember(ini.id, uid, roles, { specialistWeight: sw, weightOverride: wo, weightNote: note, allocationFactor: allocation, joinedAt: ledgerDate(joined), consent: signed ? "accepted" : "pending", managerApproved: manager, prcApproved: false, allocationPct, authority: "Role and Weight Agreement (Annex D Part 1)" });
+      notify(`Added to the register${signed ? "" : " — awaiting signature"}${manager ? "" : " · line manager agreement pending"}`);
     }
     onOpenChange(false);
   };
 
-  const amendmentMode = editing ? approved && !!member && Date.parse(member.joinedAt) < Date.now() : approved && onTeam.size > 0 && Date.parse(fromDateInput(joined)) <= Date.now();
+  const voters = amendmentMode ? (editing ? currentVoters(members, ini.id) : amendmentVoters({ initiativeId: ini.id, change: { kind: "add", userId: userId || "-", roles, specialistWeight: sw, weightOverride: null, allocationFactor: allocation, consent: signed } }, members)) : [];
+  const probationNew = mode === "new" && employmentType === "probationary";
 
   return (
     <Modal
       open={open}
       onOpenChange={onOpenChange}
       title={editing ? "Edit register entry" : "Add to the project team"}
-      description={amendmentMode ? "This project has a code, so changes go to the team as an amendment: more than half of current members must agree, and it applies from the effective date only (§6.8)." : "Initial Role and Weight Agreement — standard weights apply unless every initial member agrees to different ones (§6.7)."}
+      description={amendmentMode ? "This project has a Team Allocation Ledger, so every change goes to the team as an amendment: more than half of current members must agree, and it applies from the effective date only (§6.8)." : "Initial Role and Weight Agreement — standard weights apply unless every initial member agrees to different ones (§6.7)."}
       className="max-w-2xl"
       footer={
         <>
+          {amendmentMode ? <span className="mr-auto text-2xs text-sg-dim">{voters.length} current member{voters.length === 1 ? "" : "s"} vote{voters.length ? ` · passes with ${Math.floor(voters.length / 2) + 1}` : " — the PRC decides"}</span> : null}
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button variant="primary" disabled={!valid} onClick={save}>
+          <Button variant="primary" disabled={!valid} onClick={save} title={errors.join("\n")}>
             {amendmentMode ? "Circulate amendment" : editing ? "Save" : "Add to register"}
           </Button>
         </>
@@ -197,24 +246,32 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
 
         {mode === "existing" ? (
           <Field label="Person">
-            <Select value={userId} onChange={(e) => setUserId(e.target.value)} disabled={editing}>
-              <option value="">Choose…</option>
-              {candidates.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name} — {u.title}
-                </option>
-              ))}
-            </Select>
+            <PersonCombobox value={userId} onChange={(v) => (setUserId(v), setAnnexC(false), setSigned(false), setManager(false))} users={candidates} disabled={editing} />
           </Field>
         ) : (
           <div className="grid gap-3 rounded-lg border border-sg-line p-3">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Full name">
                 <Input value={name} onChange={(e) => setName(e.target.value)} />
               </Field>
               <Field label="Work email">
                 <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@spectrumgroup.id" />
               </Field>
+              {dupe ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-soft-yellow/40 bg-soft-yellow/10 px-2.5 py-1.5 text-xs text-soft-yellow sm:col-span-2">
+                  {dupe.name} ({dupe.email}) is already in the workspace.
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => {
+                      setMode("existing");
+                      setUserId(dupe.id);
+                    }}
+                  >
+                    Use existing {dupe.name.split(" ")[0]}
+                  </Button>
+                </div>
+              ) : null}
               <Field label="Job title">
                 <Input value={title} onChange={(e) => setTitle(e.target.value)} />
               </Field>
@@ -236,7 +293,7 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
                 </Select>
               </Field>
               <Field label="Hire date">
-                <Input type="date" value={hireDate} onChange={(e) => setHireDate(e.target.value)} />
+                <Input type="date" lang="en-GB" value={hireDate} onChange={(e) => setHireDate(e.target.value)} />
               </Field>
               <Field label="Line manager">
                 <Select value={managerId} onChange={(e) => setManagerId(e.target.value)}>
@@ -249,7 +306,7 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
                 </Select>
               </Field>
               <Field label="Annex B signed on" hint="Bonuses are held until signed (§15.1)">
-                <Input type="date" value={annexB} onChange={(e) => setAnnexB(e.target.value)} />
+                <Input type="date" lang="en-GB" value={annexB} onChange={(e) => setAnnexB(e.target.value)} />
               </Field>
               {employmentType === "part_time" ? (
                 <Field label="Contracted hours (% of full-time)" hint="Caps the allocation factor (§3.1)">
@@ -258,7 +315,7 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
               ) : null}
               {employmentType === "fixed_term_contract" ? (
                 <Field label="Contract end (PKWT)">
-                  <Input type="date" value={contractEnd} onChange={(e) => setContractEnd(e.target.value)} />
+                  <Input type="date" lang="en-GB" value={contractEnd} onChange={(e) => setContractEnd(e.target.value)} />
                 </Field>
               ) : null}
             </div>
@@ -279,6 +336,7 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
                   key={r}
                   type="button"
                   disabled={blocked}
+                  aria-pressed={on}
                   title={blocked ? "No Initiator weight on company-channel opportunities (§4.1)" : ROLE_META[r].description}
                   onClick={() => toggleRole(r)}
                   className={cn("rounded-md border px-2 py-1 text-xs font-semibold", on ? "border-sg-white bg-sg-card-3 text-sg-white" : "border-sg-line text-sg-muted hover:text-sg-white", blocked && "cursor-not-allowed opacity-40")}
@@ -302,40 +360,57 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
               </Select>
             </Field>
           ) : null}
-          <Field label="Allocation factor (§6.4)" hint={maxA < 1 ? `Part-time cap ${maxA}` : "1.0 unless materially less time"}>
+          <Field label="Allocation factor (§6.4)" hint={(mode === "new" ? maxANew : check?.maxA ?? 1) < 1 ? `Part-time cap ${mode === "new" ? maxANew : check?.maxA}` : "1.0 unless materially less time"}>
             <Select value={allocation} onChange={(e) => setAllocation(Number(e.target.value))}>
               {ALLOCATION_FACTORS.map((a) => (
-                <option key={a} value={a} disabled={a > maxA}>
+                <option key={a} value={a} disabled={a > (mode === "new" ? maxANew : check?.maxA ?? 1) + 1e-9}>
                   {a.toFixed(2)}
                 </option>
               ))}
             </Select>
           </Field>
-          <Field label="Agreed weight (optional)" hint={`Standard ${standardW}`}>
-            <Input type="number" step={0.25} min={0.25} value={override} onChange={(e) => setOverride(e.target.value)} placeholder={String(standardW)} />
+          <Field label="Agreed weight (optional)" hint={`Standard ${standardW} · max 10`}>
+            <Input inputMode="decimal" value={override} onChange={(e) => setOverride(e.target.value.replace(/[^\d.,]/g, ""))} placeholder={String(standardW)} />
           </Field>
-          <Field label={amendmentMode && editing ? "Effective from" : "Start on team"}>
-            {amendmentMode && editing ? <Input type="date" value={effective} onChange={(e) => setEffective(e.target.value)} /> : <Input type="date" value={joined} onChange={(e) => setJoined(e.target.value)} />}
+          <Field label={amendmentMode && editing ? "Effective from" : "Start on team"} hint={amendmentMode ? "From today onward (§6.8)" : undefined}>
+            {amendmentMode && editing ? (
+              <Input type="date" lang="en-GB" min={todayWib()} value={effective} onChange={(e) => setEffective(e.target.value)} />
+            ) : (
+              <Input type="date" lang="en-GB" min={amendmentMode ? todayWib() : undefined} value={joined} onChange={(e) => setJoined(e.target.value)} />
+            )}
           </Field>
           <Field label="Planned time (%)" hint="Agreed with the line manager (§7.1)">
             <Input type="number" min={5} max={100} value={allocationPct} onChange={(e) => setAllocationPct(Number(e.target.value))} />
           </Field>
         </div>
 
-        <Field label={needsNote ? "Reason for the non-standard weight / allocation (required)" : "Other considerations (optional)"} hint="Recorded in the register and the Role and Weight Agreement (Annex D)">
+        <Field label={rule.nonStandard || allocation < 1 ? "Reason for the non-standard weight / allocation (required)" : "Other considerations (optional)"} hint="Recorded in the register and the Role and Weight Agreement (Annex D)">
           <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Engineer of record signing the regulated design; half-time while also on another project" />
         </Field>
 
-        {!amendmentMode ? (
-          <div className="flex flex-wrap gap-4 text-xs text-sg-muted">
-            <label className="flex items-center gap-1.5">
-              <input type="checkbox" className="size-3.5 accent-white" checked={signed} onChange={(e) => setSigned(e.target.checked)} /> Signed the Role and Weight Agreement <PolicyRef s="6.7" />
+        <div className="flex flex-col gap-1.5 text-xs text-sg-muted">
+          {!(amendmentMode && editing) ? (
+            <>
+              <label className="flex items-center gap-1.5">
+                <input type="checkbox" className="size-3.5 accent-white" checked={signed} onChange={(e) => setSigned(e.target.checked)} />
+                {amendmentMode ? "The joining member consents to the role, weight and allocation factor (does not vote on their own admission)" : "Signed the Role and Weight Agreement"} <PolicyRef s={amendmentMode ? "6.8" : "6.7"} />
+              </label>
+              <label className="flex items-center gap-1.5">
+                <input type="checkbox" className="size-3.5 accent-white" checked={manager} onChange={(e) => setManager(e.target.checked)} /> Line manager agreed the time in writing <PolicyRef s="3.1" />
+              </label>
+            </>
+          ) : null}
+          {rule.nonStandard && !amendmentMode ? (
+            <label className="flex items-center gap-1.5 text-soft-yellow">
+              <input type="checkbox" className="size-3.5 accent-white" checked={allSigned} onChange={(e) => setAllSigned(e.target.checked)} /> Every initial member has agreed this weight in writing <PolicyRef s="6.7" />
             </label>
-            <label className="flex items-center gap-1.5">
-              <input type="checkbox" className="size-3.5 accent-white" checked={manager} onChange={(e) => setManager(e.target.checked)} /> Line manager agreed the time <PolicyRef s="3.1" />
+          ) : null}
+          {probationNew ? (
+            <label className="flex items-center gap-1.5 text-soft-orange">
+              <input type="checkbox" className="size-3.5 accent-white" checked={annexC} onChange={(e) => setAnnexC(e.target.checked)} /> Annex C probationary acknowledgment signed — bonuses held until probation ends <PolicyRef s="11.3" />
             </label>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
 
         <div className="grid grid-cols-2 gap-3 rounded-lg border border-sg-line bg-sg-bg/40 p-3 text-xs md:grid-cols-4">
           <Preview label="Weight W" value={W.toFixed(2)} />
@@ -344,22 +419,14 @@ export function MemberDialog({ ini, open, onOpenChange, member, othersE, rate }:
           <Preview label="% of net revenue" value={`${(share * rate * 100).toFixed(3)}%`} />
         </div>
 
-        {eligibility && (eligibility.blockers.length || eligibility.warnings.length) ? (
-          <ul className="space-y-1 text-xs">
-            {eligibility.blockers.map((b) => (
-              <li key={b} className="flex items-start gap-1.5 text-soft-red">
-                <CircleAlert className="mt-0.5 size-3.5 shrink-0" /> {b}
-              </li>
-            ))}
-            {eligibility.warnings.map((w) => (
-              <li key={w} className="flex items-start gap-1.5 text-soft-orange">
-                <CircleAlert className="mt-0.5 size-3.5 shrink-0" /> {w}
-              </li>
+        {mode === "existing" ? <CandidateNotices check={check} ack={annexC} onAck={setAnnexC} /> : null}
+        {errors.length && (userId || name || email) ? (
+          <ul className="space-y-0.5 text-2xs text-soft-yellow">
+            {errors.map((e) => (
+              <li key={e}>• {e}</li>
             ))}
           </ul>
         ) : null}
-        {cap && !cap.ok ? <p className="text-xs text-soft-red">Leadership capacity would reach {cap.after.toFixed(2)} — the limit is 2.0 (§7.3).</p> : null}
-        {nonLead > 3 ? <p className="text-xs text-soft-orange">That would be {nonLead} concurrent non-lead roles — more than 3 needs line manager and PRC approval (§7.1).</p> : null}
       </div>
     </Modal>
   );

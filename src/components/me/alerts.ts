@@ -1,17 +1,83 @@
 /*
- * Alerts for the current user, derived from the store (Policy v4.0): PRC review queue with tier SLAs (§4.2, §4.5),
- * Role and Weight Agreement sign requests (§6.7), §6.8 amendment votes and ties, the monthly break-even test and
- * release (§8.2, §9.1), deferred bonuses vesting (§9.3), clawback dispute windows (§9.4), appeals (§4.6) and Annex B.
+ * Alerts for the current user, derived from the store.
+ *  Programme (Policy v4.0): PRC review queue with tier SLAs (§4.2, §4.5), Role and Weight Agreement sign requests
+ *  (§6.7), §6.8 amendment votes, ties and ledger updates, appeals (§4.6), Annex B, §14 disputes, HR duties (§3.5,
+ *  §11.5). Pay: the monthly break-even test and release (§8.2, §9.1), deferred bonuses (§9.3), clawback windows (§9.4),
+ *  statements issued (§8.4), probation outcomes (§11.4), curve-change notices (§9.5), the §9.6 company summary.
+ *  Sales & service: ticket SLAs, overdue tasks, deals past close date or stale, quotes awaiting approval.
+ *  Delivery: issues assigned to me, due soon, blocked; monthly project status updates (§6.1, before the §8.2 cut-off).
+ * Role checks use the HR record's governance roles (the same source as useAccess); amounts of other people's pay are
+ * only ever shown to pay roles (§13.4).
  */
-import { addBusinessDays, approvalTier, breakEvenDeadline, businessDaysBetween, memberWeight, monthKey } from "@/lib/initiatives/engine";
+import { addBusinessDays, approvalTier, breakEvenDeadline, businessDaysBetween, cycleMonth, memberWeight, monthKey, nextMonth } from "@/lib/initiatives/engine";
 import { POLICY, TIER_META } from "@/lib/initiatives/policy";
-import type { BonusRun, Clawback, DeferredBonus, EmployeeProfile, Initiative, InitiativeMember, TeamAmendment } from "@/lib/initiatives/types";
-import type { User } from "@/lib/types";
+import type { BonusRun, Clawback, CompanySummary, CurveAdjustment, DeferredBonus, Dispute, EmployeeProfile, Initiative, InitiativeMember, ProbationOutcome, ProjectUpdate, TeamAmendment } from "@/lib/initiatives/types";
+import type { Activity, Deal, Issue, IssueHistoryEntry, IssueLink, Pipeline, Quote, Ticket, User } from "@/lib/types";
+import { DISPUTE_STAGE_META, decidingBody, disputeSla } from "@/lib/slices/program-extras";
 import { formatDate, formatIDR } from "@/lib/utils";
-import { annexBState, canVote, describeAmendment, rolesLabel, voteDeadline } from "./helpers";
+import { annexBState, canVote, cycleLabel, describeAmendment, rolesLabel, voteDeadline } from "./helpers";
 
-export type AlertKind = "prc_review" | "sla" | "consent" | "vote" | "tie" | "break_even" | "release" | "vesting" | "clawback" | "appeal" | "annex_b";
+export type AlertKind =
+  | "prc_review"
+  | "sla"
+  | "consent"
+  | "vote"
+  | "tie"
+  | "break_even"
+  | "release"
+  | "vesting"
+  | "clawback"
+  | "appeal"
+  | "annex_b"
+  | "ticket_sla"
+  | "task_due"
+  | "deal_overdue"
+  | "deal_stale"
+  | "quote_approval"
+  | "issue_assigned"
+  | "issue_due"
+  | "issue_blocked"
+  | "status_update"
+  | "amendment_record"
+  | "hr"
+  | "statement"
+  | "probation"
+  | "curve"
+  | "company_summary"
+  | "dispute";
 export type AlertTone = "red" | "orange" | "yellow" | "cyan" | "green" | "blue";
+export type AlertCategory = "sales" | "delivery" | "programme" | "pay";
+
+export const ALERT_CATEGORY: Record<AlertKind, AlertCategory> = {
+  prc_review: "programme",
+  sla: "programme",
+  consent: "programme",
+  vote: "programme",
+  tie: "programme",
+  appeal: "programme",
+  annex_b: "programme",
+  hr: "programme",
+  dispute: "programme",
+  status_update: "delivery",
+  amendment_record: "delivery",
+  issue_assigned: "delivery",
+  issue_due: "delivery",
+  issue_blocked: "delivery",
+  ticket_sla: "sales",
+  task_due: "sales",
+  deal_overdue: "sales",
+  deal_stale: "sales",
+  quote_approval: "sales",
+  break_even: "pay",
+  release: "pay",
+  vesting: "pay",
+  clawback: "pay",
+  statement: "pay",
+  probation: "pay",
+  curve: "pay",
+  company_summary: "pay",
+};
+export const CATEGORY_LABEL: Record<AlertCategory, string> = { sales: "Sales & service", delivery: "Delivery", programme: "Programme", pay: "Pay" };
 
 export interface Alert {
   /** stable key — changes when the alert's state changes, so it shows as unread again */
@@ -37,9 +103,27 @@ export interface AlertInputs {
   runs: BonusRun[];
   deferred: DeferredBonus[];
   clawbacks: Clawback[];
+  /* optional sources — alerts of a kind are skipped when its source is not passed */
+  outcomes?: ProbationOutcome[];
+  curveAdjustments?: CurveAdjustment[];
+  summaries?: CompanySummary[];
+  disputes?: Dispute[];
+  projectUpdates?: ProjectUpdate[];
+  tickets?: Ticket[];
+  activities?: Activity[];
+  deals?: Deal[];
+  pipelines?: Pipeline[];
+  quotes?: Quote[];
+  issues?: Issue[];
+  issueLinks?: IssueLink[];
+  issueHistory?: IssueHistoryEntry[];
 }
 
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
+/** a deal that has not changed stage for this long is stale */
+export const STALE_DEAL_DAYS = 21;
+const wibDate = (t: number) => new Date(t + 7 * HOUR).toISOString().slice(0, 10);
 const WIB = 7 * 3_600_000;
 const wibDay = (t: number) => Number(new Date(t + WIB).toISOString().slice(8, 10));
 const TONE_RANK: Record<AlertTone, number> = { red: 0, orange: 1, yellow: 2, cyan: 3, blue: 4, green: 5 };
@@ -119,8 +203,8 @@ export function deriveAlerts(inp: AlertInputs, now = Date.now()): Alert[] {
     out.push({
       id: `vote:${a.id}`,
       kind: "vote",
-      tone: Date.parse(due) < now ? "red" : "yellow",
-      title: `Vote on a team amendment — ${i?.title ?? "project"}`,
+      tone: Date.parse(due) < now ? "red" : businessDaysBetween(nowIso, due) <= 1 ? "orange" : "yellow",
+      title: `${businessDaysBetween(nowIso, due) <= 1 && Date.parse(due) >= now ? "Vote closes soon" : "Vote on a team amendment"} — ${i?.title ?? "project"}`,
       detail: `${describeAmendment(a, users, members)} · from ${formatDate(a.effectiveDate, "medium")} · proposed by ${name(a.proposedById)} · vote by ${formatDate(due, "medium")}`,
       href: `/initiatives/${a.initiativeId}`,
       at: due,
@@ -148,21 +232,26 @@ export function deriveAlerts(inp: AlertInputs, now = Date.now()): Alert[] {
     }
   }
 
-  /* §8.2 / §9.1 break-even test and cash check due by the 23rd (from the 20th, no certified run yet) */
+  /* §8.2 / §9.1 break-even test and cash check, certified by the 23rd — raised for every decided salary cycle up to
+     the current one that has no certified or released run, so an uncertified month never silently drops out */
   if (roles.has("cfo") || roles.has("finance")) {
-    const month = monthKey(now);
-    const run = runs.find((r) => r.month === month);
-    const certified = run && (run.status === "certified" || run.status === "released");
-    if (!certified && wibDay(now) >= POLICY.cycle.cutoffDay) {
-      const deadline = breakEvenDeadline(month);
+    const open = cycleMonth(nowIso); // collections from the 21st belong to the next cycle
+    const known = [...runs.map((r) => r.month), ...(inp.summaries ?? []).map((x) => x.month)].sort();
+    const first = known[0] ?? monthKey(now);
+    const floor = nextMonth(monthKey(now), -6);
+    for (let m = first < floor ? floor : first; m < open || (m === monthKey(now) && wibDay(now) >= POLICY.cycle.cutoffDay); m = nextMonth(m)) {
+      if (m > monthKey(now)) break;
+      const run = runs.find((r) => r.month === m);
+      if (run && (run.status === "certified" || run.status === "released")) continue;
+      const deadline = breakEvenDeadline(m);
       const late = Date.parse(deadline) < now;
       out.push({
-        id: `breakeven:${month}:${late ? "late" : "due"}:${run?.status ?? "none"}`,
+        id: `breakeven:${m}:${late ? "late" : "due"}:${run?.status ?? "none"}`,
         kind: "break_even",
         tone: late ? "red" : "orange",
-        title: late ? `Break-even test overdue for ${month}` : `Certify the break-even test and cash check for ${month}`,
-        detail: `${run ? (run.status === "failed" ? "A failed run is recorded — PRC applies §9.2 pro rata" : "Draft run recorded") : "No run recorded yet"} · CFO certifies by the 23rd using the latest three closed months; salary date ${formatDate(`${month}-${POLICY.cycle.salaryDay}T09:00:00+07:00`, "medium")}`,
-        href: `/compensation?month=${month}`,
+        title: late ? `Break-even test overdue for ${cycleLabel(m)}` : `Certify the break-even test and cash check for ${cycleLabel(m)}`,
+        detail: `${run ? (run.status === "failed" ? "A failed run is recorded — PRC applies §9.2 pro rata" : "Draft run recorded") : "No run recorded yet"} · CFO certifies by the 23rd using the latest three closed months; salary date ${formatDate(`${m}-${POLICY.cycle.salaryDay}T09:00:00+07:00`, "medium")}`,
+        href: `/compensation?month=${m}`,
         at: deadline,
         cite: "9.1",
       });
@@ -218,7 +307,7 @@ export function deriveAlerts(inp: AlertInputs, now = Date.now()): Alert[] {
         tone: left <= 3 ? "red" : "orange",
         title: `Clawback notice — dispute window closes ${formatDate(deadline, "medium")}`,
         detail: `${ini(c.initiativeId)?.title ?? "Project"} · ${left} business day${left === 1 ? "" : "s"} left to dispute the figures or raise mitigating factors; salary deductions need your written agreement`,
-        href: "/me#statements",
+        href: "/me#clawbacks",
         at: deadline,
         cite: "9.4",
       });
@@ -278,6 +367,199 @@ export function deriveAlerts(inp: AlertInputs, now = Date.now()): Alert[] {
       at: null,
       cite: "15.1",
     });
+
+  /* ───────── §14 disputes ───────── */
+  for (const d of inp.disputes ?? []) {
+    const sla = disputeSla(d, now);
+    const late = !!sla?.overdue;
+    const soon = !!sla && !sla.overdue && sla.days <= 2;
+    const stageLabel = DISPUTE_STAGE_META[d.stage].label;
+    const base = { kind: "dispute" as const, href: `/disputes/${d.id}`, cite: "14" };
+    if (d.stage === "direct" && d.handlerId === userId && !d.proposal) {
+      out.push({ ...base, id: `dsp:${d.id}:handle:${late ? "late" : soon ? "soon" : "ok"}`, tone: late ? "red" : soon ? "orange" : "yellow", title: `${late ? "Dispute overdue" : "Dispute to resolve"} — ${d.subject}`, detail: `${d.number} raised by ${name(d.raisedById)} · settle directly within 10 business days, by ${formatDate(d.dueAt, "medium")}`, at: d.dueAt });
+    }
+    if (d.raisedById === userId && d.stage === "direct" && d.proposal) {
+      out.push({ ...base, id: `dsp:${d.id}:proposal:${d.proposal.at}`, tone: "orange", title: `Respond to the proposed resolution — ${d.subject}`, detail: `${name(d.proposal.byId)} proposes: ${d.proposal.text.slice(0, 120)} · accept it or escalate to the PRC`, at: d.proposal.at });
+    }
+    if (d.raisedById === userId && d.stage === "direct" && !d.proposal && late) {
+      out.push({ ...base, id: `dsp:${d.id}:unsettled`, tone: "orange", title: `Not settled in 10 business days — ${d.subject}`, detail: `${d.number} · you may escalate it to the PRC (§14 step 3)`, at: d.dueAt });
+    }
+    if (d.stage === "prc" || d.stage === "exco") {
+      const body = decidingBody(d, d.stage, profiles);
+      if (body.eligible.includes(userId) && !d.votes.some((v) => v.stage === d.stage && v.userId === userId))
+        out.push({ ...base, id: `dsp:${d.id}:${d.stage}:${late ? "late" : soon ? "soon" : "ok"}`, tone: late ? "red" : soon ? "orange" : "yellow", title: `Dispute awaiting the ${d.stage === "prc" ? "PRC" : "Executive Committee"} — ${d.subject}`, detail: `${d.number} · ${stageLabel} due ${formatDate(d.dueAt, "medium")}${body.recused.length ? ` · ${body.recused.length} recused` : ""}`, at: d.dueAt });
+    }
+    if ((roles.has("finance") || roles.has("cfo")) && d.correction && !d.correction.paidAt)
+      out.push({ ...base, id: `dsp:${d.id}:correction`, tone: "cyan", title: `Pay a dispute correction with the ${cycleLabel(d.correction.cycle)} salary`, detail: `${d.number} · ${name(d.raisedById)} · ${formatIDR(d.correction.amount, "full")} (§8.5)`, at: null, cite: "8.5" });
+    if (d.raisedById === userId && d.closedAt && now - Date.parse(d.closedAt) < 14 * DAY && d.outcome !== "withdrawn") {
+      const appeal = d.prcDecision && !d.excoDecision && Date.parse(d.prcDecision.appealBy) >= now;
+      out.push({ ...base, id: `dsp:${d.id}:closed:${d.closedAt}`, tone: appeal ? "yellow" : "green", title: `Decision on your dispute — ${d.subject}`, detail: `${d.outcome ? d.outcome.replace(/_/g, " ") : "closed"}${appeal && d.prcDecision ? ` · you may appeal to the Executive Committee by ${formatDate(d.prcDecision.appealBy, "medium")}` : ""}`, at: d.closedAt });
+    }
+  }
+
+  /* ───────── HR duties (§3.2, §3.5, §11.5, §15.1) ───────── */
+  if (roles.has("hr")) {
+    for (const p of profiles) {
+      const who = name(p.userId);
+      if (p.employmentType === "probationary" && p.probationEndDate && !(inp.outcomes ?? []).some((o) => o.userId === p.userId)) {
+        const left = Math.ceil((Date.parse(p.probationEndDate) - now) / DAY);
+        if (left <= 14)
+          out.push({ id: `hr:probation:${p.userId}:${left < 0 ? "over" : "soon"}`, kind: "hr", tone: left < 0 ? "red" : "orange", title: left < 0 ? `Probation ended without an outcome — ${who}` : `Probation ends in ${left} day${left === 1 ? "" : "s"} — ${who}`, detail: `End date ${formatDate(p.probationEndDate, "medium")} · record confirmation or the outcome; the Probation Completion Bonus is paid within ${POLICY.probationPayoutDays} days (§11.4, §11.5)`, href: "/compensation?tab=probation", at: p.probationEndDate, cite: "11.5" });
+      }
+      if (p.employmentType === "fixed_term_contract" && p.contractEndDate && !p.separation) {
+        const left = Math.ceil((Date.parse(p.contractEndDate) - now) / DAY);
+        if (left <= 30 && left >= -7)
+          out.push({ id: `hr:contract:${p.userId}:${p.contractEndDate}`, kind: "hr", tone: left < 0 ? "red" : "yellow", title: `Fixed-term contract ${left < 0 ? "ended" : `ends in ${left} days`} — ${who}`, detail: `${formatDate(p.contractEndDate, "medium")} · renew, or record the contract end so roles and bonuses follow §10`, href: "/people", at: p.contractEndDate, cite: "10" });
+      }
+      if (p.unpaidLeaveDays > POLICY.unpaidLeaveMaxDays)
+        out.push({ id: `hr:leave:${p.userId}:${p.unpaidLeaveDays > 60 ? 60 : 30}`, kind: "hr", tone: "orange", title: `Unpaid leave over ${POLICY.unpaidLeaveMaxDays} days — ${who}`, detail: `${p.unpaidLeaveDays} consecutive days · no new roles, bonuses held until the return (§3.2)`, href: "/people", at: null, cite: "3.2" });
+    }
+    const unsigned = profiles.filter((p) => !p.separation && ["missing", "stale"].includes(annexBState(p)) && members.some((m) => m.userId === p.userId && !m.leftAt && m.consent !== "declined"));
+    if (unsigned.length)
+      out.push({ id: `hr:annexb:${unsigned.map((p) => p.userId).join(",")}`, kind: "hr", tone: "yellow", title: `${unsigned.length} project participant${unsigned.length === 1 ? " has" : "s have"} no current Annex B`, detail: `${unsigned.slice(0, 4).map((p) => name(p.userId)).join(", ")}${unsigned.length > 4 ? ` +${unsigned.length - 4}` : ""} · bonuses are held until the v4.0 agreement is signed (§15.1)`, href: "/people", at: null, cite: "15.1" });
+  }
+
+  /* ───────── my pay events (§8.4, §9.3, §9.5, §9.6, §11.4) ───────── */
+  for (const r of runs) {
+    if (r.status !== "released" || !r.releasedAt || now - Date.parse(r.releasedAt) > 35 * DAY) continue;
+    const mine = r.lines.filter((l) => l.userId === userId);
+    if (!mine.length) continue;
+    const pay = mine.reduce((s, l) => s + l.payable, 0);
+    out.push({ id: `stmt:${r.id}`, kind: "statement", tone: "green", title: `Your ${cycleLabel(r.month)} bonus statement is issued`, detail: `${mine.length} project${mine.length === 1 ? "" : "s"} · ${formatIDR(pay, "full")} payable with the salary · check it and raise any error within ${POLICY.statementDisputeDays} days (§14)`, href: "/me#statements", at: r.releasedAt, cite: "8.4" });
+  }
+  const myVesting = deferred.filter((d) => d.userId === userId && d.status === "pending" && Date.parse(d.vestAt) <= now + 30 * DAY);
+  if (myVesting.length)
+    out.push({ id: `myvest:${myVesting.map((d) => d.id).join(",")}`, kind: "vesting", tone: "cyan", title: `${myVesting.length} of your deferred bonuses vest${myVesting.length === 1 ? "s" : ""} soon`, detail: `${formatIDR(myVesting.reduce((s, d) => s + d.amount, 0), "full")} · earliest ${formatDate(myVesting.map((d) => d.vestAt).sort()[0], "medium")} · paid in the next cycle, subject to §10`, href: "/me", at: myVesting.map((d) => d.vestAt).sort()[0], cite: "9.3" });
+  for (const o of inp.outcomes ?? []) {
+    if (o.userId !== userId || now - Date.parse(o.decidedAt) > 30 * DAY) continue;
+    out.push({ id: `prob:${o.userId}:${o.decidedAt}`, kind: "probation", tone: o.outcome === "forfeited" ? "red" : "green", title: o.outcome === "completed" ? "Probation passed — Probation Completion Bonus" : o.outcome === "paid_final_pay" ? "Probation balance paid with final pay" : "Probation balance forfeited", detail: `${formatIDR(o.amount, "full")} · ${o.outcome === "completed" ? `paid within ${POLICY.probationPayoutDays} days of the end date` : "see §11.4"}`, href: "/me", at: o.decidedAt, cite: "11.4" });
+  }
+  if (me && me.employmentType === "probationary" && me.probationEndDate) {
+    const left = Math.ceil((Date.parse(me.probationEndDate) - now) / DAY);
+    if (left >= 0 && left <= 14) out.push({ id: `myprob:${me.probationEndDate}`, kind: "probation", tone: "blue", title: `Your probation ends in ${left} day${left === 1 ? "" : "s"}`, detail: `${formatDate(me.probationEndDate, "medium")} · if confirmed, your held balance is paid as a Probation Completion Bonus within ${POLICY.probationPayoutDays} days (§11.4)`, href: "/me", at: me.probationEndDate, cite: "11.4" });
+  }
+  for (const c of inp.curveAdjustments ?? []) {
+    if (Date.parse(c.effectiveFrom) < now - 7 * DAY) continue;
+    out.push({ id: `curve:${c.id}`, kind: "curve", tone: "yellow", title: `Revenue-share curve changes on ${formatDate(c.effectiveFrom, "medium")}`, detail: `${Math.round(c.from.start * 100)}% → ${Math.round(c.to.start * 100)}% start, floor ${Math.round(c.to.floor * 100)}% · applies only to projects approved after that date, with at least ${POLICY.curveNoticeDays} days' notice (§9.5)`, href: "/policy#s-9-5", at: c.effectiveFrom, cite: "9.5" });
+  }
+  const latestSummary = [...(inp.summaries ?? [])].sort((a, b) => b.month.localeCompare(a.month))[0];
+  if (latestSummary && now - Date.parse(latestSummary.publishedAt) < 14 * DAY)
+    out.push({ id: `csum:${latestSummary.id}:${latestSummary.publishedAt}`, kind: "company_summary", tone: "blue", title: `Company results for ${cycleLabel(latestSummary.month)}`, detail: `Revenue ${formatIDR(latestSummary.companyRevenue)} · ${latestSummary.breakEvenPassed ? "break-even test passed" : `checks failed — ${Math.round(latestSummary.payoutPct * 100)}% released`} (§9.6)`, href: "/me/company", at: latestSummary.publishedAt, cite: "9.6" });
+
+  /* ───────── governance: §6.1 monthly status updates, §6.8 ledger updates ───────── */
+  if (inp.projectUpdates) {
+    const month = monthKey(now);
+    const cutoff = `${month}-${String(POLICY.cycle.cutoffDay).padStart(2, "0")}T17:00:00+07:00`;
+    // due 3 business days before the 20th collection cut-off, so the update lands before Finance runs the cycle (§8.2)
+    let due = new Date(cutoff);
+    for (let n = 0; n < 3; ) {
+      due = new Date(due.getTime() - DAY);
+      const wd = new Date(due.getTime() + WIB).getUTCDay();
+      if (wd !== 0 && wd !== 6) n++;
+    }
+    const dueIso = due.toISOString();
+    const missing = initiatives.filter((i) => i.status === "active" && !inp.projectUpdates!.some((u) => u.initiativeId === i.id && u.month === month));
+    const showFrom = Date.parse(dueIso) - 5 * DAY;
+    if (now >= showFrom) {
+      for (const i of missing) {
+        const leads = members.filter((m) => m.initiativeId === i.id && m.roles.includes("project_lead") && !m.leftAt && m.consent !== "declined").map((m) => m.userId);
+        if (!leads.includes(userId)) continue;
+        const pastDue = now > Date.parse(dueIso);
+        const pastCut = now > Date.parse(cutoff);
+        out.push({ id: `upd:${i.id}:${month}:${pastCut ? "cut" : pastDue ? "late" : "due"}`, kind: "status_update", tone: pastCut ? "red" : pastDue ? "orange" : "yellow", title: `${pastDue ? "Status update overdue" : "Monthly status update due"} — ${i.title}`, detail: `${cycleLabel(month)} update with RAG health · due ${formatDate(dueIso, "medium")}, before the ${POLICY.cycle.cutoffDay}th cut-off (§6.1, §8.2)`, href: `/projects/${i.id}`, at: dueIso, cite: "6.1" });
+      }
+      if (roles.has("prc") && now > Date.parse(dueIso) && missing.length)
+        out.push({ id: `upd:digest:${month}:${missing.map((i) => i.id).join(",")}`, kind: "status_update", tone: "yellow", title: `${missing.length} active project${missing.length === 1 ? "" : "s"} without a ${cycleLabel(month)} status update`, detail: `${missing.slice(0, 4).map((i) => i.code ?? i.title).join(", ")}${missing.length > 4 ? ` +${missing.length - 4}` : ""} · PMO digest (§6.1)`, href: "/projects", at: dueIso, cite: "6.1" });
+    }
+  }
+  for (const a of amendments) {
+    if (a.status !== "passed" || a.recordedAt) continue;
+    if (!(a.proposedById === userId || roles.has("prc"))) continue;
+    out.push({ id: `amrec:${a.id}`, kind: "amendment_record", tone: "cyan", title: `Record the passed amendment in the ledger — ${ini(a.initiativeId)?.title ?? "project"}`, detail: `${describeAmendment(a, users, members)} · PMO closes and opens the ledger rows from ${formatDate(a.effectiveDate, "medium")} (§6.5, §6.8)`, href: `/initiatives/${a.initiativeId}`, at: a.effectiveDate, cite: "6.8" });
+  }
+
+  /* ───────── sales & service ───────── */
+  const meUser = users.find((u) => u.id === userId);
+  const serviceLead = !!meUser && meUser.team === "Service" && /manager|lead|head/i.test(meUser.title);
+  const breachedOthers: Ticket[] = [];
+  for (const t of inp.tickets ?? []) {
+    if (t.closedAt || t.slaPausedAt) continue;
+    const left = Date.parse(t.slaDueAt) - now;
+    if (t.ownerId === userId && left <= 2 * HOUR)
+      out.push({ id: `tkt:${t.id}:${left < 0 ? "breach" : "soon"}`, kind: "ticket_sla", tone: left < 0 ? "red" : "orange", title: left < 0 ? `SLA breached — ${t.subject}` : `SLA due within 2 hours — ${t.subject}`, detail: `${t.priority} · ${t.category} · due ${formatDate(t.slaDueAt, "datetime")} WIB`, href: `/tickets/${t.id}`, at: t.slaDueAt, cite: "SLA" });
+    else if (t.ownerId !== userId && left < 0) breachedOthers.push(t);
+  }
+  if (serviceLead && breachedOthers.length)
+    out.push({ id: `tkt:team:${breachedOthers.map((t) => t.id).join(",")}`, kind: "ticket_sla", tone: "orange", title: `${breachedOthers.length} team ticket${breachedOthers.length === 1 ? "" : "s"} past SLA`, detail: breachedOthers.slice(0, 3).map((t) => `${t.subject} (${name(t.ownerId)})`).join(" · "), href: "/tickets", at: breachedOthers.map((t) => t.slaDueAt).sort()[0], cite: "SLA" });
+
+  const myTasks = (inp.activities ?? []).filter((a) => a.type === "task" && !a.done && a.dueAt && a.ownerId === userId);
+  const today = wibDate(now);
+  const overdue = myTasks.filter((a) => Date.parse(a.dueAt!) < now && wibDate(Date.parse(a.dueAt!)) < today);
+  const dueToday = myTasks.filter((a) => wibDate(Date.parse(a.dueAt!)) === today);
+  const taskHref = (a: Activity) => (a.links.dealIds[0] ? `/deals/${a.links.dealIds[0]}` : a.links.ticketIds?.[0] ? `/tickets/${a.links.ticketIds[0]}` : a.links.contactIds[0] ? `/contacts/${a.links.contactIds[0]}` : a.links.companyIds[0] ? `/companies/${a.links.companyIds[0]}` : "/home");
+  if (overdue.length)
+    out.push({ id: `task:overdue:${overdue.map((a) => a.id).join(",")}`, kind: "task_due", tone: "red", title: overdue.length === 1 ? `Overdue task — ${overdue[0].subject}` : `${overdue.length} overdue tasks`, detail: overdue.slice(0, 3).map((a) => `${a.subject} (due ${formatDate(a.dueAt, "short")})`).join(" · "), href: overdue.length === 1 ? taskHref(overdue[0]) : "/home", at: overdue.map((a) => a.dueAt!).sort()[0], cite: "Tasks" });
+  if (dueToday.length)
+    out.push({ id: `task:today:${today}:${dueToday.map((a) => a.id).join(",")}`, kind: "task_due", tone: "yellow", title: dueToday.length === 1 ? `Task due today — ${dueToday[0].subject}` : `${dueToday.length} tasks due today`, detail: dueToday.slice(0, 3).map((a) => `${a.subject}${a.dueAt ? ` · ${formatDate(a.dueAt, "time")}` : ""}`).join(" · "), href: dueToday.length === 1 ? taskHref(dueToday[0]) : "/home", at: dueToday.map((a) => a.dueAt!).sort()[0], cite: "Tasks" });
+
+  const stageOf = new Map<string, { closed?: "won" | "lost"; name: string }>();
+  for (const p of inp.pipelines ?? []) for (const st of p.stages) stageOf.set(st.id, st);
+  const stale: Deal[] = [];
+  for (const d of inp.deals ?? []) {
+    if (d.ownerId !== userId) continue;
+    const st = stageOf.get(d.stageId);
+    if (!st || st.closed) continue;
+    if (Date.parse(d.closeDate) < now)
+      out.push({ id: `deal:${d.id}:overdue:${d.closeDate}`, kind: "deal_overdue", tone: "orange", title: `Close date passed — ${d.name}`, detail: `${formatIDR(d.amount)} · ${st.name} · expected to close ${formatDate(d.closeDate, "medium")} — update the date or the stage`, href: `/deals/${d.id}`, at: d.closeDate, cite: "Pipeline" });
+    else if (now - Date.parse(d.stageEnteredAt) > STALE_DEAL_DAYS * DAY) stale.push(d);
+  }
+  if (stale.length)
+    out.push({ id: `deal:stale:${stale.map((d) => d.id).join(",")}`, kind: "deal_stale", tone: "yellow", title: stale.length === 1 ? `Stale deal — ${stale[0].name}` : `${stale.length} deals with no stage move for ${STALE_DEAL_DAYS}+ days`, detail: stale.slice(0, 3).map((d) => `${d.name} (${Math.floor((now - Date.parse(d.stageEnteredAt)) / DAY)}d in ${stageOf.get(d.stageId)?.name ?? "stage"})`).join(" · "), href: stale.length === 1 ? `/deals/${stale[0].id}` : "/deals", at: null, cite: "Pipeline" });
+
+  const director = roles.has("ceo") || roles.has("cfo");
+  const finance = roles.has("finance") || roles.has("cfo");
+  for (const q of inp.quotes ?? []) {
+    if (q.status !== "pending_approval") continue;
+    const needFinance = !q.financeCheckedAt && finance;
+    const needDirector = !q.directorApprovedAt && director && q.ownerId !== userId;
+    if (!needFinance && !needDirector) continue;
+    out.push({ id: `quote:${q.id}:${needFinance ? "fin" : "dir"}`, kind: "quote_approval", tone: "orange", title: `Quote awaiting your ${needFinance ? "Finance check" : "approval"} — ${q.number}`, detail: `${q.title} · submitted by ${name(q.ownerId)}${q.submittedAt ? ` ${formatDate(q.submittedAt, "medium")}` : ""} · expires ${formatDate(q.expiresAt, "medium")}`, href: `/deals/${q.dealId}`, at: q.submittedAt ?? q.createdAt, cite: needFinance ? "4.7" : "Quotes" });
+  }
+
+  /* ───────── delivery ───────── */
+  const issues = inp.issues ?? [];
+  if (issues.length) {
+    const blockers = new Map<string, Issue[]>();
+    for (const l of inp.issueLinks ?? []) {
+      if (l.type !== "blocks") continue;
+      const from = issues.find((i) => i.id === l.fromIssueId);
+      if (!from || from.status === "done") continue;
+      blockers.set(l.toIssueId, [...(blockers.get(l.toIssueId) ?? []), from]);
+    }
+    const assignedAt = new Map<string, { at: string; by: string }>();
+    for (const h of inp.issueHistory ?? []) if (h.field === "assigneeId" && h.to === userId && h.actorId !== userId) {
+      const prev = assignedAt.get(h.issueId);
+      if (!prev || prev.at < h.at) assignedAt.set(h.issueId, { at: h.at, by: h.actorId });
+    }
+    let assignedCount = 0;
+    for (const i of issues) {
+      if (i.assigneeId !== userId || i.status === "done") continue;
+      const href = `/board?issue=${encodeURIComponent(i.key)}`;
+      const asg = assignedAt.get(i.id) ?? (i.reporterId !== userId ? { at: i.createdAt, by: i.reporterId } : null);
+      if (asg && now - Date.parse(asg.at) < 7 * DAY && assignedCount < 10) {
+        assignedCount++;
+        out.push({ id: `iss:${i.id}:asg:${asg.at}`, kind: "issue_assigned", tone: "blue", title: `${i.key} assigned to you — ${i.summary}`, detail: `by ${name(asg.by)} · ${i.priority} priority · ${i.status.replace(/_/g, " ")}`, href, at: asg.at, cite: "Jira" });
+      }
+      if (i.dueDate) {
+        const left = Date.parse(i.dueDate) - now;
+        if (left <= 2 * DAY)
+          out.push({ id: `iss:${i.id}:due:${left < 0 ? "over" : "soon"}`, kind: "issue_due", tone: left < 0 ? "red" : "orange", title: `${left < 0 ? "Overdue" : "Due soon"} — ${i.key} ${i.summary}`, detail: `due ${formatDate(i.dueDate, "medium")} · ${i.status.replace(/_/g, " ")}`, href, at: i.dueDate, cite: "Jira" });
+      }
+      const bl = blockers.get(i.id);
+      if (bl?.length)
+        out.push({ id: `iss:${i.id}:blocked:${bl.map((b) => b.id).join(",")}`, kind: "issue_blocked", tone: "orange", title: `Blocked — ${i.key} ${i.summary}`, detail: `waiting on ${bl.map((b) => `${b.key} (${b.status.replace(/_/g, " ")}${b.assigneeId ? `, ${name(b.assigneeId)}` : ""})`).join(", ")}`, href, at: null, cite: "Jira" });
+    }
+  }
 
   return out.sort((a, b) => TONE_RANK[a.tone] - TONE_RANK[b.tone] || (a.at ?? "9999").localeCompare(b.at ?? "9999"));
 }

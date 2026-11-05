@@ -9,6 +9,17 @@ import { cn } from "@/lib/utils";
 
 /* ───────────── Modal dialog ───────────── */
 
+const MODAL_WIDTH = {
+  sm: "w-[min(420px,calc(100vw-32px))]",
+  md: "w-[min(560px,calc(100vw-32px))]",
+  lg: "w-[min(720px,calc(100vw-32px))]",
+  xl: "w-[min(920px,calc(100vw-32px))]",
+} as const;
+
+/**
+ * Dialog. Centred with inset-x-0 + mx-auto (no translate, so the enter animation can't push it sideways); bounded by the
+ * dynamic viewport with the header and footer always visible and the body scrolling; a bottom sheet on phones.
+ */
 export function Modal({
   open,
   onOpenChange,
@@ -17,6 +28,7 @@ export function Modal({
   children,
   footer,
   className,
+  size = "md",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -25,6 +37,7 @@ export function Modal({
   children: React.ReactNode;
   footer?: React.ReactNode;
   className?: string;
+  size?: keyof typeof MODAL_WIDTH;
 }) {
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
@@ -33,23 +46,27 @@ export function Modal({
         <DialogPrimitive.Content
           {...(description ? {} : { "aria-describedby": undefined })}
           className={cn(
-            "fixed left-1/2 top-[12vh] z-50 w-[min(560px,calc(100vw-32px))] -translate-x-1/2 overflow-hidden rounded-xl border border-sg-line bg-sg-card shadow-pop",
-            "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+            "fixed inset-x-0 bottom-0 z-50 mx-auto flex max-h-[calc(100dvh-env(safe-area-inset-top)-12px)] flex-col overflow-hidden rounded-t-xl border border-sg-line bg-sg-card pb-[env(safe-area-inset-bottom)] shadow-pop",
+            "sm:bottom-auto sm:top-[10vh] sm:max-h-[80dvh] sm:rounded-xl sm:pb-0",
+            MODAL_WIDTH[size],
             className,
+            // phones: always a full-width bottom sheet, whatever width the caller asked for
+            "max-sm:w-full max-sm:max-w-none",
+            "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-4 sm:data-[state=open]:slide-in-from-bottom-0 sm:data-[state=open]:zoom-in-95",
           )}
         >
-          <div className="sg-spectrum-rule h-[2px]" />
-          <div className="flex items-start justify-between gap-4 border-b border-sg-line px-5 py-4">
-            <div>
+          <div className="sg-spectrum-rule h-[2px] shrink-0" />
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-sg-line px-5 py-4">
+            <div className="min-w-0">
               <DialogPrimitive.Title className="font-display text-lg font-bold text-sg-white">{title}</DialogPrimitive.Title>
               {description ? <DialogPrimitive.Description className="mt-0.5 text-xs text-sg-muted">{description}</DialogPrimitive.Description> : null}
             </div>
-            <DialogPrimitive.Close className="rounded p-1 text-sg-dim hover:bg-sg-card-2 hover:text-sg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70" aria-label="Close">
+            <DialogPrimitive.Close className="-mr-1 flex size-8 shrink-0 items-center justify-center rounded text-sg-dim hover:bg-sg-card-2 hover:text-sg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-white/70" aria-label="Close">
               <X className="size-4" />
             </DialogPrimitive.Close>
           </div>
-          <div className="max-h-[62vh] overflow-y-auto px-5 py-4">{children}</div>
-          {footer ? <div className="flex items-center justify-end gap-2 border-t border-sg-line bg-sg-bg/40 px-5 py-3">{footer}</div> : null}
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">{children}</div>
+          {footer ? <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-sg-line bg-sg-bg/40 px-5 py-3">{footer}</div> : null}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>

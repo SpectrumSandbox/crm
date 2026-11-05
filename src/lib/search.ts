@@ -14,3 +14,44 @@ export function tokenFilter(value: string, search: string, keywords?: string[]) 
   }
   return score / tokens.length;
 }
+
+/**
+ * Indonesian phone number in E.164 form for matching and WhatsApp links: "0812 8919 8729" / "62812…" / "+62-812-…" →
+ * "+6281289198729". Numbers already in another country's +code keep it. Returns "" when there are no digits.
+ */
+export function normalizePhone(raw: string | null | undefined) {
+  if (!raw) return "";
+  const plus = raw.trim().startsWith("+");
+  let digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  if (plus) return `+${digits}`;
+  if (digits.startsWith("00")) return `+${digits.slice(2)}`;
+  if (digits.startsWith("62")) return `+${digits}`;
+  if (digits.startsWith("0")) digits = digits.slice(1);
+  return `+62${digits}`;
+}
+
+/** Search keywords for a phone number: E.164, bare digits and the local 0… form, so any way of typing it matches. */
+export function phoneKeywords(raw: string | null | undefined): string[] {
+  const e164 = normalizePhone(raw);
+  if (!e164) return [];
+  const digits = e164.slice(1);
+  const out = [e164, digits];
+  if (digits.startsWith("62")) out.push(`0${digits.slice(2)}`);
+  return out;
+}
+
+/**
+ * Top `limit` items for a query using the same ranking as the palette (tokenFilter), best first, plus the total match
+ * count — lets a result group render a bounded list with "See all (n)".
+ */
+export function topMatches<T>(items: readonly T[], search: string, toText: (item: T) => { value: string; keywords?: string[] }, limit = 8) {
+  const scored: { item: T; score: number; at: number }[] = [];
+  items.forEach((item, at) => {
+    const { value, keywords } = toText(item);
+    const score = tokenFilter(value, search, keywords);
+    if (score > 0) scored.push({ item, score, at });
+  });
+  scored.sort((a, b) => b.score - a.score || a.at - b.at);
+  return { items: scored.slice(0, limit).map((s) => s.item), total: scored.length };
+}

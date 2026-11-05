@@ -2,7 +2,6 @@
  * Store slice "CompExtras" (W8 — compensation & people UI). Persisted records live in src/lib/seed-ext/comp.ts:
  *  - ledgerConfirmations: §8.2 each Project Lead confirms the Team Allocation Ledger by the 22nd (or Finance overrides)
  *  - exceptionReviews:    Finance reviews the cycle's exception population before CFO certification (§3.5, §9.1)
- *  - recoveryDeductions:  §9.4 clawback recovery netted from a cycle's project bonus / carried-forward payment
  *  - releaseApprovals:    §8.2 / §13.1 PRC members authorising release of a certified run (maker-checker, quorum)
  *  - cycleNotes:          certification references, late-release reasons
  * Every action writes an AuditEntry (§13.3) and re-checks the §13.2 role of the current user.
@@ -10,7 +9,6 @@
 import type { AuditEntry, EmployeeProfile, GovernanceRole } from "../initiatives/types";
 import type { CrmState } from "../store";
 import { can, rolesOf } from "../access-control";
-import { clawbackAmount } from "../initiatives/engine";
 import type { GetFn, SetFn, Uid } from "./types";
 
 export interface LedgerConfirmation {
@@ -31,21 +29,6 @@ export interface ExceptionReview {
   reviewedById: string;
   at: string;
   note?: string;
-}
-
-export interface RecoveryDeduction {
-  id: string;
-  clawbackId: string;
-  userId: string;
-  initiativeId: string;
-  /** salary cycle whose payroll nets the deduction */
-  month: string;
-  amount: number;
-  source: "bonus" | "carried";
-  recordedById: string;
-  at: string;
-  note: string;
-  cancelledAt?: string | null;
 }
 
 export interface ReleaseApproval {
@@ -75,8 +58,6 @@ export interface CompExtrasSlice {
   unconfirmLedger: (id: string) => void;
   reviewException: (month: string, key: string, label: string, note?: string) => void;
   unreviewException: (id: string) => void;
-  scheduleRecoveryDeduction: (input: Pick<RecoveryDeduction, "clawbackId" | "month" | "amount" | "source" | "note">) => string | null;
-  cancelRecoveryDeduction: (id: string) => void;
   approveRelease: (runId: string, onBehalfOf?: string) => string | null;
   withdrawReleaseApproval: (id: string) => void;
   addCycleNote: (month: string, kind: CycleNote["kind"], text: string) => void;
@@ -90,7 +71,7 @@ export interface CompExtrasSlice {
   updateHrIdentifiers: (userId: string, patch: Pick<EmployeeProfile, "employeeNumber" | "npwp" | "ptkpStatus">) => boolean;
 }
 
-type S0 = CompExtrasSlice & Pick<CrmState, "currentUserId" | "employeeProfiles" | "users" | "initiativeMembers" | "probationOutcomes" | "clawbacks" | "bonusRuns" | "auditLog" | "updateClawback" | "ledgerConfirmations" | "exceptionReviews" | "recoveryDeductions" | "releaseApprovals" | "cycleNotes">;
+type S0 = CompExtrasSlice & Pick<CrmState, "currentUserId" | "employeeProfiles" | "users" | "initiativeMembers" | "probationOutcomes" | "bonusRuns" | "auditLog" | "ledgerConfirmations" | "exceptionReviews" | "releaseApprovals" | "cycleNotes">;
 
 const ROLE_LABEL: Record<GovernanceRole, string> = { prc: "PRC", ceo: "CEO", cfo: "CFO", hr: "HR", finance: "Finance", executive_committee: "ExCo" };
 
@@ -130,32 +111,6 @@ export function createCompExtrasSlice<S extends S0>(set: SetFn<S>, get: GetFn<S>
       if (!r) return;
       set((s) => ({ exceptionReviews: s.exceptionReviews.filter((x) => x.id !== id) }) as Partial<S>);
       audit("run", r.month, "exception review withdrawn", r.key);
-    },
-
-    scheduleRecoveryDeduction: (input) => {
-      if (!can.certify(myRoles())) return null;
-      const c = get().clawbacks.find((x) => x.id === input.clawbackId);
-      if (!c || c.status !== "recovering" || input.amount <= 0) return null;
-      const run = get().bonusRuns.find((r) => r.month === input.month);
-      if (run?.status === "released") return null; // payroll for a released cycle is closed
-      const id = uid("rd");
-      const amount = Math.floor(input.amount);
-      const rec: RecoveryDeduction = { id, clawbackId: c.id, userId: c.userId, initiativeId: c.initiativeId, month: input.month, amount, source: input.source, recordedById: me(), at: now(), note: input.note.trim(), cancelledAt: null };
-      set((s) => ({ recoveryDeductions: [...s.recoveryDeductions, rec] }) as Partial<S>);
-      get().updateClawback(c.id, { recovered: Math.min(clawbackAmount(c), c.recovered + amount), status: c.recovered + amount >= clawbackAmount(c) - 0.5 ? "closed" : c.status, notes: `${c.notes}${c.notes ? "\n" : ""}${now().slice(0, 10)} · Rp${amount.toLocaleString("id-ID")} netted from the ${input.month} ${input.source === "carried" ? "carried-forward payment" : "project bonus"} in payroll${rec.note ? ` — ${rec.note}` : ""}` });
-      audit("clawback", c.id, `recovery of Rp${amount.toLocaleString("id-ID")} scheduled against the ${input.month} payroll (${input.source === "carried" ? "carried-forward amount" : "project bonus"}, §9.4)`, rec.note);
-      return id;
-    },
-    cancelRecoveryDeduction: (id) => {
-      if (!can.certify(myRoles())) return;
-      const d = get().recoveryDeductions.find((x) => x.id === id);
-      if (!d || d.cancelledAt) return;
-      const run = get().bonusRuns.find((r) => r.month === d.month);
-      if (run?.status === "released") return;
-      set((s) => ({ recoveryDeductions: s.recoveryDeductions.map((x) => (x.id === id ? { ...x, cancelledAt: now() } : x)) }) as Partial<S>);
-      const c = get().clawbacks.find((x) => x.id === d.clawbackId);
-      if (c) get().updateClawback(c.id, { recovered: Math.max(0, c.recovered - d.amount), status: c.status === "closed" ? "recovering" : c.status });
-      audit("clawback", d.clawbackId, `scheduled recovery for ${d.month} cancelled`, `Rp${d.amount.toLocaleString("id-ID")}`);
     },
 
     approveRelease: (runId, onBehalfOf) => {

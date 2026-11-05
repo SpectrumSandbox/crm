@@ -14,7 +14,10 @@ import { BadgeCheck, Ban, Check, ChevronDown, ChevronRight, CircleAlert, Clipboa
 import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
 import { PROJECT_ROLES, type EmployeeProfile, type Initiative, type InitiativeMember, type ProjectRole, type TeamAmendment } from "@/lib/initiatives/types";
-import { addBusinessDays, capacityCheck, concurrentNonLeadRoles, effectiveWeight, maxAllocationFactor, memberWeight, participationEligibility, proposalEconomics, splitBonus } from "@/lib/initiatives/engine";
+import { addBusinessDays, capacityCheck, concurrentNonLeadRoles, effectiveWeight, maxAllocationFactor, memberWeight, proposalEconomics, splitBonus } from "@/lib/initiatives/engine";
+import { amendmentIssues, canProceed, currentVoters, hasStarted, isOpenRow, ledgerDate, ledgerExists, NON_LEAD_ROLES, openLeads, overrideRule, OVERRIDE_MAX, prcCanDecide, requiresAmendment, todayWib } from "@/lib/initiatives/team-rules";
+import { CandidateNotices, useCandidateCheck } from "./candidate-notices";
+import { PersonCombobox } from "./person-combobox";
 import { ALLOCATION_FACTORS, POLICY, PROJECT_TYPE_META, ROLE_META, SPECIALIST_GUIDE, SPECIALIST_RANGE } from "@/lib/initiatives/policy";
 import { cn, formatDate, formatIDR, relativeTime, spectrumDot, toDateInput } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -29,112 +32,10 @@ type Dialog = { kind: "override"; memberId: string } | { kind: "removal"; member
 const DAY = 86_400_000;
 const SPECIALIST_OPTIONS = Array.from({ length: Math.round((SPECIALIST_RANGE[1] - SPECIALIST_RANGE[0]) * 10) + 1 }, (_, i) => Math.round((SPECIALIST_RANGE[0] + i * 0.1) * 10) / 10);
 const ASSIGNABLE_ROLES = PROJECT_ROLES.filter((r) => r !== "initiator");
-const NON_LEAD: ProjectRole[] = ["engineer", "secretary", "specialist"];
-/** WIB midnight of a yyyy-mm-dd date — amendments take effect from the start of their effective date. */
-const startOfDay = (d: string) => new Date(`${d}T00:00:00+07:00`).toISOString();
-const todayInput = () => toDateInput(new Date().toISOString());
-
-const isOpenRow = (m: InitiativeMember, now = Date.now()) => !m.leftAt || Date.parse(m.leftAt) > now;
-const hasStarted = (m: InitiativeMember, now = Date.now()) => Date.parse(m.joinedAt) <= now;
-
-/* ───────────────────────── candidate checks (§3, §7.1, §7.3) ───────────────────────── */
-
-interface CandidateCheck {
-  blockers: string[];
-  warnings: string[];
-  probationary: boolean;
-  leadership: boolean;
-  nonLead: number;
-  maxA: number;
-  capacity: ReturnType<typeof capacityCheck>;
-}
-
-function candidateCheck(userId: string, roles: ProjectRole[], allocationFactor: number, initiative: Initiative, ctx: { initiatives: Initiative[]; members: InitiativeMember[]; profiles: EmployeeProfile[] }, effectiveIso?: string): CandidateCheck {
-  const profile = ctx.profiles.find((p) => p.userId === userId);
-  const elig = participationEligibility(profile, effectiveIso);
-  const leadership = roles.some((r) => ROLE_META[r].leadership);
-  const capacity = capacityCheck(userId, initiative, roles, ctx.initiatives, ctx.members);
-  const nonLead = concurrentNonLeadRoles(userId, ctx.initiatives, ctx.members, initiative.id);
-  const maxA = maxAllocationFactor(profile);
-  const blockers = [...elig.blockers];
-  if (leadership && !capacity.ok)
-    blockers.push(`Leadership capacity would reach ${capacity.after.toFixed(2)} of ${POLICY.leadershipCapacity.toFixed(1)} (${capacity.before.toFixed(2)} used + ${capacity.adds.toFixed(2)} for a Type ${initiative.type} lead role) — §7.3`);
-  if (allocationFactor > maxA + 1e-9) blockers.push(`Part-time — allocation factor may not exceed ${maxA} (contracted hours ÷ full-time, §3.1)`);
-  const warnings = elig.warnings.filter((w) => !w.startsWith("Probationary") && !w.startsWith("Part-time") && !w.startsWith("Fixed-term —"));
-  if (profile?.employmentType === "fixed_term_contract" && profile.contractEndDate)
-    warnings.push(
-      Date.parse(profile.contractEndDate) < Date.parse(initiative.endDate)
-        ? `Fixed-term contract ends ${formatDate(profile.contractEndDate, "medium")}, before the contracted end — the ledger row must end then (§3.1)`
-        : `Fixed-term (PKWT) until ${formatDate(profile.contractEndDate, "medium")} — roles only for work periods within the contract (§3.1)`,
-    );
-  else if (profile?.employmentType === "fixed_term_contract") warnings.push("Fixed-term — record the contract end date (§3.1)");
-  if (profile?.employmentType === "part_time") warnings.push(`Part-time — allocation factor capped at ${maxA} (§3.1)`);
-  if (roles.some((r) => NON_LEAD.includes(r)) && nonLead >= POLICY.maxConcurrentNonLeadRoles)
-    warnings.push(`Already holds non-lead roles on ${nonLead} live project${nonLead === 1 ? "" : "s"} — a ${nonLead + 1}th needs line manager and PRC approval (max ${POLICY.maxConcurrentNonLeadRoles}, §7.1)`);
-  return { blockers, warnings: [...new Set(warnings)], probationary: profile?.employmentType === "probationary", leadership, nonLead, maxA, capacity };
-}
-
-function useCandidateCheck(userId: string, roles: ProjectRole[], allocationFactor: number, initiative: Initiative | undefined, effectiveIso?: string): CandidateCheck | null {
-  const initiatives = useCrm((s) => s.initiatives);
-  const members = useCrm((s) => s.initiativeMembers);
-  const profiles = useCrm((s) => s.employeeProfiles);
-  return useMemo(() => (userId && initiative ? candidateCheck(userId, roles, allocationFactor, initiative, { initiatives, members, profiles }, effectiveIso) : null), [userId, roles, allocationFactor, initiative, initiatives, members, profiles, effectiveIso]);
-}
-
-function CandidateNotices({ check, ack, onAck }: { check: CandidateCheck | null; ack: boolean; onAck: (v: boolean) => void }) {
-  if (!check) return null;
-  return (
-    <div className="space-y-2">
-      {check.blockers.length > 0 && (
-        <div className="rounded-lg border border-soft-red/40 bg-soft-red/10 p-2.5 text-xs text-soft-red">
-          <div className="mb-1 flex items-center gap-1.5 font-semibold">
-            <Ban className="size-3.5" /> Cannot take this role
-            <Cite s="3.2" />
-          </div>
-          <ul className="list-disc space-y-0.5 pl-5">
-            {check.blockers.map((b) => (
-              <li key={b}>{b}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {check.warnings.length > 0 && (
-        <div className="rounded-lg border border-soft-yellow/40 bg-soft-yellow/10 p-2.5 text-xs text-soft-yellow">
-          <ul className="space-y-0.5">
-            {check.warnings.map((w) => (
-              <li key={w} className="flex gap-1.5">
-                <TriangleAlert className="mt-0.5 size-3.5 shrink-0" /> {w}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {check.probationary && check.blockers.length === 0 && (
-        <div className="rounded-lg border border-soft-orange/40 bg-soft-orange/10 p-2.5 text-xs text-soft-orange">
-          <div className="mb-1 flex items-center gap-1.5 font-semibold">
-            <CircleAlert className="size-3.5" /> Probationary employee — bonuses held until probation ends
-            <Cite s="11.3" />
-          </div>
-          <p className="text-sg-text">
-            Bonuses are calculated normally but held, then paid as a Probation Completion Bonus within 30 days of confirmation. If employment ends in probation the held balance is paid with final pay, unless dismissed for a serious violation. In a Type C month with a top-up, the share is paid with salary (§8.6). The employee signs Annex C.
-          </p>
-          <label className="mt-2 flex cursor-pointer items-center gap-2 font-semibold text-sg-white">
-            <input type="checkbox" checked={ack} onChange={(e) => onAck(e.target.checked)} className="size-3.5 accent-sg-white" />
-            Annex C probationary acknowledgment signed
-          </label>
-        </div>
-      )}
-      {check.leadership && check.blockers.length === 0 && (
-        <div className="flex items-center gap-2 text-2xs text-sg-dim">
-          Leadership capacity after this role: <span className="sg-num font-semibold text-sg-muted">{check.capacity.after.toFixed(2)}</span> / {POLICY.leadershipCapacity.toFixed(1)}
-          <Cite s="7.3" />
-        </div>
-      )}
-    </div>
-  );
-}
-
-const canProceed = (check: CandidateCheck | null, ack: boolean) => !!check && check.blockers.length === 0 && (!check.probationary || ack);
+const NON_LEAD = NON_LEAD_ROLES;
+/** WIB midnight of a yyyy-mm-dd date — amendments take effect from the start of their effective date (team-rules). */
+const startOfDay = ledgerDate;
+const todayInput = todayWib;
 
 function RoleToggles({ value, onChange, roles, disabledRoles = {} }: { value: ProjectRole[]; onChange: (v: ProjectRole[]) => void; roles: readonly ProjectRole[]; disabledRoles?: Partial<Record<ProjectRole, string>> }) {
   return (
@@ -212,9 +113,9 @@ export function TeamEditor({ initiativeId, mode }: { initiativeId: string; mode:
   const [now] = useState(() => Date.now());
 
   const rows = useMemo(() => allMembers.filter((m) => m.initiativeId === initiativeId), [allMembers, initiativeId]);
-  const ledgerExists = rows.some((m) => m.consent === "accepted" && m.prcApproved);
-  /** setup: a live project whose ledger has not been built yet is set up directly, as at proposal stage (§15.1) */
-  const direct = mode === "proposal" || !ledgerExists;
+  const hasLedger = ledgerExists(allMembers, initiativeId);
+  /** setup: a live project whose ledger has not been built yet is set up directly, as at proposal stage (§15.1) — same rule as /projects (team-rules.requiresAmendment) */
+  const direct = mode === "proposal" || !(initiative ? requiresAmendment(initiative, allMembers) : hasLedger);
 
   const { current, upcoming } = useMemo(() => {
     const rank = (m: InitiativeMember) => (m.roles.includes("project_lead") ? 0 : m.roles.includes("initiator") ? 1 : m.roles.includes("technical_lead") ? 2 : 3);
@@ -278,14 +179,14 @@ export function TeamEditor({ initiativeId, mode }: { initiativeId: string; mode:
               </Button>
             )}
             {!direct && (
-              <Button size="sm" variant="primary" onClick={() => setDialog({ kind: "amend", preset: onTeam ? undefined : { kind: "add", userId: currentUserId } })}>
+              <Button size="sm" variant="primary" onClick={() => setDialog({ kind: "amend" })} title={onTeam ? "Propose a change to the team (§6.8)" : "Propose a change — you are not on this team, so you don't vote on it"}>
                 <Send /> Propose amendment
               </Button>
             )}
           </div>
         </div>
 
-        {mode === "live" && !ledgerExists ? (
+        {mode === "live" && !hasLedger ? (
           <div className="flex items-start gap-2 border-b border-sg-line bg-soft-cyan/5 px-4 py-2 text-2xs text-sg-text">
             <Info className="mt-0.5 size-3.5 shrink-0 text-soft-cyan" />
             <span>
@@ -644,8 +545,10 @@ function RoleEditor({ member, initiative }: { member: InitiativeMember; initiati
   const initiatives = useCrm((s) => s.initiatives);
   const members = useCrm((s) => s.initiativeMembers);
   const updateMember = useCrm((s) => s.updateMember);
+  const removeMember = useCrm((s) => s.removeMember);
   const userMap = useUserMap();
-  const currentLead = members.find((m) => m.initiativeId === initiative.id && isOpenRow(m) && m.id !== member.id && m.roles.includes("project_lead"));
+  const [swap, setSwap] = useState<ProjectRole[] | null>(null);
+  const currentLead = openLeads(members, initiative.id, member.id)[0];
   const company = initiative.origination === "company";
 
   const apply = (next: ProjectRole[]) => {
@@ -661,14 +564,24 @@ function RoleEditor({ member, initiative }: { member: InitiativeMember; initiati
     // one Project Lead per project — moving the role takes it from the current holder (§4.9 delegation; the Initiator keeps 0.5, §6.3)
     if (roles.includes("project_lead") && !member.roles.includes("project_lead") && currentLead) {
       const rest = currentLead.roles.filter((r) => r !== "project_lead");
-      if (!rest.length) return setError(`${userMap.get(currentLead.userId)?.name ?? "The current lead"} holds only the Project Lead role — give them another role first.`);
+      if (!rest.length) {
+        // never two Project Leads (§6.1): the old lead holds only that role, so their row ends — ask first
+        setSwap(roles);
+        return;
+      }
       updateMember(currentLead.id, { roles: rest });
     }
     updateMember(member.id, { roles, specialistWeight: roles.includes("specialist") ? member.specialistWeight ?? ROLE_META.specialist.weight : null });
   };
+  const confirmSwap = () => {
+    if (!swap || !currentLead) return;
+    removeMember(currentLead.id);
+    updateMember(member.id, { roles: swap, specialistWeight: swap.includes("specialist") ? member.specialistWeight ?? ROLE_META.specialist.weight : null });
+    setSwap(null);
+  };
 
   return (
-    <Popover open={open} onOpenChange={(v) => (setOpen(v), setError(null))}>
+    <Popover open={open} onOpenChange={(v) => (setOpen(v), setError(null), setSwap(null))}>
       <PopoverTrigger asChild>
         <button type="button" title="Edit roles" className="rounded p-0.5 text-sg-dim hover:bg-sg-card-2 hover:text-sg-white">
           <Pencil className="size-3" />
@@ -687,6 +600,19 @@ function RoleEditor({ member, initiative }: { member: InitiativeMember; initiati
         <RoleToggles value={member.roles.filter((r) => r !== "initiator")} onChange={apply} roles={ASSIGNABLE_ROLES} />
         {currentLead && !member.roles.includes("project_lead") && <p className="mt-2 text-2xs text-sg-dim">Choosing Project Lead delegates it from {userMap.get(currentLead.userId)?.name} (§4.9).</p>}
         {error && <p className="mt-2 text-2xs font-semibold text-soft-red">{error}</p>}
+        {swap && currentLead ? (
+          <div className="mt-2 rounded-md border border-soft-orange/40 bg-soft-orange/10 p-2 text-2xs text-soft-orange">
+            {userMap.get(currentLead.userId)?.name ?? "The current lead"} holds only the Project Lead role. Making {userMap.get(member.userId)?.name ?? "this member"} Project Lead removes them from the agreement — a project has one Project Lead (§6.1, §4.9).
+            <div className="mt-1.5 flex gap-1.5">
+              <Button size="xs" variant="primary" onClick={confirmSwap}>
+                Move Project Lead
+              </Button>
+              <Button size="xs" variant="ghost" onClick={() => setSwap(null)}>
+                Keep current lead
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </PopoverContent>
     </Popover>
   );
@@ -697,9 +623,9 @@ function RoleEditor({ member, initiative }: { member: InitiativeMember; initiati
 function AddMemberPanel({ initiative, current, setup }: { initiative: Initiative; current: InitiativeMember[]; setup: boolean }) {
   const users = useCrm((s) => s.users);
   const profiles = useCrm((s) => s.employeeProfiles);
-  const currentUserId = useCrm((s) => s.currentUserId);
   const addMember = useCrm((s) => s.addMember);
   const updateMember = useCrm((s) => s.updateMember);
+  const removeMember = useCrm((s) => s.removeMember);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
   const [open, setOpen] = useState(false);
@@ -707,9 +633,11 @@ function AddMemberPanel({ initiative, current, setup }: { initiative: Initiative
   const [roles, setRoles] = useState<ProjectRole[]>(["engineer"]);
   const [specialistWeight, setSpecialistWeight] = useState(ROLE_META.specialist.weight);
   const [allocationFactor, setAllocationFactor] = useState(1);
+  // attestations are never pre-ticked — each is an explicit statement recorded on the agreement (§3.1, §6.7)
   const [manager, setManager] = useState(false);
   const [signed, setSigned] = useState(false);
   const [ack, setAck] = useState(false);
+  const [leadSwap, setLeadSwap] = useState(false);
   const maxA = maxAllocationFactor(profiles.find((p) => p.userId === userId));
   useEffect(() => {
     if (allocationFactor > maxA) setAllocationFactor(maxA);
@@ -718,7 +646,8 @@ function AddMemberPanel({ initiative, current, setup }: { initiative: Initiative
 
   const available = useMemo(() => users.filter((u) => !current.some((m) => m.userId === u.id && m.consent !== "declined")), [users, current]);
   const lead = current.find((m) => m.roles.includes("project_lead"));
-  const ok = canProceed(check, ack) && roles.length > 0;
+  const leadOnlyLead = !!lead && roles.includes("project_lead") && lead.roles.every((r) => r === "project_lead");
+  const ok = canProceed(check, ack) && roles.length > 0 && (!leadOnlyLead || leadSwap);
 
   const reset = () => {
     setUserId("");
@@ -727,23 +656,26 @@ function AddMemberPanel({ initiative, current, setup }: { initiative: Initiative
     setManager(false);
     setSigned(false);
     setAck(false);
+    setLeadSwap(false);
   };
 
   const submit = () => {
     if (!ok) return;
     if (roles.includes("project_lead") && lead) {
       const rest = lead.roles.filter((r) => r !== "project_lead");
+      // one Project Lead per project (§6.1): strip the role, or end the old lead's row when it was their only role
       if (rest.length) updateMember(lead.id, { roles: rest });
+      else removeMember(lead.id);
     }
     addMember(initiative.id, userId, roles, {
       specialistWeight: roles.includes("specialist") ? specialistWeight : null,
       allocationFactor,
       managerApproved: manager,
-      consent: signed || userId === currentUserId ? "accepted" : "pending",
+      consent: signed ? "accepted" : "pending",
       joinedAt: setup ? initiative.startDate : undefined,
       authority: setup ? "Ledger built from existing team records (§15.1)" : "Role and Weight Agreement (Annex D Part 1)",
     });
-    notify(`${userMap.get(userId)?.name ?? "Member"} added${signed || userId === currentUserId ? "" : " — awaiting signature"}`);
+    notify(`${userMap.get(userId)?.name ?? "Member"} added${signed ? "" : " — awaiting signature"}${manager ? "" : " · line manager agreement pending"}`);
     reset();
   };
 
@@ -770,14 +702,7 @@ function AddMemberPanel({ initiative, current, setup }: { initiative: Initiative
       <div className="grid gap-3 md:grid-cols-[240px_minmax(0,1fr)_100px]">
         <div>
           <Label>Employee</Label>
-          <Select value={userId} onChange={(e) => (setUserId(e.target.value), setAck(false))}>
-            <option value="">Choose…</option>
-            {available.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name} — {u.title}
-              </option>
-            ))}
-          </Select>
+          <PersonCombobox value={userId} onChange={(v) => (setUserId(v), setAck(false), setSigned(false), setManager(false))} users={available} ariaLabel="Employee" />
         </div>
         <div>
           <Label>Role(s)</Label>
@@ -789,7 +714,16 @@ function AddMemberPanel({ initiative, current, setup }: { initiative: Initiative
               <Cite s="6.2" />
             </div>
           )}
-          {roles.includes("project_lead") && lead && <p className="mt-1 text-2xs text-sg-dim">Takes over Project Lead from {userMap.get(lead.userId)?.name}.</p>}
+          {roles.includes("project_lead") && lead ? (
+            leadOnlyLead ? (
+              <label className="mt-1 flex cursor-pointer items-start gap-1.5 text-2xs text-soft-orange">
+                <input type="checkbox" checked={leadSwap} onChange={(e) => setLeadSwap(e.target.checked)} className="mt-0.5 size-3.5 accent-sg-white" />
+                {userMap.get(lead.userId)?.name} holds only the Project Lead role — their row ends so the project keeps one Project Lead (§6.1)
+              </label>
+            ) : (
+              <p className="mt-1 text-2xs text-sg-dim">Takes over Project Lead from {userMap.get(lead.userId)?.name}.</p>
+            )
+          ) : null}
         </div>
         <div>
           <Label>Allocation A</Label>
@@ -803,8 +737,8 @@ function AddMemberPanel({ initiative, current, setup }: { initiative: Initiative
           Line manager agreed the time<Cite s="3.1" />
         </label>
         <label className="flex cursor-pointer items-center gap-2">
-          <input type="checkbox" checked={signed || userId === currentUserId} disabled={userId === currentUserId} onChange={(e) => setSigned(e.target.checked)} className="size-3.5 accent-sg-white" />
-          Signed the Role and Weight Agreement
+          <input type="checkbox" checked={signed} onChange={(e) => setSigned(e.target.checked)} className="size-3.5 accent-sg-white" />
+          Signed the Role and Weight Agreement<Cite s="6.7" />
         </label>
         {userId ? (
           <span className="flex items-center gap-3 text-2xs text-sg-dim">
@@ -839,32 +773,9 @@ interface AmendDraft {
   override: string;
   allocationFactor: number;
   consent: boolean;
+  manager: boolean;
   effective: string;
   reason: string;
-}
-
-/** Distinct people with a live, signed, PRC-checked ledger row — each has one vote (§6.8). */
-function currentVoters(rows: InitiativeMember[], initiativeId: string, excludeUserId?: string, now = Date.now()) {
-  return [...new Set(rows.filter((m) => m.initiativeId === initiativeId && m.consent === "accepted" && m.prcApproved && isOpenRow(m, now)).map((m) => m.userId))].filter((u) => u !== excludeUserId);
-}
-
-/** Where an amendment would break the policy — the only grounds on which the PRC may block it (§6.8 step 5). */
-function amendmentIssues(a: Pick<TeamAmendment, "change" | "effectiveDate">, initiative: Initiative, ctx: { initiatives: Initiative[]; members: InitiativeMember[]; profiles: EmployeeProfile[] }) {
-  const issues: string[] = [];
-  const c = a.change;
-  if (c.kind === "remove") {
-    const m = ctx.members.find((x) => x.id === c.memberId);
-    if (m?.roles.includes("project_lead") && !ctx.members.some((x) => x.initiativeId === initiative.id && x.id !== m.id && isOpenRow(x) && x.roles.includes("project_lead"))) issues.push("Leaves the project without a Project Lead (§6.1)");
-    return issues;
-  }
-  const userId = c.kind === "add" ? c.userId : ctx.members.find((x) => x.id === c.memberId)?.userId ?? "";
-  const others = ctx.members.filter((x) => !(c.kind === "change" && x.id === c.memberId));
-  const check = candidateCheck(userId, c.roles, c.allocationFactor, initiative, { ...ctx, members: others }, a.effectiveDate);
-  issues.push(...check.blockers);
-  if (c.roles.some((r) => NON_LEAD.includes(r)) && check.nonLead >= POLICY.maxConcurrentNonLeadRoles) issues.push(`More than ${POLICY.maxConcurrentNonLeadRoles} concurrent non-lead roles without line manager and PRC approval (§7.1)`);
-  if (c.kind === "add" && !c.consent) issues.push("The joining member has not consented to their role, weight and allocation factor (§6.8 step 4)");
-  if (!c.roles.length) issues.push("No role");
-  return issues;
 }
 
 function describeChange(a: TeamAmendment, members: InitiativeMember[], name: (id: string) => string) {
@@ -918,11 +829,13 @@ function AmendmentItem({ a, initiative }: { a: TeamAmendment; initiative: Initia
   const initiatives = useCrm((s) => s.initiatives);
   const profiles = useCrm((s) => s.employeeProfiles);
   const currentUserId = useCrm((s) => s.currentUserId);
-  const voteAmendment = useCrm((s) => s.voteAmendment);
+  const recordAmendmentVote = useCrm((s) => s.recordAmendmentVote);
   const prcDecideAmendment = useCrm((s) => s.prcDecideAmendment);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
   const [note, setNote] = useState("");
+  const [proxyFor, setProxyFor] = useState<string | null>(null);
+  const [evidence, setEvidence] = useState("");
   const [expanded, setExpanded] = useState(a.status === "open" || a.status === "tied");
   const name = (id: string) => userMap.get(id)?.name ?? id;
   const live = a.status === "open" || a.status === "tied";
@@ -938,7 +851,15 @@ function AmendmentItem({ a, initiative }: { a: TeamAmendment; initiative: Initia
   const voteDue = addBusinessDays(a.circulatedAt, POLICY.sla.amendmentVoteBusinessDays);
   const st = AMEND_STATUS[a.status];
 
+  const castVote = (u: string, v: "for" | "against") => {
+    if (u !== currentUserId && evidence.trim().length < 5) return;
+    recordAmendmentVote(a.id, u, v, u === currentUserId ? "" : evidence);
+    notify(u === currentUserId ? `You voted ${v}` : `${name(u)}'s vote (${v}) recorded from their signed form`);
+    setProxyFor(null);
+    setEvidence("");
+  };
   const decide = (outcome: "passed" | "failed" | "blocked") => {
+    if (!prcCanDecide(a)) return;
     if (outcome === "blocked" && (!issues.length || note.trim().length < 5)) return;
     prcDecideAmendment(a.id, outcome, note.trim() || (outcome === "passed" ? "PRC deciding vote for" : "PRC deciding vote against"));
     setNote("");
@@ -999,17 +920,44 @@ function AmendmentItem({ a, initiative }: { a: TeamAmendment; initiative: Initia
                         {u === currentUserId ? <span className="text-2xs text-sg-dim">(you)</span> : null}
                       </span>
                     </td>
-                    <td className="py-1.5">{v ? <Chip color={v.vote === "for" ? "green" : "red"}>{v.vote === "for" ? "For" : "Against"}</Chip> : <span className="text-2xs text-sg-dim">Not voted</span>}</td>
+                    <td className="py-1.5">
+                      {v ? <Chip color={v.vote === "for" ? "green" : "red"}>{v.vote === "for" ? "For" : "Against"}</Chip> : <span className="text-2xs text-sg-dim">Not voted</span>}
+                      {v?.recordedById && v.recordedById !== u ? (
+                        <div className="text-2xs text-sg-dim" title={v.evidence}>
+                          recorded by {name(v.recordedById)}
+                          {v.evidence ? ` · ${v.evidence}` : ""}
+                        </div>
+                      ) : null}
+                    </td>
                     <td className="py-1.5 text-right">
                       {a.status === "open" ? (
-                        <span className="inline-flex gap-1">
-                          <Button size="xs" variant={v?.vote === "for" ? "primary" : "ghost"} onClick={() => (voteAmendment(a.id, "for", u), notify(`${name(u)} voted for`))}>
-                            For
+                        u === currentUserId ? (
+                          <span className="inline-flex gap-1">
+                            <Button size="xs" variant={v?.vote === "for" ? "primary" : "outline"} onClick={() => castVote(u, "for")}>
+                              For
+                            </Button>
+                            <Button size="xs" variant={v?.vote === "against" ? "danger" : "outline"} onClick={() => castVote(u, "against")}>
+                              Against
+                            </Button>
+                          </span>
+                        ) : proxyFor === u ? (
+                          <span className="inline-flex flex-wrap items-center justify-end gap-1">
+                            <Input autoFocus value={evidence} onChange={(e) => setEvidence(e.target.value)} placeholder="Signed form ref / email (required)" aria-label={`Evidence for ${name(u)}'s vote`} className="h-6 w-48 text-2xs" />
+                            <Button size="xs" variant="outline" disabled={evidence.trim().length < 5} onClick={() => castVote(u, "for")}>
+                              For
+                            </Button>
+                            <Button size="xs" variant="outline" disabled={evidence.trim().length < 5} onClick={() => castVote(u, "against")}>
+                              Against
+                            </Button>
+                            <Button size="xs" variant="ghost" onClick={() => (setProxyFor(null), setEvidence(""))}>
+                              Cancel
+                            </Button>
+                          </span>
+                        ) : (
+                          <Button size="xs" variant="ghost" title="Record this member's vote from their signed amendment form (Annex D Part 2) — you are recorded as the person who entered it" onClick={() => (setProxyFor(u), setEvidence(""))}>
+                            Record from signed form…
                           </Button>
-                          <Button size="xs" variant={v?.vote === "against" ? "danger" : "ghost"} onClick={() => (voteAmendment(a.id, "against", u), notify(`${name(u)} voted against`))}>
-                            Against
-                          </Button>
-                        </span>
+                        )
                       ) : (
                         <span className="text-2xs text-sg-dim">{v ? formatDate(v.at, "short") : "—"}</span>
                       )}
@@ -1026,7 +974,7 @@ function AmendmentItem({ a, initiative }: { a: TeamAmendment; initiative: Initia
               ) : null}
             </tbody>
           </table>
-          {a.status === "open" ? <p className="text-2xs text-sg-dim">Votes are recorded on each member&apos;s behalf from their signed amendment form; one vote each, regardless of weight.</p> : null}
+          {a.status === "open" ? <p className="text-2xs text-sg-dim">Members vote for themselves; a vote entered for someone else needs their signed amendment form (Annex D Part 2) as evidence and records who entered it. One vote each, regardless of weight.</p> : null}
 
           {/* PRC */}
           {issues.length ? (
@@ -1091,6 +1039,7 @@ function AmendmentModal({ initiative, current, preset, onClose }: { initiative: 
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
   const live = useMemo(() => current.filter((m) => m.consent !== "declined"), [current]);
+  const candidates = useMemo(() => users.filter((u) => !live.some((m) => m.userId === u.id)), [users, live]);
   const fromMember = (memberId: string): Partial<AmendDraft> => {
     const m = members.find((x) => x.id === memberId);
     return m ? { memberId, roles: m.roles.filter((r) => r !== "initiator" || initiative.origination !== "company"), specialistWeight: m.specialistWeight ?? ROLE_META.specialist.weight, override: m.weightOverride != null ? String(m.weightOverride) : "", allocationFactor: m.allocationFactor ?? 1 } : { memberId };
@@ -1104,6 +1053,7 @@ function AmendmentModal({ initiative, current, preset, onClose }: { initiative: 
     override: "",
     allocationFactor: 1,
     consent: false,
+    manager: false,
     effective: todayInput(),
     reason: "",
     ...preset,
@@ -1112,11 +1062,11 @@ function AmendmentModal({ initiative, current, preset, onClose }: { initiative: 
   const set = (p: Partial<AmendDraft>) => setD((x) => ({ ...x, ...p }));
   const subjectUser = d.kind === "add" ? d.userId : members.find((m) => m.id === d.memberId)?.userId ?? "";
   const override = d.override.trim() ? Number(d.override) : null;
-  const overrideValid = override == null || (Number.isFinite(override) && override > 0 && override <= 10);
+  const ovr = overrideRule({ value: override, standard: memberWeight({ roles: d.roles, specialistWeight: d.roles.includes("specialist") ? d.specialistWeight : null, weightOverride: null }), reason: d.reason, allSigned: false, viaAmendment: true });
   const change: TeamAmendment["change"] | null =
     d.kind === "add"
       ? d.userId
-        ? { kind: "add", userId: d.userId, roles: d.roles, specialistWeight: d.roles.includes("specialist") ? d.specialistWeight : null, weightOverride: override, allocationFactor: d.allocationFactor, consent: d.consent }
+        ? { kind: "add", userId: d.userId, roles: d.roles, specialistWeight: d.roles.includes("specialist") ? d.specialistWeight : null, weightOverride: override, allocationFactor: d.allocationFactor, consent: d.consent, managerApproved: d.manager, weightNote: override != null ? d.reason.trim() : "" }
         : null
       : d.kind === "remove"
         ? d.memberId
@@ -1132,7 +1082,8 @@ function AmendmentModal({ initiative, current, preset, onClose }: { initiative: 
   const errors: string[] = [];
   if (!change) errors.push(d.kind === "add" ? "Choose who joins" : "Choose the member");
   if (d.kind !== "remove" && !d.roles.length) errors.push("Pick at least one role");
-  if (!overrideValid) errors.push("Agreed weight must be between 0 and 10");
+  errors.push(...ovr.errors);
+  if (d.kind === "add" && d.userId && !d.manager) errors.push("Record the line manager's agreement to the joining member's time (§3.1)");
   if (d.kind === "add" && !d.consent) errors.push("The joining member must consent to their role, weight and allocation factor");
   if (!d.effective) errors.push("Set the effective date");
   if (past) errors.push("Amendments apply from their effective date forward — never to past work (§6.8 step 6)");
@@ -1184,16 +1135,7 @@ function AmendmentModal({ initiative, current, preset, onClose }: { initiative: 
         {d.kind === "add" ? (
           <div>
             <Label>Joining member</Label>
-            <Select value={d.userId} onChange={(e) => set({ userId: e.target.value, consent: false })}>
-              <option value="">Choose…</option>
-              {users
-                .filter((u) => !live.some((m) => m.userId === u.id))
-                .map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name} — {u.title}
-                  </option>
-                ))}
-            </Select>
+            <PersonCombobox value={d.userId} onChange={(v) => set({ userId: v, consent: false, manager: false })} users={candidates} ariaLabel="Joining member" />
           </div>
         ) : (
           <div>
@@ -1247,6 +1189,12 @@ function AmendmentModal({ initiative, current, preset, onClose }: { initiative: 
           <label className="flex cursor-pointer items-center gap-2 text-xs text-sg-text">
             <input type="checkbox" checked={d.consent} onChange={(e) => set({ consent: e.target.checked })} className="size-3.5 accent-sg-white" />
             {userMap.get(d.userId)?.name} consents to the role, weight and allocation factor (does not vote on their own admission)
+          </label>
+        ) : null}
+        {d.kind === "add" && d.userId ? (
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-sg-text">
+            <input type="checkbox" checked={d.manager} onChange={(e) => set({ manager: e.target.checked })} className="size-3.5 accent-sg-white" />
+            Their line manager agreed the time in writing<Cite s="3.1" />
           </label>
         ) : null}
 
@@ -1376,11 +1324,12 @@ function OverrideModal({ member, onClose }: { member: InitiativeMember; onClose:
   const standard = memberWeight({ ...member, weightOverride: null });
   const [value, setValue] = useState((member.weightOverride ?? standard).toFixed(2));
   const [reason, setReason] = useState(member.weightNote ?? "");
-  const [allSigned, setAllSigned] = useState(member.weightOverride != null);
+  const [allSigned, setAllSigned] = useState(false);
   const n = Number(value);
-  const valid = Number.isFinite(n) && n > 0 && n <= 10;
+  const rule = overrideRule({ value: Number.isFinite(n) ? n : Number.NaN, standard, reason, allSigned });
+  const valid = Number.isFinite(n) && n > 0 && n <= OVERRIDE_MAX;
   const name = userMap.get(member.userId)?.name ?? "member";
-  const ok = valid && allSigned && reason.trim().length >= 10;
+  const ok = rule.errors.length === 0 && (rule.nonStandard ? true : allSigned);
 
   return (
     <Modal
@@ -1442,7 +1391,13 @@ function OverrideModal({ member, onClose }: { member: InitiativeMember; onClose:
           <input type="checkbox" checked={allSigned} onChange={(e) => setAllSigned(e.target.checked)} className="size-3.5 accent-sg-white" />
           Every initial team member has signed the agreement with this weight
         </label>
-        {!valid && <p className="text-2xs text-soft-red">Enter a weight between 0 and 10.</p>}
+        {!valid ? <p className="text-2xs text-soft-red">Enter a weight above 0 and at most {OVERRIDE_MAX}.</p> : rule.errors.length && (reason || allSigned) ? (
+          <ul className="space-y-0.5 text-2xs text-soft-yellow">
+            {rule.errors.map((e) => (
+              <li key={e}>• {e}</li>
+            ))}
+          </ul>
+        ) : null}
       </div>
     </Modal>
   );

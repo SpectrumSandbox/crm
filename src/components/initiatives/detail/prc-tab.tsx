@@ -4,7 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { BadgeCheck, Ban, ClipboardCheck, ClipboardList, Gavel, Hourglass, Landmark, ListChecks, Lock, Scale, Search, ShieldCheck, SlidersHorizontal, UserCheck } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import { useUserMap } from "@/lib/selectors";
-import type { DecisionOutcome, Initiative, PrcScores } from "@/lib/initiatives/types";
+import type { DecisionOutcome, Initiative, PrcScores, PrcVote } from "@/lib/initiatives/types";
+import { coiGaps, prcMemberIds, recusalReason } from "@/lib/initiatives/team-rules";
+import { useAccess } from "@/lib/access-control";
+import { Undo2 } from "lucide-react";
 import { addBusinessDays, approvalTier, capacityCheck, concurrentNonLeadRoles, deferralTriggers, isLiveMember, maxAllocationFactor, participationEligibility, proposalEconomics, proposalGaps, standardBonusOf } from "@/lib/initiatives/engine";
 import { POLICY, ROLE_META, TIER_META } from "@/lib/initiatives/policy";
 import { cn, formatDate, formatIDR, fromDateInput, toDateInput } from "@/lib/utils";
@@ -142,6 +145,23 @@ function ScreeningCard({ ini }: { ini: Initiative }) {
         </div>
       ) : null}
 
+      {ini.status === "submitted" || ini.status === "screening" ? <ReturnIncomplete ini={ini} /> : null}
+      {ini.returns?.length ? (
+        <div className="mt-4 border-t border-sg-line pt-3">
+          <div className="sg-eyebrow mb-1">Returned as incomplete</div>
+          <ul className="space-y-1.5 text-2xs text-sg-muted">
+            {ini.returns.map((r, i) => (
+              <li key={i}>
+                <span className="text-sg-text">{formatDate(r.at, "datetime")}</span> by {userMap.get(r.byId)?.name ?? r.byId}
+                {r.resubmittedAt ? ` · resubmitted ${formatDate(r.resubmittedAt, "medium")}` : " · awaiting resubmission"}
+                {r.missing.length ? <span className="block">Missing: {r.missing.join("; ")}</span> : null}
+                {r.note ? <span className="block">“{r.note}”</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {ini.status === "screening" ? (
         <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-sg-line pt-4">
           <p className="flex-1 text-xs text-sg-muted">Complete? Move the proposal to evaluation with Finance against §4.4. Incomplete proposals go back to the proposer with a list of what is missing; the clock restarts on resubmission.</p>
@@ -157,6 +177,80 @@ function ScreeningCard({ ini }: { ini: Initiative }) {
         </div>
       ) : null}
     </Card>
+  );
+}
+
+/** §4.5 step 2 — incomplete proposals go back with a list of what is missing; the clock restarts on resubmission. */
+function ReturnIncomplete({ ini }: { ini: Initiative }) {
+  const members = useCrm((s) => s.initiativeMembers);
+  const cois = useCrm((s) => s.coiDeclarations);
+  const returnIncomplete = useCrm((s) => s.returnIncomplete);
+  const notify = useUi((s) => s.notify);
+  const userMap = useUserMap();
+  const access = useAccess();
+  const [open, setOpen] = useState(false);
+  const found = useMemo(() => {
+    const gaps = proposalGaps(ini, members);
+    const c = coiGaps(ini, members, cois);
+    if (c.missing.length) gaps.push(`Annex F conflict-of-interest declaration from ${c.missing.map((u) => userMap.get(u)?.name ?? u).join(", ")} (§12.2)`);
+    return gaps;
+  }, [ini, members, cois, userMap]);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [note, setNote] = useState("");
+  useEffect(() => {
+    if (open) {
+      setPicked(found);
+      setNote("");
+    }
+  }, [open, found]);
+  const valid = picked.length > 0 || note.trim().length >= 10;
+  if (!access.prc && !access.admin) return null;
+  if (!open)
+    return (
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-sg-line pt-3">
+        <span className="flex-1 text-2xs text-sg-dim">{found.length ? `${found.length} completeness gap${found.length === 1 ? "" : "s"} detected.` : "No gaps detected automatically."} Incomplete proposals go back to the proposer with a list of what is missing.</span>
+        <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
+          <Undo2 /> Return incomplete
+        </Button>
+      </div>
+    );
+  return (
+    <div className="mt-3 space-y-2 border-t border-sg-line pt-3">
+      <div className="sg-eyebrow">Return to the proposer — what is missing <Cite s="4.5" /></div>
+      {found.length ? (
+        <ul className="space-y-1">
+          {found.map((g) => (
+            <li key={g}>
+              <label className="flex cursor-pointer items-start gap-2 text-xs text-sg-text">
+                <input type="checkbox" className="mt-0.5 size-3.5 accent-sg-white" checked={picked.includes(g)} onChange={(e) => setPicked((p) => (e.target.checked ? [...p, g] : p.filter((x) => x !== g)))} />
+                {g}
+              </label>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <Field label="Note to the proposer">
+        <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Anything else to fix before resubmitting" />
+      </Field>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={!valid}
+          onClick={() => {
+            returnIncomplete(ini.id, picked, note);
+            notify("Returned to the proposer — the clock restarts on resubmission");
+            setOpen(false);
+          }}
+        >
+          <Undo2 /> Return to proposer
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+        <span className="text-2xs text-sg-dim">The proposal goes back to draft; the tracking number is kept.</span>
+      </div>
+    </div>
   );
 }
 
@@ -250,10 +344,12 @@ function AutomatedChecks({ ini }: { ini: Initiative }) {
   const initiatives = useCrm((s) => s.initiatives);
   const profiles = useCrm((s) => s.employeeProfiles);
   const adjustments = useCrm((s) => s.curveAdjustments);
+  const cois = useCrm((s) => s.coiDeclarations);
   const userMap = useUserMap();
 
   const data = useMemo(() => {
     const gaps = proposalGaps(ini, members);
+    const coi = coiGaps(ini, members, cois);
     const team = members.filter((m) => m.initiativeId === ini.id && isLiveMember(m));
     const eligibility = team.map((m) => ({ m, r: participationEligibility(profiles.find((p) => p.userId === m.userId)) }));
     const leads = team.filter((m) => m.roles.some((r) => ROLE_META[r].leadership)).map((m) => ({ m, c: capacityCheck(m.userId, ini, m.roles, initiatives, members) }));
@@ -263,8 +359,8 @@ function AutomatedChecks({ ini }: { ini: Initiative }) {
     const allocation = team.filter((m) => (m.allocationFactor ?? 1) > maxAllocationFactor(profiles.find((p) => p.userId === m.userId)) + 1e-9);
     const unsigned = team.filter((m) => m.consent !== "accepted" || !m.managerApproved);
     const tier = approvalTier(ini);
-    return { gaps, eligibility, leads, econ, deferral, nonLead, allocation, unsigned, tier };
-  }, [ini, members, initiatives, profiles, adjustments]);
+    return { gaps, eligibility, leads, econ, deferral, nonLead, allocation, unsigned, tier, coi };
+  }, [ini, members, initiatives, profiles, adjustments, cois]);
 
   const ineligible = data.eligibility.filter((e) => !e.r.ok);
   const warned = data.eligibility.filter((e) => e.r.ok && e.r.warnings.length);
@@ -294,6 +390,13 @@ function AutomatedChecks({ ini }: { ini: Initiative }) {
 
       <CheckRow ok={data.unsigned.length === 0} title={data.unsigned.length ? `Role and Weight Agreement — ${data.unsigned.length} not signed or without line manager agreement` : "Role and Weight Agreement signed, line managers agreed"}>
         {data.unsigned.length ? data.unsigned.map((m) => `${name(m.userId)}${m.consent !== "accepted" ? " (not signed)" : ""}${!m.managerApproved ? " (no line manager agreement)" : ""}`).join("; ") : "Every member signed Annex D Part 1."} <Cite s="6.7" />
+      </CheckRow>
+
+      <CheckRow ok={data.coi.missing.length === 0 && data.coi.undecided.length === 0} title={data.coi.missing.length ? `Conflict of interest — ${data.coi.missing.length} not declared` : data.coi.undecided.length ? `Conflict of interest — ${data.coi.undecided.length} awaiting a PRC decision` : "Conflict of interest — every member declared"}>
+        {data.coi.missing.length ? `Annex F missing for ${data.coi.missing.map(name).join(", ")}. ` : ""}
+        {data.coi.undecided.length ? `Declared conflicts for ${data.coi.undecided.map(name).join(", ")} — the PRC decides how to manage them (Team tab). ` : ""}
+        {!data.coi.missing.length && !data.coi.undecided.length ? "Annex F on file for the whole team. " : ""}
+        <Cite s="12.2" />
       </CheckRow>
 
       <CheckRow ok={ineligible.length === 0} warn={warned.length > 0} title={ineligible.length ? `Eligibility — ${ineligible.length} not eligible` : `Eligibility — ${data.eligibility.length} member${data.eligibility.length === 1 ? "" : "s"} eligible`}>
@@ -356,15 +459,38 @@ function AutomatedChecks({ ini }: { ini: Initiative }) {
 
 /* ───────────── (c) decision ───────────── */
 
-function JiraProjectSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+/** "" = not chosen yet, "none" = don't create an epic, otherwise a Jira project id. */
+const NO_EPIC = "none";
+
+/** Jira project that already carries work for this initiative's deal or client (via CRM ↔ Jira links), if any. */
+function useSuggestedJiraProject(ini: Initiative) {
+  const crossLinks = useCrm((s) => s.crossLinks);
+  const issues = useCrm((s) => s.issues);
+  const epics = useCrm((s) => s.epics);
+  return useMemo(() => {
+    if (ini.jiraProjectId) return ini.jiraProjectId;
+    const targets = new Set([ini.dealId, ini.companyId].filter(Boolean) as string[]);
+    if (!targets.size) return "";
+    for (const l of crossLinks) {
+      if (!targets.has(l.crmId)) continue;
+      const pid = l.agileType === "epic" ? epics.find((e) => e.id === l.agileId)?.projectId : issues.find((i) => i.id === l.agileId)?.projectId;
+      if (pid) return pid;
+    }
+    return "";
+  }, [ini.jiraProjectId, ini.dealId, ini.companyId, crossLinks, issues, epics]);
+}
+
+function JiraProjectSelect({ value, onChange, suggested }: { value: string; onChange: (v: string) => void; suggested?: string }) {
   const projects = useCrm((s) => s.projects);
   return (
-    <Field label="Jira project for the delivery epic" hint="The PMO opens the project: an epic and a kickoff task with Finance & PMO (§4.5).">
-      <Select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">Don’t create an epic</option>
+    <Field label="Jira project for the delivery epic (required choice)" hint={value === "" ? "Choose where the PMO opens the project — an epic and a kickoff task with Finance & PMO (§4.5) — or don't create one." : value === NO_EPIC ? "No epic is created; link a Jira project later from the register." : suggested && value === suggested ? "Suggested from the linked deal / client." : "The PMO opens the project: an epic and a kickoff task with Finance & PMO (§4.5)."}>
+      <Select value={value} onChange={(e) => onChange(e.target.value)} className={value === "" ? "border-soft-yellow/60" : undefined}>
+        <option value="">Choose…</option>
+        <option value={NO_EPIC}>Don’t create an epic</option>
         {projects.map((p) => (
           <option key={p.id} value={p.id}>
             {p.key} · {p.name}
+            {p.id === suggested ? " (suggested)" : ""}
           </option>
         ))}
       </Select>
@@ -372,18 +498,25 @@ function JiraProjectSelect({ value, onChange }: { value: string; onChange: (v: s
   );
 }
 
+const VOTE_OPTIONS: { value: PrcVote["vote"]; label: string }[] = [
+  { value: "for", label: "For" },
+  { value: "against", label: "Against" },
+  { value: "abstain", label: "Abstain" },
+  { value: "absent", label: "Absent" },
+];
+
 const DEFERRAL_PCTS = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3];
 
 function DecisionForm({ ini }: { ini: Initiative }) {
   const decideInitiative = useCrm((s) => s.decideInitiative);
   const profiles = useCrm((s) => s.employeeProfiles);
   const currentUserId = useCrm((s) => s.currentUserId);
-  const projects = useCrm((s) => s.projects);
   const adjustments = useCrm((s) => s.curveAdjustments);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
   const me = userMap.get(currentUserId);
   const isCeo = !!profiles.find((p) => p.userId === currentUserId)?.governanceRoles?.includes("ceo");
+  const access = useAccess();
   const tier = useMemo(() => approvalTier(ini), [ini]);
   const econ = useMemo(() => proposalEconomics(ini, adjustments), [ini, adjustments]);
 
@@ -391,15 +524,22 @@ function DecisionForm({ ini }: { ini: Initiative }) {
   const [rationale, setRationale] = useState("");
   const [conditions, setConditions] = useState("");
   const [conditionsDue, setConditionsDue] = useState(() => toDateInput(addBusinessDays(new Date().toISOString(), 10)));
-  const [votesFor, setVotesFor] = useState(tier.tier === 1 ? "2" : "3");
-  const [votesAgainst, setVotesAgainst] = useState("0");
+  const users = useCrm((s) => s.users);
+  const members = useCrm((s) => s.initiativeMembers);
+  const cois = useCrm((s) => s.coiDeclarations);
+  // §13.1 every PRC member's vote is recorded; members on the team or with a declared conflict are recused
+  const prc = useMemo(() => prcMemberIds(profiles).map((id) => ({ id, recused: recusalReason(id, ini, members, cois), roles: profiles.find((p) => p.userId === id)?.governanceRoles ?? [] })), [profiles, ini, members, cois]);
+  const [votes, setVotes] = useState<Record<string, PrcVote["vote"] | "">>({});
+  const [casting, setCasting] = useState(false);
+  const [delegateId, setDelegateId] = useState("");
   const [veto, setVeto] = useState(false);
   const [highRisk, setHighRisk] = useState(ini.highRisk);
   const [deferralPct, setDeferralPct] = useState(Math.min(POLICY.deferral.maxPct, ini.deferralPct ?? POLICY.deferral.defaultPct) || POLICY.deferral.defaultPct);
   const [deferralMonths, setDeferralMonths] = useState(Math.min(POLICY.deferral.maxMonths, Math.max(POLICY.deferral.minMonths, ini.deferralMonths || POLICY.deferral.minMonths)));
   const [standardBonus, setStandardBonus] = useState(String(standardBonusOf(ini)));
   const [rateChecked, setRateChecked] = useState(false);
-  const [jiraProjectId, setJiraProjectId] = useState(() => ini.jiraProjectId ?? projects[0]?.id ?? "");
+  const suggestedJira = useSuggestedJiraProject(ini);
+  const [jiraProjectId, setJiraProjectId] = useState(suggestedJira);
   const [tried, setTried] = useState(false);
 
   const effective: DecisionOutcome = veto ? "rejected" : outcome;
@@ -409,15 +549,30 @@ function DecisionForm({ ini }: { ini: Initiative }) {
   const sb = Math.floor(Number(standardBonus.replace(/\D/g, "")) || 0);
 
   const errors: string[] = [];
+  if (!access.prc) errors.push("Only a PRC member can record the PRC decision (§13.1)");
   if (!rationale.trim()) errors.push("Reasons are required");
   if (effective === "conditional" && !conditions.trim()) errors.push("State the conditions for conditional approval");
   if (effective === "conditional" && !conditionsDue) errors.push("Set a deadline for the conditions");
   if (approving && econ.rate.source === "curve" && !rateChecked) errors.push("Confirm Finance checked the expected case that sets the rate");
   if (approving && ini.type === "C" && sb < POLICY.typeCMinimum.standardBonus) errors.push("Type C standard bonus must be at least Rp1,000,000 a month");
-  if (tier.tier === 3 && !isCeo && approving) errors.push("Tier 3 is decided by the full PRC with the CEO present");
-  const vf = Math.max(0, Math.floor(Number(votesFor) || 0));
-  const va = Math.max(0, Math.floor(Number(votesAgainst) || 0));
-  const voteMismatch = !veto && approving && va >= vf;
+  const eligible = prc.filter((m) => !m.recused);
+  const unrecorded = eligible.filter((m) => !votes[m.id]);
+  const present = eligible.filter((m) => votes[m.id] === "for" || votes[m.id] === "against" || votes[m.id] === "abstain");
+  const vf = eligible.filter((m) => votes[m.id] === "for").length;
+  const va = eligible.filter((m) => votes[m.id] === "against").length;
+  const chair = prc.find((m) => m.roles.includes("ceo"));
+  const chairPresent = !!chair && !chair.recused && present.some((m) => m.id === chair.id);
+  const financePresent = present.some((m) => m.roles.includes("cfo") || m.roles.includes("finance")) || !!delegateId;
+  const quorumNeed = tier.tier === 1 ? 2 : Math.floor(prc.length / 2) + 1;
+  const quorumOk = present.length >= quorumNeed && financePresent;
+  const tie = vf === va && vf > 0;
+  const majorityFor = vf > va || (tie && casting && chairPresent && votes[chair!.id] === "for");
+  if (unrecorded.length) errors.push(`Record the vote of ${unrecorded.map((m) => userMap.get(m.id)?.name ?? m.id).join(", ")} (or mark absent) — §13.1`);
+  if (!unrecorded.length && !quorumOk) errors.push(tier.tier === 1 ? "Tier 1 needs two PRC members present, one from Finance (§4.2)" : `No quorum: ${present.length} of ${prc.length} present, needs ${quorumNeed} including the CFO or a named Finance delegate (§13.1)`);
+  if (!veto && approving && !unrecorded.length && !majorityFor) errors.push(tie ? "Tied vote — the chair's casting vote is needed to approve (§13.1)" : "Approval needs more votes for than against (§13.1)");
+  if (tier.tier === 3 && approving && !chairPresent) errors.push("Tier 3 is decided by the full PRC with the CEO present (§4.2)");
+  if (tier.tier === 3 && approving && present.length < eligible.length) errors.push("Tier 3 needs the full PRC — every member not recused present (§4.2)");
+  if (effective === "approved" && jiraProjectId === "") errors.push("Choose the Jira project for the delivery epic, or “Don’t create an epic”");
 
   const submit = () => {
     setTried(true);
@@ -432,8 +587,11 @@ function DecisionForm({ ini }: { ini: Initiative }) {
         votesFor: vf,
         votesAgainst: va,
         ceoVeto: veto,
+        votes: prc.map((m) => ({ userId: m.id, vote: m.recused ? "absent" : ((votes[m.id] || "absent") as PrcVote["vote"]), recused: !!m.recused, reason: m.recused ?? undefined })),
+        castingVote: tie && casting && chairPresent,
+        quorum: { present: present.length, members: prc.length, finance: financePresent, financeDelegateId: delegateId || null },
       },
-      { jiraProjectId: effective === "approved" && jiraProjectId ? jiraProjectId : undefined, highRisk, deferralMonths, deferralPct: willDefer ? deferralPct : 0, standardBonus: ini.type === "C" ? sb : undefined },
+      { jiraProjectId: effective === "approved" && jiraProjectId && jiraProjectId !== NO_EPIC ? jiraProjectId : undefined, highRisk, deferralMonths, deferralPct: willDefer ? deferralPct : 0, standardBonus: ini.type === "C" ? sb : undefined },
     );
     notify(veto ? "CEO veto recorded — proposal rejected" : `PRC decision recorded: ${outcomeLabel[effective]}${effective === "approved" && econ.rate.source !== "provisional" ? ` · rate ${(econ.rate.rate * 100).toFixed(3)}% fixed` : ""}`);
   };
@@ -506,25 +664,80 @@ function DecisionForm({ ini }: { ini: Initiative }) {
           </div>
         ) : null}
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Field label="Votes for">
-            <Input type="number" min={0} value={votesFor} onChange={(e) => setVotesFor(e.target.value)} />
-          </Field>
-          <Field label="Votes against">
-            <Input type="number" min={0} value={votesAgainst} onChange={(e) => setVotesAgainst(e.target.value)} />
-          </Field>
-          <div className="col-span-2 flex items-end">
+        <div className="rounded-md border border-sg-line p-3">
+          <div className="sg-eyebrow mb-2 flex items-center">
+            PRC votes <Cite s="13.1" />
+            <span className="ml-auto normal-case tracking-normal text-sg-dim">
+              for {vf} · against {va} · present {present.length}/{prc.length} · quorum {quorumNeed}
+            </span>
+          </div>
+          {prc.length ? (
+            <ul className="divide-y divide-sg-line/60">
+              {prc.map((m) => {
+                const u = userMap.get(m.id);
+                return (
+                  <li key={m.id} className="flex flex-wrap items-center gap-2 py-1.5 text-xs">
+                    <Avatar user={u} size="xs" />
+                    <span className="min-w-[140px] flex-1 text-sg-text">
+                      {u?.name ?? m.id}
+                      <span className="text-2xs text-sg-dim"> · {m.roles.filter((r) => r !== "prc").map((r) => r.toUpperCase()).join(" · ") || "member"}</span>
+                    </span>
+                    {m.recused ? (
+                      <span className="text-2xs font-semibold text-soft-orange">Recused — {m.recused}</span>
+                    ) : (
+                      <span role="radiogroup" aria-label={`Vote of ${u?.name ?? m.id}`} className="flex rounded border border-sg-line p-0.5">
+                        {VOTE_OPTIONS.map((o) => (
+                          <button
+                            key={o.value}
+                            type="button"
+                            role="radio"
+                            aria-checked={votes[m.id] === o.value}
+                            onClick={() => setVotes((v) => ({ ...v, [m.id]: o.value }))}
+                            className={cn("h-6 rounded-sm px-2 text-2xs font-semibold", votes[m.id] === o.value ? (o.value === "for" ? "bg-soft-green text-sg-bg" : o.value === "against" ? "bg-soft-red text-sg-bg" : "bg-sg-card-3 text-sg-white") : "text-sg-muted hover:text-sg-white")}
+                          >
+                            {o.label}
+                          </button>
+                        ))}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="text-xs text-soft-orange">No PRC members in the HR records — add the “prc” governance role.</p>
+          )}
+          {!prc.some((m) => !m.recused && (m.roles.includes("cfo") || m.roles.includes("finance"))) || !financePresent ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-2xs text-sg-muted">
+              Named Finance delegate (when the CFO is absent or recused)
+              <Select value={delegateId} onChange={(e) => setDelegateId(e.target.value)} wrapperClassName="w-56" className="h-7 text-xs" aria-label="Finance delegate">
+                <option value="">—</option>
+                {users
+                  .filter((u) => !prc.some((m) => m.id === u.id && m.recused))
+                  .map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name} — {u.title}
+                    </option>
+                  ))}
+              </Select>
+            </div>
+          ) : null}
+          {tie && chairPresent ? (
+            <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-sg-text">
+              <input type="checkbox" checked={casting} onChange={(e) => setCasting(e.target.checked)} className="accent-white" /> Tied — record the chair&apos;s casting vote ({votes[chair!.id] === "for" ? "for" : "as cast"})
+            </label>
+          ) : null}
+          <div className="mt-2">
             {isCeo ? (
               <label className={cn("flex w-full cursor-pointer items-center gap-2 rounded-md border px-2.5 py-2 text-xs", veto ? "border-soft-red/60 bg-soft-red/10 text-soft-red" : "border-sg-line text-sg-text hover:border-sg-line-2")}>
                 <input type="checkbox" checked={veto} onChange={(e) => setVeto(e.target.checked)} className="accent-white" />
-                <Ban className="size-3.5" /> CEO veto — forces rejection
+                <Ban className="size-3.5" /> CEO veto — forces rejection; recorded with reasons and reported to the Board each quarter
               </label>
             ) : (
               <span className="text-2xs text-sg-dim">Only the CEO may exercise a veto.</span>
             )}
           </div>
         </div>
-        {voteMismatch ? <p className="-mt-2 text-2xs text-soft-yellow">Votes against are not fewer than votes for — check the tally before recording an approval.</p> : null}
 
         {approving ? (
           <div className="rounded-md border border-sg-line p-3">
@@ -580,7 +793,7 @@ function DecisionForm({ ini }: { ini: Initiative }) {
           </div>
         ) : null}
 
-        {effective === "approved" ? <JiraProjectSelect value={jiraProjectId} onChange={setJiraProjectId} /> : null}
+        {effective === "approved" ? <JiraProjectSelect value={jiraProjectId} onChange={setJiraProjectId} suggested={suggestedJira} /> : null}
 
         {tried && errors.length ? (
           <ul className="space-y-0.5 text-xs text-soft-red">
@@ -605,9 +818,9 @@ function DecisionForm({ ini }: { ini: Initiative }) {
 
 function ConditionsCard({ ini }: { ini: Initiative }) {
   const confirmConditions = useCrm((s) => s.confirmConditions);
-  const projects = useCrm((s) => s.projects);
   const notify = useUi((s) => s.notify);
-  const [jiraProjectId, setJiraProjectId] = useState(() => (ini.epicId ? "" : ini.jiraProjectId ?? projects[0]?.id ?? ""));
+  const suggestedJira = useSuggestedJiraProject(ini);
+  const [jiraProjectId, setJiraProjectId] = useState(suggestedJira);
   const due = ini.decision?.conditionsDueAt;
 
   return (
@@ -619,11 +832,12 @@ function ConditionsCard({ ini }: { ini: Initiative }) {
         </div>
       ) : null}
       <div className="mt-4 grid grid-cols-1 items-end gap-3 border-t border-sg-line pt-4 sm:grid-cols-[1fr_auto]">
-        {ini.epicId ? <p className="text-xs text-sg-muted">A delivery epic is already linked.</p> : <JiraProjectSelect value={jiraProjectId} onChange={setJiraProjectId} />}
+        {ini.epicId ? <p className="text-xs text-sg-muted">A delivery epic is already linked.</p> : <JiraProjectSelect value={jiraProjectId} onChange={setJiraProjectId} suggested={suggestedJira} />}
         <Button
           variant="primary"
+          disabled={!ini.epicId && jiraProjectId === ""}
           onClick={() => {
-            confirmConditions(ini.id, { jiraProjectId: jiraProjectId || undefined });
+            confirmConditions(ini.id, { jiraProjectId: jiraProjectId && jiraProjectId !== NO_EPIC ? jiraProjectId : undefined });
             notify("Conditions confirmed by the PMO — project code issued");
           }}
         >
@@ -667,6 +881,23 @@ function DecisionRecord({ ini }: { ini: Initiative }) {
           <KV label="CEO veto">{d.ceoVeto ? <span className="text-soft-red">Yes</span> : "No"}</KV>
           <KV label="High risk">{ini.highRisk ? <span className="text-soft-orange">Yes</span> : "No"}</KV>
         </div>
+        {d.votes?.length ? (
+          <div className="border-t border-sg-line pt-2">
+            <div className="sg-eyebrow mb-1">
+              Recorded votes{d.quorum ? ` · ${d.quorum.present} of ${d.quorum.members} present${d.quorum.finance ? ", Finance present" : ""}${d.quorum.financeDelegateId ? ` (delegate ${userMap.get(d.quorum.financeDelegateId)?.name ?? d.quorum.financeDelegateId})` : ""}` : ""}
+              {d.castingVote ? " · chair's casting vote" : ""}
+            </div>
+            <ul className="grid gap-x-6 gap-y-0.5 text-xs sm:grid-cols-2">
+              {d.votes.map((v) => (
+                <li key={v.userId} className="flex items-center gap-1.5">
+                  <Avatar user={userMap.get(v.userId)} size="xs" />
+                  <span className="text-sg-text">{userMap.get(v.userId)?.name ?? v.userId}</span>
+                  <span className={cn("text-2xs font-semibold", v.recused ? "text-soft-orange" : v.vote === "for" ? "text-soft-green" : v.vote === "against" ? "text-soft-red" : "text-sg-dim")}>{v.recused ? `recused${v.reason ? ` — ${v.reason}` : ""}` : v.vote}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         {d.outcome === "approved" || d.outcome === "conditional" ? (
           <div className="grid grid-cols-1 gap-x-6 border-t border-sg-line pt-2 sm:grid-cols-2">
             <KV label="Type · x · rate">

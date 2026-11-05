@@ -4,8 +4,11 @@ import { useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { useCrm, useUi } from "@/lib/store";
 import type { Initiative } from "@/lib/initiatives/types";
-import { cycleMonth, monthEnd, monthKey, monthStart, netRevenue, paymentDate, projectCycles, projectPayments } from "@/lib/initiatives/engine";
-import { cn, formatDate, formatIDR, fromDateInput, toDateInput } from "@/lib/utils";
+import { workPeriodFromDates, cycleMonth, monthEnd, monthKey, monthStart, netRevenue, paymentDate, projectCycles, projectPayments } from "@/lib/initiatives/engine";
+import { cn, formatDate, formatIDR } from "@/lib/utils";
+import { ledgerDate, parseAmount, todayWib, wibDay } from "@/lib/initiatives/team-rules";
+import { paymentLocked } from "@/lib/slices/governance";
+import type { RevenueEntry } from "@/lib/initiatives/types";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/overlays";
@@ -19,10 +22,13 @@ export function PaymentsCard({ ini }: { ini: Initiative }) {
   const members = useCrm((s) => s.initiativeMembers);
   const profiles = useCrm((s) => s.employeeProfiles);
   const adjustments = useCrm((s) => s.curveAdjustments);
-  const deleteRevenueEntry = useCrm((s) => s.deleteRevenueEntry);
+  const runs = useCrm((s) => s.bonusRuns);
+  const deletePayment = useCrm((s) => s.deletePayment);
+  const restorePayment = useCrm((s) => s.restorePayment);
   const updateRevenueEntry = useCrm((s) => s.updateRevenueEntry);
   const notify = useUi((s) => s.notify);
   const [adding, setAdding] = useState(false);
+  const [confirming, setConfirming] = useState<RevenueEntry | null>(null);
 
   const mine = useMemo(() => entries.filter((e) => e.initiativeId === ini.id).sort((a, b) => (a.collectedAt ?? a.month).localeCompare(b.collectedAt ?? b.month)), [entries, ini.id]);
   const pools = useMemo(() => new Map(projectPayments(ini, entries, adjustments).map((p) => [p.entry.id, p])), [ini, entries, adjustments]);
@@ -66,7 +72,7 @@ export function PaymentsCard({ ini }: { ini: Initiative }) {
                       {formatDate(e.workPeriodStart ?? monthStart(e.month), "short")} – {formatDate(e.workPeriodEnd ?? monthEnd(e.month), "short")}
                       {e.note ? <div className="truncate text-2xs text-sg-dim">{e.note}</div> : null}
                     </td>
-                    <td className="px-2 py-2 text-xs">
+                    <td className="whitespace-nowrap px-2 py-2 text-xs">
                       {e.received ? (
                         <span className="text-soft-green">Collected {e.collectedAt ? formatDate(e.collectedAt, "short") : ""}</span>
                       ) : (
@@ -83,23 +89,21 @@ export function PaymentsCard({ ini }: { ini: Initiative }) {
                         </button>
                       )}
                     </td>
-                    <td className="sg-num px-2 py-2 text-right text-sg-white">{formatIDR(e.revenue)}</td>
-                    <td className="sg-num px-2 py-2 text-right text-sg-muted">{formatIDR(e.directCosts)}</td>
-                    <td className="sg-num px-2 py-2 text-right text-sg-muted">{formatIDR(n.net)}</td>
-                    <td className="sg-num px-2 py-2 text-right font-semibold text-sg-white">{p ? formatIDR(p.pool) : "—"}</td>
+                    <td className="sg-num whitespace-nowrap px-2 py-2 text-right text-sg-white">{formatIDR(e.revenue)}</td>
+                    <td className="sg-num whitespace-nowrap px-2 py-2 text-right text-sg-muted">{formatIDR(e.directCosts)}</td>
+                    <td className="sg-num whitespace-nowrap px-2 py-2 text-right text-sg-muted">{formatIDR(n.net)}</td>
+                    <td className="sg-num whitespace-nowrap px-2 py-2 text-right font-semibold text-sg-white">{p ? formatIDR(p.pool) : "—"}</td>
                     <td className="px-4 py-2 text-xs text-sg-muted">{e.received ? formatDate(paymentDate(p?.month ?? e.month), "short") : "On collection"}</td>
                     <td className="pr-3">
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        aria-label="Delete payment"
-                        onClick={() => {
-                          deleteRevenueEntry(e.id);
-                          notify("Payment removed");
-                        }}
-                      >
-                        <Trash2 />
-                      </Button>
+                      {paymentLocked(e, runs) ? (
+                        <span className="text-2xs text-sg-dim" title={`The ${e.month} cycle has been released — record a correcting payment instead; it flows to the next cycle (§8.5)`}>
+                          Released
+                        </span>
+                      ) : (
+                        <Button size="icon-sm" variant="ghost" aria-label="Delete payment" onClick={() => setConfirming(e)}>
+                          <Trash2 />
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -153,6 +157,38 @@ export function PaymentsCard({ ini }: { ini: Initiative }) {
         </div>
       ) : null}
       <PaymentDialog ini={ini} open={adding} onOpenChange={setAdding} />
+      <Modal
+        open={!!confirming}
+        onOpenChange={(o) => !o && setConfirming(null)}
+        title="Delete this payment?"
+        description="The deletion is recorded in the audit trail with the old values (§13.3). Payments in a released cycle can't be deleted — record a correction instead."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirming(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                if (!confirming) return;
+                const removed = deletePayment(confirming.id);
+                setConfirming(null);
+                if (removed) notify("Payment deleted", { label: "Undo", run: () => restorePayment(removed) });
+                else notify("This payment's cycle has been released — it can't be deleted");
+              }}
+            >
+              <Trash2 /> Delete payment
+            </Button>
+          </>
+        }
+      >
+        {confirming ? (
+          <p className="text-sm text-sg-text">
+            {formatIDR(confirming.revenue, "full")} revenue · cycle {confirming.month} · {confirming.received ? "collected" : "not yet collected"}
+            {confirming.note ? ` · ${confirming.note}` : ""}
+          </p>
+        ) : null}
+      </Modal>
     </section>
   );
 }
@@ -160,23 +196,27 @@ export function PaymentsCard({ ini }: { ini: Initiative }) {
 function PaymentDialog({ ini, open, onOpenChange }: { ini: Initiative; open: boolean; onOpenChange: (o: boolean) => void }) {
   const addRevenueEntry = useCrm((s) => s.addRevenueEntry);
   const notify = useUi((s) => s.notify);
-  const today = toDateInput(new Date().toISOString());
+  const today = todayWib();
   const [revenue, setRevenue] = useState("");
   const [costs, setCosts] = useState("");
   const [basis, setBasis] = useState<"milestone" | "recognized">("milestone");
   const [collected, setCollected] = useState(true);
   const [collectedAt, setCollectedAt] = useState(today);
-  const [from, setFrom] = useState(toDateInput(ini.startDate));
+  const [from, setFrom] = useState(wibDay(ini.startDate));
   const [to, setTo] = useState(today);
   const [note, setNote] = useState("");
-  const rev = Number(revenue) * M;
-  const cost = Number(costs || "0") * M;
-  const valid = rev > 0 && Number.isFinite(cost) && from && to && to >= from && (!collected || !!collectedAt);
-  const n = netRevenue(rev || 0, cost || 0);
+  // Rp million, Indonesian or English number format ("1.500" = 1,500; "1,5" = 1.5)
+  const revM = parseAmount(revenue);
+  const costM = parseAmount(costs);
+  const rev = Number.isFinite(revM) ? revM * M : Number.NaN;
+  const cost = Number.isFinite(costM) ? costM * M : Number.NaN;
+  const valid = rev > 0 && Number.isFinite(cost) && cost >= 0 && from && to && to >= from && (!collected || !!collectedAt);
+  const n = netRevenue(Number.isFinite(rev) ? rev : 0, Number.isFinite(cost) ? cost : 0);
   const save = () => {
     if (!valid) return;
-    const cIso = collected ? fromDateInput(collectedAt) : null;
-    addRevenueEntry({ initiativeId: ini.id, month: cIso ? cycleMonth(cIso) : monthKey(fromDateInput(to)), revenue: rev, directCosts: cost, basis, received: collected, collectedAt: cIso, workPeriodStart: fromDateInput(from), workPeriodEnd: new Date(Date.parse(fromDateInput(to)) + 86_399_000).toISOString(), note });
+    const cIso = collected ? new Date(`${collectedAt}T12:00:00+07:00`).toISOString() : null;
+    // the work period runs 00:00 WIB on "from" to 23:59:59.999 WIB on "to" (§6.5)
+    addRevenueEntry({ initiativeId: ini.id, month: cIso ? cycleMonth(cIso) : monthKey(ledgerDate(to)), revenue: rev, directCosts: cost, basis, received: collected, collectedAt: cIso, workPeriodStart: workPeriodFromDates(from, to).start, workPeriodEnd: workPeriodFromDates(from, to).end, note });
     notify(collected ? `Payment recorded — cycle ${cycleMonth(cIso!)}` : "Earned payment recorded — bonus follows collection");
     onOpenChange(false);
     setRevenue("");
@@ -202,11 +242,11 @@ function PaymentDialog({ ini, open, onOpenChange }: { ini: Initiative; open: boo
     >
       <div className="grid gap-3">
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Revenue, Rp million">
-            <Input autoFocus inputMode="decimal" value={revenue} onChange={(e) => setRevenue(e.target.value)} />
+          <Field label="Revenue, Rp million" hint={!revenue.trim() ? "e.g. 500 or 1.500,5" : Number.isFinite(rev) ? formatIDR(rev, "full") : "Not a number — use 1.500 or 1,5"}>
+            <Input autoFocus inputMode="decimal" value={revenue} onChange={(e) => setRevenue(e.target.value)} className={revenue && !Number.isFinite(rev) ? "border-soft-red/60" : undefined} />
           </Field>
-          <Field label="Direct costs, Rp million">
-            <Input inputMode="decimal" value={costs} onChange={(e) => setCosts(e.target.value)} />
+          <Field label="Direct costs, Rp million" hint={!costs.trim() ? undefined : Number.isFinite(cost) ? formatIDR(cost, "full") : "Not a number — use 1.500 or 1,5"}>
+            <Input inputMode="decimal" value={costs} onChange={(e) => setCosts(e.target.value)} className={costs && !Number.isFinite(cost) ? "border-soft-red/60" : undefined} />
           </Field>
           <Field label="Basis">
             <Select value={basis} onChange={(e) => setBasis(e.target.value as typeof basis)}>
@@ -214,17 +254,17 @@ function PaymentDialog({ ini, open, onOpenChange }: { ini: Initiative; open: boo
               <option value="recognized">Period billed</option>
             </Select>
           </Field>
-          <Field label="Collected on" hint={collected && collectedAt ? `Cycle ${cycleMonth(fromDateInput(collectedAt))} — paid ${formatDate(paymentDate(cycleMonth(fromDateInput(collectedAt))), "short")}` : "Not yet collected"}>
+          <Field label="Collected on" hint={collected && collectedAt ? `Cycle ${cycleMonth(`${collectedAt}T12:00:00+07:00`)} — paid ${formatDate(paymentDate(cycleMonth(`${collectedAt}T12:00:00+07:00`)), "short")}` : "Not yet collected"}>
             <div className="flex items-center gap-2">
               <input type="checkbox" aria-label="Collected" className="size-3.5 accent-white" checked={collected} onChange={(e) => setCollected(e.target.checked)} />
-              <Input type="date" value={collectedAt} disabled={!collected} onChange={(e) => setCollectedAt(e.target.value)} />
+              <Input type="date" lang="en-GB" value={collectedAt} disabled={!collected} onChange={(e) => setCollectedAt(e.target.value)} />
             </div>
           </Field>
           <Field label="Work period from (§6.5)">
-            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+            <Input type="date" lang="en-GB" value={from} onChange={(e) => setFrom(e.target.value)} />
           </Field>
           <Field label="Work period to">
-            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            <Input type="date" lang="en-GB" min={from} value={to} onChange={(e) => setTo(e.target.value)} />
           </Field>
         </div>
         <Field label="Note">

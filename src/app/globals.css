@@ -159,3 +159,81 @@
     scroll-behavior: auto !important;
   }
 }
+
+/*
+ * Hover-only controls (`opacity-0 group-hover:opacity-100`: row actions, unlink, remove, pin …) are also shown when the
+ * row holds keyboard focus, and always on devices that can't hover (touch) — so nothing is reachable-but-invisible.
+ */
+.group:focus-within .group-hover\:opacity-100 {
+  opacity: 1;
+}
+@media (hover: none) {
+  .opacity-0.group-hover\:opacity-100,
+  .group-hover\:opacity-100 {
+    opacity: 1;
+  }
+}
+
+/* Touch ergonomics: 16px form text on coarse pointers stops iOS Safari zooming the page on focus. */
+@media (hover: none) and (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+/*
+ * Print: the workspace prints as paper. The shell chrome (sidebar, top bar, toasts, sync banners) is hidden, the
+ * full-height scroll containers are unclipped so long pages flow over several sheets, and colours go black on white.
+ * Pages add `print:hidden` to their own controls; anything marked [data-print-hide] is dropped too.
+ */
+@media print {
+  @page {
+    margin: 14mm 12mm;
+  }
+  html,
+  body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+    color: #111 !important;
+  }
+  [data-shell-chrome],
+  [data-print-hide],
+  [data-toast-announcer] {
+    display: none !important;
+  }
+  [data-shell-root],
+  [data-shell-root] main,
+  [data-shell-root] main > *,
+  [data-shell-content] {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  [data-shell-root] .overflow-y-auto,
+  [data-shell-root] .overflow-auto,
+  [data-shell-root] .overflow-hidden {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+  [data-shell-root] .text-sg-white,
+  [data-shell-root] .text-sg-text,
+  [data-shell-root] .text-sg-muted {
+    color: #111 !important;
+  }
+  [data-shell-root] .text-sg-dim {
+    color: #555 !important;
+  }
+  [data-shell-root] .bg-sg-card,
+  [data-shell-root] .bg-sg-card-2,
+  [data-shell-root] .bg-sg-bg {
+    background: transparent !important;
+  }
+  [data-shell-root] .shadow-pop {
+    box-shadow: none !important;
+  }
+}

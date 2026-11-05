@@ -96,6 +96,8 @@ function Item({ a }: { a: Activity }) {
   const toggleTask = useCrm((s) => s.toggleTask);
   const togglePin = useCrm((s) => s.togglePin);
   const deleteActivity = useCrm((s) => s.deleteActivity);
+  const restoreActivity = useCrm((s) => s.restoreActivity);
+  const notify = useUi((s) => s.notify);
   const openIssue = useUi((s) => s.openIssue);
   const [expanded, setExpanded] = useState(false);
   const meta = activityMeta[a.type];
@@ -149,12 +151,24 @@ function Item({ a }: { a: Activity }) {
               {a.type === "task" && a.dueAt && <span className={cn("rounded-sm px-1", overdue ? "bg-soft-red/15 text-soft-red" : "bg-sg-card-3 text-sg-muted")}>Due {formatDate(a.dueAt, "short")} ({relativeTime(a.dueAt)})</span>}
             </div>
           </div>
-          <div className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-            <button type="button" onClick={() => togglePin(a.id)} className="rounded p-1 text-sg-dim hover:bg-sg-card-2 hover:text-sg-white" aria-label={a.pinned ? "Unpin" : "Pin"}>
+          <div className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+            <button type="button" onClick={() => togglePin(a.id)} className="rounded p-1 text-sg-dim hover:bg-sg-card-2 hover:text-sg-white" aria-label={a.pinned ? `Unpin “${a.subject}”` : `Pin “${a.subject}”`}>
               {a.pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
             </button>
             {a.type !== "jira" && (
-              <button type="button" onClick={() => deleteActivity(a.id)} className="rounded p-1 text-sg-dim hover:bg-sg-card-2 hover:text-soft-red" aria-label="Delete">
+              <button
+                type="button"
+                onClick={() => {
+                  const all = useCrm.getState().activities;
+                  const index = all.findIndex((x) => x.id === a.id);
+                  const snapshot = all[index];
+                  if (!snapshot) return;
+                  deleteActivity(a.id);
+                  notify(`${meta.label} “${a.subject.slice(0, 40)}${a.subject.length > 40 ? "…" : ""}” deleted`, { label: "Undo", run: () => restoreActivity(snapshot, index) });
+                }}
+                className="rounded p-1 text-sg-dim hover:bg-sg-card-2 hover:text-soft-red"
+                aria-label={`Delete “${a.subject}”`}
+              >
                 <Trash2 className="size-3.5" />
               </button>
             )}
@@ -197,10 +211,13 @@ function Composer({ type, id }: { type: CrmObjectType; id: string }) {
       links.dealIds.push(id);
       const d = deals.find((x) => x.id === id);
       if (d?.companyId) links.companyIds.push(d.companyId);
+      // notes on a deal also show on its contacts' timelines (notes don't change "last contacted")
+      links.contactIds.push(...(d?.contactIds ?? []));
     } else {
       links.ticketIds.push(id);
       const t = tickets.find((x) => x.id === id);
       if (t?.companyId) links.companyIds.push(t.companyId);
+      if (t?.contactId) links.contactIds.push(t.contactId);
     }
     const [first, ...restLines] = note.trim().split("\n");
     addActivity({ type: "note", subject: first.slice(0, 90), body: restLines.join("\n").trim() || (first.length > 90 ? first : ""), links });
