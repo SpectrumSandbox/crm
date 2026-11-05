@@ -519,127 +519,126 @@ function CarriedInPanel({ carriedIn, paidPct }: { carriedIn: { initiativeId: str
 
 /* ───────────── §8.2 / §13.1 maker-checker release ───────────── */
 
-function ReleasePanel({ run, dirty, lateReason, salaryPassed, auditLog }: { run: BonusRun; dirty: boolean; lateReason: string | null; salaryPassed: boolean; auditLog: AuditEntry[] }) {
+function ReleasePanel({ run, dirty, salaryPassed }: { run: BonusRun; dirty: boolean; salaryPassed: boolean }) {
   const profiles = useCrm((s) => s.employeeProfiles);
   const approvalsAll = useCrm((s) => s.releaseApprovals);
   const approveRelease = useCrm((s) => s.approveRelease);
   const withdrawReleaseApproval = useCrm((s) => s.withdrawReleaseApproval);
   const releaseRun = useCrm((s) => s.releaseRun);
-  const addCycleNote = useCrm((s) => s.addCycleNote);
   const notify = useUi((s) => s.notify);
   const userMap = useUserMap();
   const access = useAccess();
   const [reason, setReason] = useState("");
 
-  const st = useMemo(() => releaseState({ run, profiles, approvals: approvalsAll, auditLog }), [run, profiles, approvalsAll, auditLog]);
   const released = run.status === "released";
   const me = access.userId;
-  const myRecusal = st.recused.find((r) => r.userId === me);
-  const isMaker = me === run.certifiedById || me === st.recordedById;
-  const conflicted = run.lines.some((l) => l.userId === me);
-  const approved = st.approvals.some((a) => a.userId === me);
-  const releaseBlock = released
-    ? null
-    : dirty
-      ? "Figures changed since certification — re-certify first"
-      : !access.prc
-        ? "Only the PRC authorises release (§8.2, §13.2)"
-        : isMaker
-          ? "You certified or recorded this certification — a different PRC member authorises release (maker-checker, §8.2)"
-          : conflicted && !st.quorumMet
-            ? `You have bonus lines in this run and are recused (§13.1) — release needs a quorum: approvals recorded by ${st.quorumNeeded} PRC members present including the CFO or a Finance delegate`
-            : salaryPassed && !lateReason
-              ? "The salary date has passed — record the reason for the late release first"
-              : null;
+  const votes = useMemo(() => liveVotes(run, approvalsAll), [run, approvalsAll]);
+  const voteRecords = useMemo(() => approvalsAll.filter((a) => a.runId === run.id && !a.withdrawnAt && a.certifiedAt === run.certifiedAt), [approvalsAll, run.id, run.certifiedAt]);
+  // W7 §8.2 / §13.1 rules: maker-checker, recusal of members with amounts in the run, quorum incl. Finance, casting vote
+  const single = useMemo(() => releaseCheck(run, { profiles, actorId: me }), [run, profiles, me]);
+  const voted = useMemo(() => (votes.length ? releaseCheck(run, { profiles, actorId: me, votes }) : null), [run, profiles, me, votes]);
+  const chk = voted ?? single;
+  const roster = chk.roster;
+  const recused = new Set(chk.recused);
+  const isMaker = me === run.certifiedById || me === run.recordedById;
+  const lateNeedsReason = chk.late && reason.trim().length < 5;
+  const releaseBlock = released ? null : dirty ? "Figures changed since certification — re-certify first" : !chk.ok ? chk.blockers.join(" · ") : lateNeedsReason ? "The salary date has passed — record the reason for the late release" : null;
 
   const release = () => {
     if (releaseBlock) return;
-    if (!conflicted && !approved) approveRelease(run.id);
-    releaseRun(run.id);
-    const after = useCrm.getState().bonusRuns.find((r) => r.id === run.id);
-    if (after?.status === "released") notify(`PRC authorised release for ${monthLabel(run.month)} — paid with the ${formatDate(paymentDate(run.month), "medium")} salary`);
-    else notify("Release was refused by the policy checks — see the maker-checker panel");
+    const res = releaseRun(run.id, { votes: voted ? votes : undefined, lateReason: chk.late ? reason.trim() : undefined });
+    notify(res.ok ? `PRC authorised release for ${monthLabel(run.month)} — paid with the ${formatDate(paymentDate(run.month), "medium")} salary` : `Release refused — ${res.reason ?? "see the audit log"}`);
+  };
+  const vote = (u: string, v: "for" | "against") => {
+    const id = approveRelease(run.id, v, u === me ? undefined : u);
+    notify(id ? `${u === me ? "Your" : `${userMap.get(u)?.name ?? "Member"}'s`} vote recorded (${v})` : "Vote not recorded — recused members and non-PRC members do not vote (§13.1)");
   };
 
   return (
-    <Panel title="PRC release · maker-checker" icon={Gavel} cite="13.1" subtitle={released ? `released by ${userMap.get(run.releasedById ?? "")?.name ?? "—"}` : "certifier ≠ releaser · recusal · quorum"}>
+    <Panel title="PRC release · maker-checker" icon={Gavel} cite="13.1" subtitle={released ? `released by ${userMap.get(run.releasedById ?? "")?.name ?? "—"}` : chk.mode === "vote" ? "PRC vote" : "single uninvolved PRC member, or a PRC vote"}>
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-          <Step label="Prepared (provisional)" who={st.preparedById} />
+          <Step label="Prepared (provisional)" who={run.preparedById ?? null} />
           <Step label="Certified by" who={run.certifiedById} at={run.certifiedAt} />
-          <Step label="Entered by" who={st.recordedById} sub={st.recordedById && st.recordedById !== run.certifiedById ? "on the CFO's behalf" : undefined} />
+          <Step label="Entered by" who={run.recordedById ?? run.certifiedById} sub={run.recordedById && run.recordedById !== run.certifiedById ? "on the CFO's behalf" : undefined} />
           <Step label="Released by" who={run.releasedById} at={run.releasedAt} />
-          <div className="col-span-2">
-            <dt className="text-2xs text-sg-dim">Quorum (§13.1)</dt>
-            <dd className={cn("font-semibold", st.quorumMet ? "text-soft-green" : "text-sg-text")}>
-              {st.present.length} of {st.roster.length} present · {st.quorumNeeded} needed · {st.financePresent ? "CFO / Finance present" : "CFO or a Finance delegate must be present"}
-            </dd>
-          </div>
+          {released ? (
+            <div className="col-span-2">
+              <dt className="text-2xs text-sg-dim">Decision recorded</dt>
+              <dd className="text-sg-text">
+                {(run.approvals ?? []).map((a) => `${userMap.get(a.userId)?.name ?? a.userId}: ${a.vote}`).join(" · ") || "—"}
+                {run.recusedIds?.length ? <span className="block text-2xs text-sg-dim">Recused: {run.recusedIds.map((u) => userMap.get(u)?.name ?? u).join(", ")}</span> : null}
+                {run.lateReleaseReason ? <span className="block text-2xs text-soft-yellow">Late: {run.lateReleaseReason}</span> : null}
+              </dd>
+            </div>
+          ) : (
+            <div className="col-span-2">
+              <dt className="text-2xs text-sg-dim">Quorum (§13.1)</dt>
+              <dd className={cn("font-semibold", voted?.quorum.carried && voted.ok ? "text-soft-green" : "text-sg-text")}>
+                {chk.quorum.present} of {roster.length} voting · {chk.quorum.needed} needed · {chk.quorum.financePresent ? "CFO / Finance voting" : "the CFO or a Finance delegate must vote"} · {chk.quorum.for.length} for, {chk.quorum.against.length} against
+              </dd>
+            </div>
+          )}
         </dl>
         <div>
           <div className="sg-eyebrow mb-1">PRC members</div>
           <ul className="divide-y divide-sg-line rounded-lg border border-sg-line">
-            {st.roster.map((u) => {
-              const a = st.approvals.find((x) => x.userId === u);
-              const rec = st.recused.find((r) => r.userId === u);
-              const canRecord = !released && !rec && !a && access.prc && !dirty && (u === me || !isMaker);
+            {roster.map((u) => {
+              const v = voteRecords.find((x) => x.userId === u);
+              const isRecused = recused.has(u);
+              const maker = u === run.certifiedById ? "certified the checks" : u === run.recordedById ? "entered the certification" : null;
+              const canVote = !released && !isRecused && !dirty && access.prc && (u === me || !isMaker);
               return (
                 <li key={u} className="flex flex-wrap items-center gap-2 px-3 py-1.5 text-xs">
                   <span className="min-w-0 flex-1">
-                    <UserCell userId={u} sub={rec ? `Recused — ${rec.reason}` : a ? `Approved ${formatDate(a.at, "datetime")}${a.recordedById !== a.userId ? ` · recorded by ${userMap.get(a.recordedById)?.name ?? a.recordedById}` : ""}` : "No approval recorded"} />
+                    <UserCell userId={u} sub={isRecused ? "Recused — has amounts in this run (§13.1)" : v ? `Voted ${v.vote} ${formatDate(v.at, "datetime")}${v.recordedById !== v.userId ? ` · recorded by ${userMap.get(v.recordedById)?.name ?? v.recordedById}` : ""}` : maker ? `May vote, may not release — ${maker}` : "No vote recorded"} />
                   </span>
-                  {a ? (
+                  {isRecused ? (
+                    <Chip color="blue">Recused</Chip>
+                  ) : v ? (
                     <>
-                      <Chip color="green" dot>
-                        Approved
+                      <Chip color={v.vote === "for" ? "green" : "red"} dot>
+                        {v.vote === "for" ? "For" : "Against"}
                       </Chip>
-                      {!released && (a.userId === me || a.recordedById === me) ? (
-                        <Button size="xs" variant="ghost" onClick={() => withdrawReleaseApproval(a.id)}>
+                      {!released && (v.userId === me || v.recordedById === me) ? (
+                        <Button size="xs" variant="ghost" onClick={() => withdrawReleaseApproval(v.id)}>
                           Withdraw
                         </Button>
                       ) : null}
                     </>
-                  ) : rec ? (
-                    <Chip color="blue">Recused</Chip>
-                  ) : canRecord ? (
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      onClick={() => {
-                        const id = approveRelease(run.id, u === me ? undefined : u);
-                        notify(id ? `${u === me ? "Your" : `${userMap.get(u)?.name ?? "Member"}'s`} approval recorded` : "Approval not recorded — check recusal and the certification");
-                      }}
-                    >
-                      <UserCheck /> {u === me ? "Approve release" : "Record written approval"}
-                    </Button>
+                  ) : canVote ? (
+                    <span className="flex gap-1">
+                      <Button size="xs" variant="outline" onClick={() => vote(u, "for")} title={u === me ? "Vote to release" : "Record this member's written vote"}>
+                        <UserCheck /> For
+                      </Button>
+                      <Button size="xs" variant="ghost" onClick={() => vote(u, "against")}>
+                        Against
+                      </Button>
+                    </span>
                   ) : null}
                 </li>
               );
             })}
           </ul>
+          {!released ? <p className="mt-1 text-2xs text-sg-dim">An uninvolved PRC member may release alone; when they are recused, or votes are recorded, the release needs a PRC vote with a quorum including the CFO or a Finance delegate (chair&apos;s casting vote on a tie).</p> : null}
         </div>
       </div>
 
       {!released ? (
         <div className="mt-4 space-y-2 border-t border-sg-line pt-3">
-          {salaryPassed && !lateReason && access.prc ? (
-            <div className="flex flex-wrap items-end gap-2">
-              <Field label="Reason for releasing after the salary date (§8.2)" className="min-w-[260px] flex-1">
-                <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. PRC quorum only reached on the 26th; paid in an off-cycle payroll run" />
-              </Field>
-              <Button size="sm" variant="outline" disabled={reason.trim().length < 5} onClick={() => addCycleNote(run.month, "late_release", reason)}>
-                Record reason
-              </Button>
-            </div>
+          {chk.late && access.prc ? (
+            <Field label="Reason for releasing after the salary date (§8.2)">
+              <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. PRC quorum only reached on the 26th; paid in an off-cycle payroll run" />
+            </Field>
           ) : null}
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="pill" size="sm" disabled={!!releaseBlock} onClick={release}>
-              <Send /> Authorise release (PRC)
+              <Send /> {chk.mode === "vote" ? "Release on the PRC vote" : "Authorise release (PRC)"}
             </Button>
-            {myRecusal && !isMaker ? <span className="text-2xs text-sg-dim">You are recused: {myRecusal.reason}</span> : null}
-            {lateReason ? <span className="text-2xs text-soft-yellow">Late release · {lateReason}</span> : null}
+            {chk.warnings.length ? <span className="text-2xs text-soft-yellow">{chk.warnings.join(" · ")}</span> : null}
           </div>
-          {releaseBlock ? <RoleNote>{releaseBlock}</RoleNote> : <RoleNote>Your release is recorded as the PRC authorisation together with the approvals above (§13.3).</RoleNote>}
+          {releaseBlock ? <RoleNote>{releaseBlock}</RoleNote> : <RoleNote>Your release is recorded as the PRC authorisation{chk.mode === "vote" ? " with the votes above" : ""} (§13.3).</RoleNote>}
+          {salaryPassed && !access.prc ? <RoleNote>The salary date has passed — the PRC records the reason when it releases.</RoleNote> : null}
         </div>
       ) : null}
     </Panel>
@@ -720,54 +719,75 @@ function ControlsPanel({ month, exceptions, reviews, unconfirmed, projects }: { 
 
 function HeldPanel({ lines, month }: { lines: BonusLine[]; month: string }) {
   const held = lines.filter((l) => l.held > 0);
-  if (!held.length) return null;
+  const cleared = lines.filter((l) => (l.heldIn ?? 0) > 0);
+  if (!held.length && !cleared.length) return null;
   const total = held.reduce((s, l) => s + l.held, 0);
   return (
-    <Panel title="Held — paid when the condition clears" icon={Hourglass} cite="10" subtitle={`${held.length} line${held.length === 1 ? "" : "s"} · ${exactIdr(total)}`} bodyClassName="p-0">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[820px] text-sm">
-          <thead>
-            <tr className="border-b border-sg-line">
-              <th className={thCls}>Employee</th>
-              <th className={thCls}>Project</th>
-              <th className={thRight}>Held</th>
-              <th className={thCls}>Why</th>
-              <th className={thCls}>Paid when</th>
-            </tr>
-          </thead>
-          <tbody>
-            {held.map((l) => {
-              const reason = holdReasons(l)[0] ?? "Held (§10)";
-              const c = heldCondition(reason);
-              return (
-                <tr key={`${l.userId}-${l.initiativeId}`} className="border-b border-sg-line align-top">
-                  <td className={tdCls}>
-                    <UserCell userId={l.userId} />
-                  </td>
-                  <td className={cn(tdCls, "max-w-[240px]")}>
-                    <InitiativeLink id={l.initiativeId} />
-                  </td>
-                  <td className={cn(tdNum, "font-semibold text-soft-orange")}>
-                    <ExactMoney value={l.held} />
-                  </td>
-                  <td className={cn(tdCls, "max-w-[280px] text-2xs text-sg-muted")}>{reason}</td>
-                  <td className={cn(tdCls, "max-w-[280px] text-2xs")}>
-                    <span className="text-sg-text">{c.when}</span>
-                    {c.where ? (
-                      <a href={c.where} className="ml-1 text-sg-muted underline-offset-2 hover:text-sg-white hover:underline">
-                        HR record
-                      </a>
-                    ) : null}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <p className="px-4 py-2 text-2xs text-sg-dim">
-        Held amounts are not forfeited. They stay on the {monthLabel(month)} run, are re-checked against §10 every cycle and are paid with the first salary after the hold clears; a confirmed serious violation forfeits them.
-      </p>
+    <Panel title="Held — paid when the condition clears" icon={Hourglass} cite="10" subtitle={`${held.length} line${held.length === 1 ? "" : "s"} held · ${exactIdr(total)}${cleared.length ? ` · ${exactIdr(cleared.reduce((s, l) => s + (l.heldIn ?? 0), 0))} released this cycle` : ""}`} bodyClassName="p-0">
+      {held.length ? (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[860px] text-sm">
+            <thead>
+              <tr className="border-b border-sg-line">
+                <th className={thCls}>Employee</th>
+                <th className={thCls}>Project</th>
+                <th className={thRight}>Held</th>
+                <th className={thCls}>Why</th>
+                <th className={thCls}>Paid when</th>
+              </tr>
+            </thead>
+            <tbody>
+              {held.map((l) => {
+                const reason = holdReasons(l)[0] ?? "Held (§10)";
+                const c = heldCondition(reason);
+                const since = (l.heldItems ?? []).map((h) => h.fromMonth).filter((m) => m && m < month).sort()[0];
+                return (
+                  <tr key={`${l.userId}-${l.initiativeId}`} className="border-b border-sg-line align-top">
+                    <td className={tdCls}>
+                      <UserCell userId={l.userId} />
+                    </td>
+                    <td className={cn(tdCls, "max-w-[240px]")}>
+                      <InitiativeLink id={l.initiativeId} />
+                    </td>
+                    <td className={cn(tdNum, "font-semibold text-soft-orange")}>
+                      <ExactMoney value={l.held} />
+                      {since ? <div className="text-2xs font-normal text-sg-dim">since {shortMonthLabel(since)}</div> : null}
+                    </td>
+                    <td className={cn(tdCls, "max-w-[280px] text-2xs text-sg-muted")}>{reason}</td>
+                    <td className={cn(tdCls, "max-w-[280px] text-2xs")}>
+                      <span className="text-sg-text">{c.when}</span>
+                      {c.where ? (
+                        <a href={c.where} className="ml-1 text-sg-muted underline-offset-2 hover:text-sg-white hover:underline">
+                          HR record
+                        </a>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {cleared.length ? (
+        <div className="border-t border-sg-line px-4 py-2">
+          <div className="sg-eyebrow mb-1">Hold cleared — paid with this salary</div>
+          <ul className="space-y-1 text-xs">
+            {cleared.map((l) => (
+              <li key={`c-${l.userId}-${l.initiativeId}`} className="flex flex-wrap items-center gap-3">
+                <span className="w-44">
+                  <UserCell userId={l.userId} />
+                </span>
+                <span className="min-w-0 max-w-[280px] flex-1">
+                  <InitiativeLink id={l.initiativeId} compact />
+                </span>
+                <span className="sg-num font-semibold text-soft-green">{exactIdr(l.heldIn ?? 0)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <p className="px-4 py-2 text-2xs text-sg-dim">Held amounts are not forfeited. Each cycle carries them forward with their original collection dates, re-checks them against §10 and pays them with the first salary after the hold clears; a confirmed serious violation forfeits them.</p>
     </Panel>
   );
 }

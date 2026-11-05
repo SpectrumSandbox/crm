@@ -3,7 +3,7 @@
 import type { CrmState } from "../store";
 import type { Activity, ActivityLinks, EmailTemplate, Sequence, SequenceEnrollment, SequenceStep, Workflow } from "../types";
 import type { GetFn, SetFn, Uid } from "./types";
-import type { ForecastCategory, PipelineSnapshot, SequenceEvent, SequenceEventKind } from "@/components/automation/types";
+import type { PipelineSnapshot, SequenceEvent, SequenceEventKind } from "@/components/automation/types";
 import { detectEvents, isReply, newActivities, runWorkflow, scheduledEvents, type Api, type RunResult, type WfEvent } from "@/components/automation/runtime";
 import { addBusinessDaysAt9, currentStepOf, dueAtOf, sortedSteps } from "@/components/automation/sequences";
 import { renderTemplate, tokenContext } from "@/components/automation/tokens";
@@ -70,7 +70,6 @@ export interface AutomationSlice {
   /* reporting */
   takePipelineSnapshot: (label?: string, source?: PipelineSnapshot["source"]) => string;
   deletePipelineSnapshot: (id: string) => void;
-  setForecastCategory: (dealId: string, category: ForecastCategory | null, note?: string) => void;
   setSalesTarget: (period: string, ownerId: string | null, amount: number | null) => void;
 }
 
@@ -468,20 +467,6 @@ export function createAutomationSlice<S extends CrmState>(set: SetFn<S>, get: Ge
     /* ───────── reporting ───────── */
     takePipelineSnapshot: (label = "Manual snapshot", source = "manual") => takeSnapshot(api, label, source),
     deletePipelineSnapshot: (id) => put((s) => ({ pipelineSnapshots: s.pipelineSnapshots.filter((p) => p.id !== id) })),
-    setForecastCategory: (dealId, category, note = "") => {
-      const me = get().currentUserId;
-      put((s) => ({
-        forecastOverrides: category ? [...s.forecastOverrides.filter((f) => f.dealId !== dealId), { id: uid("fo"), dealId, category, note, byId: me, at: nowIso() }] : s.forecastOverrides.filter((f) => f.dealId !== dealId),
-      }));
-      const deal = get().deals.find((d) => d.id === dealId);
-      if (deal)
-        get().addActivity({
-          type: "note",
-          subject: category ? `Forecast category set: ${category.replace("_", " ")}` : "Forecast category reset to stage default",
-          body: note || (category ? `${deal.name} is forecast as ${category.replace("_", " ")}.` : `${deal.name} follows its stage probability again.`),
-          links: { ...emptyLinks(), dealIds: [dealId], companyIds: deal.companyId ? [deal.companyId] : [] },
-        });
-    },
     setSalesTarget: (period, ownerId, amount) => {
       const me = get().currentUserId;
       put((s) => {

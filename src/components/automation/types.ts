@@ -94,17 +94,6 @@ export interface PipelineSnapshot {
   deals: SnapshotDeal[];
 }
 
-export type ForecastCategory = "pipeline" | "best_case" | "commit" | "omitted";
-
-export interface ForecastOverride {
-  id: ID;
-  dealId: ID;
-  category: ForecastCategory;
-  note: string;
-  byId: ID;
-  at: ISODate;
-}
-
 /** Sales target for a quarter ("2026-Q4") or month ("2026-11"); ownerId null = whole team. */
 export interface SalesTarget {
   id: ID;

@@ -4,7 +4,6 @@
 import type {
   AssignmentCursor,
   AutomationNotice,
-  ForecastOverride,
   PipelineSnapshot,
   SalesTarget,
   SequenceEvent,
@@ -106,22 +105,22 @@ const snap = (rows: R[]): SnapshotDeal[] => rows.map(([id, name, a, pipelineId, 
 const weekAgo: R[] = [
   ["d-nhs-asv", "NHS — Autonomous Survey Vessel Retrofit", 7_900, "pl-new", "st-proposal", 18, "u-sinta"],
   ["d-nhs-ai", "NHS — Seabed Classification AI", 2_150, "pl-new", "st-proposal", 32, "u-sinta"],
-  ["d-aam-vtol", "AAM — VTOL Mapping Fleet (6 units)", 5_200, "pl-new", "st-solution", 45, "u-sinta"],
+  ["d-aam-vtol", "AAM — VTOL Mapping Fleet (6 units)", 5_700, "pl-new", "st-solution", 45, "u-sinta"],
   ["d-aam-train", "AAM — Pilot & Maintenance Training", 640, "pl-new", "st-discovery", 60, "u-sinta"],
   ["d-sbs-pdm", "SBS — Blast Furnace Predictive Maintenance", 6_900, "pl-new", "st-won", -12, "u-arif"],
-  ["d-sbs-ot", "SBS — OT Network Segmentation", 1_850, "pl-new", "st-solution", 18, "u-arif"],
-  ["d-bap-crop", "BAP — Drone Crop Health Pilot (Sampit)", 1_400, "pl-new", "st-proposal", 14, "u-arif"],
+  ["d-sbs-ot", "SBS — OT Network Segmentation", 1_850, "pl-new", "st-solution", 25, "u-arif"],
+  ["d-bap-crop", "BAP — Drone Crop Health Pilot (Sampit)", 1_250, "pl-new", "st-proposal", 5, "u-arif"],
   ["d-bap-group", "BAP — Group-wide Remote Sensing Programme", 9_800, "pl-new", "st-discovery", 120, "u-rani"],
   ["d-spl-crane", "SPL — Crane Telemetry Phase 2", 3_300, "pl-new", "st-won", -35, "u-rani"],
-  ["d-spl-twin", "SPL — Terminal Digital Twin", 4_750, "pl-new", "st-solution", 55, "u-rani"],
-  ["d-mge-sensor", "MGE — Wellhead Sensor Network", 2_900, "pl-new", "st-solution", 21, "u-arif"],
+  ["d-spl-twin", "SPL — Terminal Digital Twin", 4_750, "pl-new", "st-solution", 70, "u-rani"],
+  ["d-mge-sensor", "MGE — Wellhead Sensor Network", 2_900, "pl-new", "st-solution", 10, "u-arif"],
   ["d-mge-ctl", "MGE — Turbine Control Upgrade Study", 480, "pl-new", "st-qualified", 40, "u-arif"],
-  ["d-apg-scada", "APG — SCADA Modernisation Phase 1", 12_500, "pl-new", "st-solution", 95, "u-rani"],
+  ["d-apg-scada", "APG — SCADA Modernisation Phase 1", 11_500, "pl-new", "st-solution", 95, "u-rani"],
   ["d-cam-uas", "CAM — UAS Maintenance Certification Pack", 1_380, "pl-new", "st-won", -60, "u-sinta"],
   ["d-cam-renew", "CAM — Engineering Retainer 2027", 2_200, "pl-renew", "st-r-proposal", 50, "u-yoga"],
   ["d-bos-rov", "BOS — ROV Autonomy & Sonar Integration", 3_650, "pl-new", "st-discovery", 75, "u-sinta"],
   ["d-rct-fire", "RCT — Peatland Fire Detection UAV", 720, "pl-new", "st-discovery", 85, "u-sinta"],
-  ["d-twu-nrw", "TWU — Non-Revenue Water Analytics", 2_400, "pl-new", "st-proposal", 9, "u-arif"],
+  ["d-twu-nrw", "TWU — Non-Revenue Water Analytics", 2_400, "pl-new", "st-proposal", 2, "u-arif"],
   ["d-ptt-insp", "PTT — Drone Tower Inspection Programme", 6_500, "pl-new", "st-solution", 38, "u-sinta"],
   ["d-nhs-renew", "NHS — Fleet Support Renewal", 1_600, "pl-renew", "st-r-proposal", 12, "u-yoga"],
   ["d-spl-renew", "SPL — Telemetry Platform Renewal", 980, "pl-renew", "st-r-review", 64, "u-yoga"],
@@ -141,11 +140,11 @@ const monthAgo: R[] = [
   ["d-spl-twin", "SPL — Terminal Digital Twin", 4_750, "pl-new", "st-qualified", 45, "u-rani"],
   ["d-mge-sensor", "MGE — Wellhead Sensor Network", 2_600, "pl-new", "st-qualified", 21, "u-arif"],
   ["d-mge-ctl", "MGE — Turbine Control Upgrade Study", 480, "pl-new", "st-discovery", 40, "u-arif"],
-  ["d-apg-scada", "APG — SCADA Modernisation Phase 1", 12_500, "pl-new", "st-qualified", 95, "u-rani"],
+  ["d-apg-scada", "APG — SCADA Modernisation Phase 1", 12_800, "pl-new", "st-qualified", 95, "u-rani"],
   ["d-cam-uas", "CAM — UAS Maintenance Certification Pack", 1_380, "pl-new", "st-won", -60, "u-sinta"],
   ["d-cam-renew", "CAM — Engineering Retainer 2027", 2_200, "pl-renew", "st-r-review", 50, "u-yoga"],
   ["d-bos-rov", "BOS — ROV Autonomy & Sonar Integration", 3_650, "pl-new", "st-discovery", 75, "u-sinta"],
-  ["d-twu-nrw", "TWU — Non-Revenue Water Analytics", 2_400, "pl-new", "st-solution", 5, "u-arif"],
+  ["d-twu-nrw", "TWU — Non-Revenue Water Analytics", 2_400, "pl-new", "st-solution", 2, "u-arif"],
   ["d-ptt-insp", "PTT — Drone Tower Inspection Programme", 6_500, "pl-new", "st-qualified", 38, "u-sinta"],
   ["d-nhs-renew", "NHS — Fleet Support Renewal", 1_600, "pl-renew", "st-r-review", 12, "u-yoga"],
   ["d-spl-renew", "SPL — Telemetry Platform Renewal", 980, "pl-renew", "st-r-review", 64, "u-yoga"],
@@ -158,12 +157,7 @@ const pipelineSnapshots: PipelineSnapshot[] = [
   { id: "ps-seed-1w", at: at(-7, 7), label: "Weekly snapshot", source: "seed", takenById: "u-rani", deals: snap(weekAgo) },
 ];
 
-/* ───────────── forecast ───────────── */
-
-const forecastOverrides: ForecastOverride[] = [
-  { id: "fo-seed-1", dealId: "d-ptt-insp", category: "best_case", note: "Board approval slips to January — keep out of Commit.", byId: "u-sinta", at: at(-3, 16) },
-  { id: "fo-seed-2", dealId: "d-twu-nrw", category: "commit", note: "Verbal award from the director; PO in drafting.", byId: "u-arif", at: at(-1, 15) },
-];
+/* ───────────── sales targets (forecast vs target) ───────────── */
 
 const salesTargets: SalesTarget[] = [
   { id: "tg-2026q4-team", period: "2026-Q4", ownerId: null, amount: 32_000 * M, updatedById: "u-rani", updatedAt: at(-36) },
@@ -181,7 +175,6 @@ export const automationSeed = {
   automationNotices,
   sequenceEvents,
   pipelineSnapshots,
-  forecastOverrides,
   salesTargets,
   assignmentCursors,
 };
